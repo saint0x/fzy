@@ -15407,6 +15407,36 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn compiler_phase_fixture_host_backed_run_stays_warning_free() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/compiler_phase_lockin");
+
+        let output = run(
+            Command::Run {
+                path: root,
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("host-backed run should succeed for compiler phase fixture");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("run output should be valid json");
+        assert_eq!(payload["status"].as_str(), Some("ok"));
+        assert_eq!(payload["diagnostics"].as_u64(), Some(0));
+        assert_eq!(payload["exitCode"].as_i64(), Some(0));
+    }
+
+    #[test]
     fn compiler_phase_invalid_programs_emit_diagnostics_not_panics() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

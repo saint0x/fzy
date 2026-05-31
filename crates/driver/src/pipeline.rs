@@ -6289,6 +6289,7 @@ fn parse_and_qualify_module(
     let mut ast = parser::parse(&discovered_module.source, module_name)
         .map_err(|diagnostics| anyhow!(render_parse_failure(module_path, &diagnostics)))?;
     let namespace = module_namespace(root_source, module_path)?;
+    expand_wildcard_imports(&mut ast, &namespace, root_source, discovered)?;
     qualify_module_symbols(&mut ast, &namespace);
     ast.modules = discovered_module.module_decls.clone();
     Ok((
@@ -6331,6 +6332,108 @@ fn module_namespace(root_source: &Path, module_path: &Path) -> Result<String> {
         components.push(stem.to_string());
     }
     Ok(components.join("."))
+}
+
+fn expand_wildcard_imports(
+    module: &mut ast::Module,
+    namespace: &str,
+    root_source: &Path,
+    discovered: &HashMap<PathBuf, DiscoveredModule>,
+) -> Result<()> {
+    let mut module_aliases = module
+        .modules
+        .iter()
+        .map(|module_name| {
+            (
+                module_name.clone(),
+                qualify_name(namespace, module_name.as_str()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for (alias, target) in import_aliases(module, &module_aliases) {
+        module_aliases.insert(alias, target);
+    }
+
+    let mut namespace_to_path = HashMap::<String, PathBuf>::new();
+    for path in discovered.keys() {
+        namespace_to_path.insert(module_namespace(root_source, path)?, path.clone());
+    }
+
+    let mut expanded = Vec::<ast::Import>::new();
+    for import in &module.imports {
+        if !import.wildcard || import.path.is_empty() {
+            continue;
+        }
+        let canonical = canonicalize_import_path(&import.path, &module_aliases);
+        let Some(target_path) = namespace_to_path.get(&canonical) else {
+            continue;
+        };
+        let Some(target_module) = discovered.get(target_path) else {
+            continue;
+        };
+        let target_module_name = target_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("invalid module filename for {}", target_path.display()))?;
+        let target_ast = parser::parse(&target_module.source, target_module_name)
+            .map_err(|diagnostics| anyhow!(render_parse_failure(target_path, &diagnostics)))?;
+        let mut seen = HashSet::<String>::new();
+        for item in &target_ast.items {
+            let Some(name) = (match item {
+                ast::Item::Function(function) => Some(function.name.as_str()),
+                ast::Item::TypeAlias(item) => Some(item.name.as_str()),
+                ast::Item::NewType(item) => Some(item.name.as_str()),
+                ast::Item::Struct(item) => Some(item.name.as_str()),
+                ast::Item::Enum(item) => Some(item.name.as_str()),
+                ast::Item::Trait(item) => Some(item.name.as_str()),
+                ast::Item::Const(item) => Some(item.name.as_str()),
+                ast::Item::Static(item) => Some(item.name.as_str()),
+                _ => None,
+            }) else {
+                continue;
+            };
+            if seen.insert(name.to_string()) {
+                let mut path = canonical
+                    .split('.')
+                    .map(|segment| segment.to_string())
+                    .collect::<Vec<_>>();
+                path.push(name.to_string());
+                expanded.push(ast::Import {
+                    path,
+                    alias: None,
+                    wildcard: false,
+                    is_pub: import.is_pub,
+                });
+            }
+        }
+        for reexport in &target_ast.imports {
+            if !reexport.is_pub || reexport.wildcard || reexport.path.is_empty() {
+                continue;
+            }
+            let exposed_name = reexport
+                .alias
+                .clone()
+                .or_else(|| reexport.path.last().cloned())
+                .unwrap_or_default();
+            if !seen.insert(exposed_name.clone()) {
+                continue;
+            }
+            let mut path = canonical
+                .split('.')
+                .map(|segment| segment.to_string())
+                .collect::<Vec<_>>();
+            path.push(exposed_name);
+            expanded.push(ast::Import {
+                path,
+                alias: None,
+                wildcard: false,
+                is_pub: import.is_pub,
+            });
+        }
+    }
+
+    module.imports.extend(expanded);
+    Ok(())
 }
 
 fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {

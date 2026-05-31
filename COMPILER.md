@@ -4,21 +4,9 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 
 ## Active Queue
 
-- `14. Compiler-phase lock-in suite`
 - `22. Canary-app gates`
 
 ## Priority 6
-
-### 14. Compiler-phase lock-in suite
-
-Checklist:
-
-- Finish user-module wildcard import lock-in on the same golden corpus instead of relying only on explicit import/re-export coverage.
-- Add direct panic-resistance gates inside parser/HIR/verifier/native-lowerability crate tests so malformed programs are proven not to panic below the command layer.
-
-Required tests:
-
-- Direct crate tests that specifically cover the remaining wildcard-import and panic-resistance gaps.
 
 ## Priority 7
 

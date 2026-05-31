@@ -1,6 +1,6 @@
 mod auth;
 mod store;
-use auth::login;
+use auth::*;
 pub use store::boot_store;
 
 pub fn boot() -> i32 {

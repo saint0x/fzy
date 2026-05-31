@@ -1,9 +1,11 @@
 use core.term;
 mod services;
 mod model;
+use services::*;
+use model.types::*;
 
 fn main() -> i32 {
-    let total = services.boot() + model.types.flavor_score()
+    let total = boot() + flavor_score()
     discard term.write("compiler-phase-lockin\n")
     if total == 12 {
         return 0

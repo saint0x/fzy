@@ -7006,6 +7006,28 @@ fn parse_program_cache_invalidates_on_imported_module_change() {
 }
 
 #[test]
+fn native_lowerability_malformed_program_reports_diagnostics_without_panicking() {
+    let source = "fn main() -> i32 {\n    return missing_call()\n}\n";
+    let module = parser::parse(source, "phase_guard").expect("parse should succeed");
+    let diagnostics = std::panic::catch_unwind(|| super::native_lowerability_diagnostics(&module));
+    assert!(
+        diagnostics.is_ok(),
+        "native lowerability should not panic on unresolved calls"
+    );
+    let diagnostics = diagnostics.expect("native lowerability should return diagnostics");
+    assert!(
+        diagnostics.iter().any(|diag| diag
+            .message
+            .contains("native backend cannot execute unresolved call")),
+        "expected unresolved-call diagnostic, got {:?}",
+        diagnostics
+            .iter()
+            .map(|diag| diag.message.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn compiler_phase_lockin_fixture_parses_lowers_and_links_across_backends() {
     let root =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/compiler_phase_lockin");
@@ -7039,6 +7061,27 @@ fn compiler_phase_lockin_fixture_parses_lowers_and_links_across_backends() {
     assert_eq!(
         artifact.dependency_graph_hash.as_deref(),
         refresh_lockfile(&root).ok().as_deref()
+    );
+}
+
+#[test]
+fn compiler_phase_lockin_fixture_supports_user_module_wildcard_imports() {
+    let root =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/compiler_phase_lockin");
+    let parsed = parse_program(&root.join("src/main.fzy")).expect("fixture project should parse");
+    let (_typed, fir) = super::lower_fir_cached(&parsed);
+    assert_eq!(
+        fir.type_errors, 0,
+        "wildcard phase fixture should stay type-clean: {:?}",
+        fir.type_error_details
+    );
+    assert!(
+        parsed
+            .module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Function(function) if function.name == "services.auth.login")),
+        "flattened module should include wildcard-imported nested module function source"
     );
 }
 

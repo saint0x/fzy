@@ -20586,4 +20586,17 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
     }
+
+    #[test]
+    fn lower_recovered_module_reports_type_errors_without_panicking() {
+        let source = "fn main() -> i32 {\n    return login()\n}\n";
+        let module = parser::parse(source, "main").expect("parse");
+        let lowered = std::panic::catch_unwind(|| lower(&module));
+        assert!(
+            lowered.is_ok(),
+            "HIR lowering should not panic on unresolved call"
+        );
+        let typed = lowered.expect("lowering should return typed module");
+        assert!(typed.type_errors > 0, "lowering should surface type errors");
+    }
 }

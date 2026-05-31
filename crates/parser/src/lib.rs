@@ -4294,9 +4294,9 @@ mod tests {
     fn rpc_declaration_requires_method_name_and_open_paren() {
         let missing_name =
             parse("rpc (req: i32) -> i32;", "rpc").expect_err("missing rpc name should fail");
-        assert!(missing_name.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("expected rpc method name")));
+        assert!(missing_name
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expected rpc method name")));
 
         let missing_paren =
             parse("rpc Ping req: i32) -> i32;", "rpc").expect_err("missing rpc lparen should fail");
@@ -5371,6 +5371,20 @@ mod tests {
                         "render".to_string(),
                     ]
         }));
+    }
+
+    #[test]
+    fn malformed_wildcard_group_import_reports_diagnostics_without_panicking() {
+        let source = "use app::{db::, os::*};\nfn main() -> i32 {\n    return 0\n}\n";
+        let result = std::panic::catch_unwind(|| parse(source, "imports"));
+        assert!(
+            result.is_ok(),
+            "parser should not panic on malformed wildcard import"
+        );
+        let diagnostics = result
+            .expect("parser should return diagnostics")
+            .expect_err("parse should fail");
+        assert!(!diagnostics.is_empty(), "parse should emit diagnostics");
     }
 
     #[test]

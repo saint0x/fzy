@@ -801,8 +801,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
 }
 
 fn module_needs_explicit_capabilities(module: &FirModule) -> bool {
-    module.host_syscall_sites > 0
-        || module.unsafe_sites > 0
+    module.unsafe_sites > 0
         || module.unsafe_reasoned_sites > 0
         || !module.required_effects.is_empty()
         || !module.capability_token_violations.is_empty()
@@ -1229,7 +1228,59 @@ mod tests {
     }
 
     #[test]
-    fn warns_when_capabilities_missing() {
+    fn warns_when_capability_boundary_is_implicit() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: Vec::new(),
+            nodes: 1,
+            entry_return_type: None,
+            entry_return_const_i32: None,
+            entry_has_return_expr: false,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 1,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify(&module);
+        assert!(report.diagnostics.iter().any(|d| d
+            .message
+            .contains("module has declarations but no explicit capabilities")));
+    }
+
+    #[test]
+    fn capability_free_host_facade_module_does_not_warn() {
         let module = fir::FirModule {
             name: "m".to_string(),
             effects: core::CapabilitySet::default(),
@@ -1275,9 +1326,11 @@ mod tests {
             linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
-        assert!(report.diagnostics.iter().any(|d| d
-            .message
-            .contains("module has declarations but no explicit capabilities")));
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("module has declarations but no explicit capabilities")
+        }));
     }
 
     #[test]
