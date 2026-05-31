@@ -55,22 +55,6 @@ Required tests:
 
 ## Priority 7
 
-### 16. Native import contract tables
-
-Checklist:
-
-- Define full native-import metadata for every import: name, arity, argument ownership, return ownership, capability required, linear-resource behavior, error behavior, trace behavior, and blocking or nonblocking behavior.
-- Make the compiler consume this metadata for ownership-transfer, cleanup, capability, unsafe, and native-lowerability checks.
-- Harden and document `http.stream_close`, `http.websocket_close`, `proc.close`, `proc.wait`, `proc.poll`, `task.group_join_all`, `task.group_cancel`, `fs.atomic_write`, and `storage.atomic_append`.
-- Add contract-validation tests that fail if an intrinsic exists in HIR without a full native contract, or if the contract and runtime shim disagree.
-
-Required tests:
-
-- Import-table schema and unit tests.
-- Verifier and driver regressions asserting that consuming calls really consume handles.
-- Native runtime shim build tests covering the full declared import surface.
-- Host-backed scenarios for close, wait, poll, stream, and atomic-write behaviors.
-
 ### 17. Typed-handle and linear-resource law
 
 Checklist:

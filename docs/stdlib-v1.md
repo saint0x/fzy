@@ -125,6 +125,10 @@ The v1 stdlib provides production baseline primitives for:
   - `proc.spawn_cmd` / `proc.run_cmd`
 - `proc.run*` waits for completion and returns the child exit code.
 - `proc.spawn*` returns a process handle for later wait/stdout/stderr/exit inspection and explicit `proc.close(handle)` cleanup.
+- `proc.poll(handle)` is the nonblocking readiness probe:
+  - returns `0` while the child is still running
+  - returns `1` once the child has completed
+  - does not consume the handle; `proc.wait`, `proc.stdout/stderr`, `proc.exit_code`, and `proc.close` remain valid afterwards
 - Canonical structured process pattern:
 
 ```fzy
@@ -440,6 +444,15 @@ let route_base = path.basename(route_file)
   - `storage.append(path, line)`
   - `storage.atomic_append(path, line)`
   - `storage.kv_open(path)`, `storage.kv_get(handle, key)`, `storage.kv_put(handle, key, value)`
+- `storage.atomic_append(path, line)` appends exactly one newline-terminated record through the same atomic-write path the runtime uses for durable store updates.
+
+### Filesystem write contracts
+
+- `fs.atomic_write(path, bytes)` is the canonical all-or-nothing text write surface for runtime-visible state files.
+- `fs.atomic_write(...)` and `storage.atomic_append(...)` are both compiler-known native contract edges:
+  - they borrow their string inputs
+  - they may block on host filesystems
+  - they emit runtime events in safety artifacts
 
 ### `rng` and crypto
 

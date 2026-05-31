@@ -488,7 +488,7 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "fs.atomic_write",
         symbol: "fz_native_fs_atomic_write",
-        arity: 0,
+        arity: 2,
     },
     NativeRuntimeImport {
         callee: "fs.rename_atomic",

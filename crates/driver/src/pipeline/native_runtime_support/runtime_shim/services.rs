@@ -418,26 +418,57 @@ int32_t fz_native_fs_lock(int32_t handle) {
   return 0;
 }
 
-int32_t fz_native_fs_atomic_write(void) {
-  pthread_mutex_lock(&fz_fs_lock);
-  const char* path = fz_fs_path();
-  (void)path;
-  int fd = open(fz_fs_tmp_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-  if (fd < 0) {
-    pthread_mutex_unlock(&fz_fs_lock);
+int32_t fz_native_fs_atomic_write(int32_t path_id, int32_t body_id) {
+  const char* path = fz_lookup_string(path_id);
+  const char* payload = fz_lookup_string(body_id);
+  if (path == NULL || path[0] == '\0') {
+    fz_set_last_error(EINVAL, 3, "fs.atomic_write failed: invalid path");
     return -1;
   }
-  const char* payload = "{}\n";
-  int ok = 0;
-  if (write(fd, payload, strlen(payload)) < 0) {
-    ok = -1;
+  if (payload == NULL) {
+    payload = "";
+  }
+  char tmp_path[2048];
+  int written = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+  if (written <= 0 || (size_t)written >= sizeof(tmp_path)) {
+    fz_set_last_error(ENAMETOOLONG, 3, "fs.atomic_write failed: temp path too long");
+    return -1;
+  }
+  int fd = open(tmp_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0) {
+    fz_set_last_error(errno, 3, "fs.atomic_write failed: open temp file");
+    return -1;
+  }
+  size_t left = strlen(payload);
+  const char* cursor = payload;
+  while (left > 0) {
+    ssize_t n = write(fd, cursor, left);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      close(fd);
+      fz_set_last_error(errno, 3, "fs.atomic_write failed: write temp file");
+      return -1;
+    }
+    if (n == 0) {
+      break;
+    }
+    cursor += n;
+    left -= (size_t)n;
   }
   if (fsync(fd) != 0) {
-    ok = -1;
+    int err = errno;
+    close(fd);
+    fz_set_last_error(err, 3, "fs.atomic_write failed: fsync temp file");
+    return -1;
   }
   close(fd);
-  pthread_mutex_unlock(&fz_fs_lock);
-  return ok;
+  if (rename(tmp_path, path) != 0) {
+    fz_set_last_error(errno, 3, "fs.atomic_write failed: rename temp file");
+    return -1;
+  }
+  return 0;
 }
 
 int32_t fz_native_fs_rename_atomic(void) {

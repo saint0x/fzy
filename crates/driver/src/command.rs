@@ -12882,6 +12882,104 @@ mod tests {
     }
 
     #[test]
+    fn proc_poll_reports_running_then_completion_without_consuming_handle() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-proc-poll-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.proc;\n\nfn main() -> i32 {\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"sleep 0.2; printf ready\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    let first = proc.poll(handle)\n    let waited = proc.wait(handle, 1000)\n    let second = proc.poll(handle)\n    let exit_code = proc.exit_code(handle)\n    let stdout = proc.stdout(handle)\n    discard proc.close(handle)\n    if first == 0 && waited == 0 && second == 1 && exit_code == 0 && stdout == \"ready\" {\n        return 0\n    }\n    return 13\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("proc poll should succeed");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn host_backed_atomic_write_and_storage_atomic_append_persist_expected_bytes() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-atomic-runtime-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        let atomic_path = root.join("state.txt");
+        let append_path = root.join("audit.log");
+        let atomic_quoted = atomic_path.to_string_lossy().replace('\"', "\\\"");
+        let append_quoted = append_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"atomic_runtime\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"atomic_runtime\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            format!(
+                "use core.fs;\nuse core.storage;\n\nfn main() -> i32 {{\n    discard fs.atomic_write(\"{atomic_quoted}\", \"alpha\")\n    discard storage.atomic_append(\"{append_quoted}\", \"first\")\n    discard storage.atomic_append(\"{append_quoted}\", \"second\")\n    let state = fs.read_file(\"{atomic_quoted}\")\n    let audit = fs.read_file(\"{append_quoted}\")\n    if state == \"alpha\" && audit == \"first\\nsecond\\n\" {{\n        return 0\n    }}\n    return 13\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("host-backed atomic write and append should succeed");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&atomic_path).expect("atomic file should exist"),
+            "alpha"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&append_path).expect("append log should exist"),
+            "first\nsecond\n"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn crypto_runtime_surface_supports_hash_hmac_base64_and_secure_compare() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

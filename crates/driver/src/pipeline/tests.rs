@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use diagnostics::Severity;
 
 use super::native_runtime_support::{render_native_runtime_shim, NativeAsyncExport};
+use super::native_runtime_tables::native_runtime_contract_for_callee;
 use super::{
     collect_async_c_exports, compile_file, compile_file_with_backend, compile_library_with_backend,
     derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir, native_mangle_symbol,
@@ -5876,6 +5877,170 @@ fn native_runtime_import_table_is_boundary_only_and_unique() {
     let stream = native_runtime_import_for_callee("http.request_stream")
         .expect("http.request_stream runtime import should exist");
     assert_eq!(stream.symbol, "fz_native_http_request_stream");
+}
+
+#[test]
+fn native_runtime_documented_contract_surface_matches_shim_symbols() {
+    let shim = render_native_runtime_shim(&[], &[], &[]);
+    for (callee, expected_arg_ownership, expected_linearity, expected_snippet) in [
+        (
+            "http.stream_close",
+            "consume_arg0",
+            "consumes_linear_handle",
+            "int32_t fz_native_http_stream_close(int32_t handle)",
+        ),
+        (
+            "http.websocket_close",
+            "consume_arg0_borrow_close_payload",
+            "consumes_linear_handle",
+            "int32_t fz_native_net_websocket_close(int32_t ws_handle, int32_t code, int32_t reason_id)",
+        ),
+        (
+            "proc.close",
+            "consume_arg0",
+            "consumes_linear_handle",
+            "int32_t fz_native_proc_close(int32_t handle)",
+        ),
+        (
+            "proc.wait",
+            "borrow_handle_timeout",
+            "observes_linear_handle",
+            "int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms)",
+        ),
+        (
+            "proc.poll",
+            "borrow_handle",
+            "observes_linear_handle",
+            "int32_t fz_native_proc_poll(int32_t handle)",
+        ),
+        (
+            "task.group_join_all",
+            "consume_arg0",
+            "consumes_linear_handle",
+            "int32_t fz_native_task_group_join_all(int32_t group_id)",
+        ),
+        (
+            "task.group_cancel",
+            "consume_arg0",
+            "consumes_linear_handle",
+            "int32_t fz_native_task_group_cancel(int32_t group_id)",
+        ),
+        (
+            "fs.atomic_write",
+            "borrow_path_bytes",
+            "nonlinear",
+            "int32_t fz_native_fs_atomic_write(int32_t path_id, int32_t body_id)",
+        ),
+        (
+            "storage.atomic_append",
+            "borrow_target_bytes",
+            "nonlinear",
+            "int32_t fz_native_storage_atomic_append(int32_t path_id, int32_t line_id)",
+        ),
+    ] {
+        let import = native_runtime_import_for_callee(callee)
+            .unwrap_or_else(|| panic!("expected native runtime import for `{callee}`"));
+        let contract = native_runtime_contract_for_callee(callee)
+            .unwrap_or_else(|| panic!("expected native runtime contract for `{callee}`"));
+        assert_eq!(contract.symbol, import.symbol, "symbol drift for {callee}");
+        assert_eq!(
+            contract.arg_ownership, expected_arg_ownership,
+            "arg ownership drift for {callee}"
+        );
+        assert_eq!(
+            contract.linearity, expected_linearity,
+            "linearity drift for {callee}"
+        );
+        assert!(
+            shim.contains(expected_snippet),
+            "runtime shim is missing `{expected_snippet}` for {callee}"
+        );
+    }
+}
+
+#[test]
+fn documented_native_runtime_contract_surface_has_expected_metadata() {
+    for (callee, arity, arg_ownership, blocking, linearity) in [
+        (
+            "http.stream_close",
+            1,
+            "consume_arg0",
+            "nonblocking",
+            "consumes_linear_handle",
+        ),
+        (
+            "http.websocket_close",
+            3,
+            "consume_arg0_borrow_close_payload",
+            "nonblocking",
+            "consumes_linear_handle",
+        ),
+        (
+            "proc.close",
+            1,
+            "consume_arg0",
+            "nonblocking",
+            "consumes_linear_handle",
+        ),
+        (
+            "proc.wait",
+            2,
+            "borrow_handle_timeout",
+            "may_block",
+            "observes_linear_handle",
+        ),
+        (
+            "proc.poll",
+            1,
+            "borrow_handle",
+            "nonblocking",
+            "observes_linear_handle",
+        ),
+        (
+            "task.group_join_all",
+            1,
+            "consume_arg0",
+            "nonblocking",
+            "consumes_linear_handle",
+        ),
+        (
+            "task.group_cancel",
+            1,
+            "consume_arg0",
+            "nonblocking",
+            "consumes_linear_handle",
+        ),
+        (
+            "fs.atomic_write",
+            2,
+            "borrow_path_bytes",
+            "may_block",
+            "nonlinear",
+        ),
+        (
+            "storage.atomic_append",
+            2,
+            "borrow_target_bytes",
+            "may_block",
+            "nonlinear",
+        ),
+    ] {
+        let contract = native_runtime_contract_for_callee(callee)
+            .unwrap_or_else(|| panic!("expected runtime contract for `{callee}`"));
+        assert_eq!(contract.arity, arity, "arity drift for {callee}");
+        assert_eq!(
+            contract.arg_ownership, arg_ownership,
+            "arg ownership drift for {callee}"
+        );
+        assert_eq!(
+            contract.blocking_behavior, blocking,
+            "blocking behavior drift for {callee}"
+        );
+        assert_eq!(
+            contract.linearity, linearity,
+            "linearity drift for {callee}"
+        );
+    }
 }
 
 #[test]
