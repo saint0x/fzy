@@ -25,6 +25,7 @@ typedef struct {
   int32_t device_handle;
   int32_t source_id;
   int32_t kernel_name_id;
+  uint64_t last_used_epoch;
   void* pipeline;
 } fz_gpu_pipeline_state;
 
@@ -39,12 +40,14 @@ static fz_gpu_buffer_state fz_gpu_buffers[FZ_MAX_GPU_BUFFERS];
 static fz_gpu_pipeline_state fz_gpu_pipelines[FZ_MAX_GPU_PIPELINES];
 static fz_gpu_event_state fz_gpu_events[FZ_MAX_GPU_EVENTS];
 static int32_t fz_gpu_device_count_cached = -1;
+static uint64_t fz_gpu_pipeline_epoch = 0;
 static pthread_mutex_t fz_gpu_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t fz_gpu_init_once = PTHREAD_ONCE_INIT;
 
 static void fz_gpu_runtime_init(void);
 static int32_t fz_gpu_buffer_alloc_slot(void);
 static int32_t fz_gpu_pipeline_alloc_slot(void);
+static int32_t fz_gpu_pipeline_evict_lru_slot(void);
 static int32_t fz_gpu_event_alloc_slot(void);
 
 #if defined(__APPLE__) && defined(__OBJC__)
@@ -149,6 +152,30 @@ static int32_t fz_gpu_pipeline_alloc_slot(void) {
     }
   }
   return 0;
+}
+
+static int32_t fz_gpu_pipeline_evict_lru_slot(void) {
+  int32_t slot = 0;
+  uint64_t best_epoch = UINT64_MAX;
+  for (int i = 0; i < FZ_MAX_GPU_PIPELINES; i++) {
+    fz_gpu_pipeline_state* state = &fz_gpu_pipelines[i];
+    if (state->in_use && state->pipeline != NULL && state->last_used_epoch < best_epoch) {
+      best_epoch = state->last_used_epoch;
+      slot = i + 1;
+    }
+  }
+  if (slot <= 0) {
+    return 0;
+  }
+#if defined(__APPLE__) && defined(__OBJC__)
+  id<MTLComputePipelineState> pipeline = (id<MTLComputePipelineState>)fz_gpu_pipelines[slot - 1].pipeline;
+  if (pipeline != nil) {
+    [pipeline release];
+  }
+#endif
+  memset(&fz_gpu_pipelines[slot - 1], 0, sizeof(fz_gpu_pipelines[slot - 1]));
+  fz_gpu_pipelines[slot - 1].in_use = 1;
+  return slot;
 }
 
 static int32_t fz_gpu_event_alloc_slot(void) {
@@ -549,6 +576,7 @@ static id<MTLComputePipelineState> fz_gpu_pipeline_for_kernel(
         && state->source_id == source_id
         && state->kernel_name_id == kernel_name_id
         && state->pipeline != NULL) {
+      state->last_used_epoch = ++fz_gpu_pipeline_epoch;
       return (id<MTLComputePipelineState>)state->pipeline;
     }
   }
@@ -592,14 +620,18 @@ static id<MTLComputePipelineState> fz_gpu_pipeline_for_kernel(
   }
   int32_t slot = fz_gpu_pipeline_alloc_slot();
   if (slot <= 0) {
-    [pipeline release];
-    fz_set_last_error(ENOSPC, 3, "gpu.launch failed: GPU pipeline registry full");
-    return nil;
+    slot = fz_gpu_pipeline_evict_lru_slot();
+    if (slot <= 0) {
+      [pipeline release];
+      fz_set_last_error(ENOSPC, 3, "gpu.launch failed: GPU pipeline registry full and no reusable slot was available");
+      return nil;
+    }
   }
   fz_gpu_pipeline_state* state = &fz_gpu_pipelines[slot - 1];
   state->device_handle = device_handle;
   state->source_id = source_id;
   state->kernel_name_id = kernel_name_id;
+  state->last_used_epoch = ++fz_gpu_pipeline_epoch;
   state->pipeline = (void*)pipeline;
   return pipeline;
 }
@@ -632,6 +664,7 @@ static int32_t fz_gpu_launch_impl(
   int32_t slice_buffers[4] = {0, 0, 0, 0};
   int32_t slice_offsets[4] = {0, 0, 0, 0};
   int32_t slice_lens[4] = {0, 0, 0, 0};
+  int32_t slice_element_sizes[4] = {0, 0, 0, 0};
   int slice_count = 0;
   for (int arg = 0; arg < argc; arg++) {
     const char* next = strchr(token, ',');
@@ -658,6 +691,7 @@ static int32_t fz_gpu_launch_impl(
         fz_set_last_error(EINVAL, 3, "gpu.launch failed: invalid slice buffer handle");
         return 0;
       }
+      slice_element_sizes[arg] = buffer_state->element_size;
       if (device_handle == 0) {
         device_handle = buffer_state->device_handle;
       } else if (device_handle != buffer_state->device_handle) {
@@ -682,6 +716,17 @@ static int32_t fz_gpu_launch_impl(
     }
     id<MTLComputePipelineState> pipeline = fz_gpu_pipeline_for_kernel(device_handle, source_id, kernel_name_id);
     if (pipeline == nil) {
+      return 0;
+    }
+    if ((NSUInteger)block > [pipeline maxTotalThreadsPerThreadgroup]) {
+      char detail[160];
+      snprintf(
+          detail,
+          sizeof(detail),
+          "gpu.launch failed: block %d exceeds Metal max threads-per-threadgroup %lu",
+          block,
+          (unsigned long)[pipeline maxTotalThreadsPerThreadgroup]);
+      fz_set_last_error(EINVAL, 3, detail);
       return 0;
     }
     id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
@@ -715,10 +760,9 @@ static int32_t fz_gpu_launch_impl(
           fz_set_last_error(EINVAL, 3, "gpu.launch failed: invalid slice buffer handle");
           return 0;
         }
-        uint32_t offset_u = (uint32_t)offset;
+        NSUInteger byte_offset = (NSUInteger)((uint64_t)(uint32_t)offset * (uint64_t)(uint32_t)slice_element_sizes[arg]);
         uint32_t len_u = (uint32_t)len;
-        [encoder setBuffer:buffer offset:0 atIndex:buffer_index++];
-        [encoder setBytes:&offset_u length:sizeof(uint32_t) atIndex:buffer_index++];
+        [encoder setBuffer:buffer offset:byte_offset atIndex:buffer_index++];
         [encoder setBytes:&len_u length:sizeof(uint32_t) atIndex:buffer_index++];
       } else if (token_len == 3 && strncmp(token, "i32", 3) == 0) {
         int32_t value = (int32_t)raw_args[arg];
@@ -738,8 +782,8 @@ static int32_t fz_gpu_launch_impl(
       token = next == NULL ? token + token_len : next + 1;
     }
     MTLSize threads_per_threadgroup = MTLSizeMake((NSUInteger)block, 1, 1);
-    MTLSize threads_per_grid = MTLSizeMake((NSUInteger)((uint64_t)(uint32_t)grid * (uint64_t)(uint32_t)block), 1, 1);
-    [encoder dispatchThreads:threads_per_grid threadsPerThreadgroup:threads_per_threadgroup];
+    MTLSize threadgroups_per_grid = MTLSizeMake((NSUInteger)grid, 1, 1);
+    [encoder dispatchThreadgroups:threadgroups_per_grid threadsPerThreadgroup:threads_per_threadgroup];
     [encoder endEncoding];
     [command_buffer retain];
     [command_buffer commit];

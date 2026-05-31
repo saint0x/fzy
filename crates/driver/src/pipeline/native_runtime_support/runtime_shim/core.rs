@@ -379,6 +379,10 @@ static void fz_set_last_error(int32_t code, int32_t class_id, const char* messag
   fz_last_error_code = code;
   fz_last_error_class = class_id;
   fz_last_error_message_id = fz_intern_slice(message, strlen(message));
+  const char* debug_errors = getenv("FZ_NATIVE_DEBUG_ERRORS");
+  if (debug_errors != NULL && debug_errors[0] != '\0' && !(debug_errors[0] == '0' && debug_errors[1] == '\0')) {
+    fprintf(stderr, "[fz-native-error] code=%d class=%d message=%s\n", code, class_id, message);
+  }
 }
 
 static int32_t fz_list_alloc(void) {

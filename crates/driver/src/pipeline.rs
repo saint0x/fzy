@@ -12997,17 +12997,7 @@ fn build_native_canonical_plan_with_task_symbols(
     for (index, symbol) in spawn_task_symbols.iter().enumerate() {
         task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
     }
-    let mut string_literals = collect_native_string_literals(fir);
-    if let Ok(extra_gpu_strings) = metal_kernel_descriptor_strings(fir) {
-        let mut merged = string_literals
-            .into_iter()
-            .collect::<HashSet<_>>();
-        for value in extra_gpu_strings {
-            merged.insert(value);
-        }
-        string_literals = merged.into_iter().collect();
-        string_literals.sort();
-    }
+    let string_literals = collect_native_string_literals_with_gpu(fir);
     NativeCanonicalPlan {
         forced_main_return: compute_forced_main_return(fir, enforce_contract_checks),
         string_literal_ids: build_string_literal_ids(&string_literals),
@@ -13028,6 +13018,19 @@ fn build_native_canonical_plan_with_task_symbols(
             })
             .collect(),
     }
+}
+
+fn collect_native_string_literals_with_gpu(fir: &fir::FirModule) -> Vec<String> {
+    let mut string_literals = collect_native_string_literals(fir);
+    if let Ok(extra_gpu_strings) = metal_kernel_descriptor_strings(fir) {
+        let mut merged = string_literals.into_iter().collect::<HashSet<_>>();
+        for value in extra_gpu_strings {
+            merged.insert(value);
+        }
+        string_literals = merged.into_iter().collect();
+        string_literals.sort();
+    }
+    string_literals
 }
 
 fn native_mangle_symbol(name: &str) -> String {
@@ -14158,7 +14161,7 @@ fn emit_native_libraries_llvm(
     let static_path = build_dir.join(format!("lib{artifact_stem}.a"));
     let shared_path = build_dir.join(format!("lib{artifact_stem}.{}", shared_lib_extension()));
 
-    let string_literals = collect_native_string_literals(fir);
+    let string_literals = collect_native_string_literals_with_gpu(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let async_exports = collect_async_c_exports(fir);
     let runtime_shim_path = ensure_native_runtime_shim(
@@ -14270,7 +14273,7 @@ fn emit_native_libraries_cranelift(
     let static_path = build_dir.join(format!("lib{artifact_stem}.a"));
     let shared_path = build_dir.join(format!("lib{artifact_stem}.{}", shared_lib_extension()));
 
-    let string_literals = collect_native_string_literals(fir);
+    let string_literals = collect_native_string_literals_with_gpu(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir)
         .into_iter()
         .filter(|symbol| symbol != "main")
@@ -14676,7 +14679,7 @@ fn emit_native_artifact_llvm(
 
     let ll_path = build_dir.join(format!("{artifact_stem}.ll"));
     let bin_path = build_dir.join(artifact_stem);
-    let string_literals = collect_native_string_literals(fir);
+    let string_literals = collect_native_string_literals_with_gpu(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let async_exports = collect_async_c_exports(fir);
     let runtime_shim_path = ensure_native_runtime_shim(
@@ -14743,7 +14746,7 @@ fn emit_native_artifact_cranelift(
 
     let object_path = build_dir.join(format!("{artifact_stem}.o"));
     let bin_path = build_dir.join(artifact_stem);
-    let string_literals = collect_native_string_literals(fir);
+    let string_literals = collect_native_string_literals_with_gpu(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))

@@ -208,18 +208,12 @@ fn render_param_parts(
                 ));
                 *buffer_index += 1;
                 out.push(format!(
-                    "constant uint& {}_offset [[buffer({})]]",
-                    param.name, *buffer_index
-                ));
-                *buffer_index += 1;
-                out.push(format!(
                     "constant uint& {}_len [[buffer({})]]",
                     param.name, *buffer_index
                 ));
                 *buffer_index += 1;
             } else {
                 out.push(format!("{qualifier} {element_ty}* {}_data", param.name));
-                out.push(format!("uint {}_offset", param.name));
                 out.push(format!("uint {}_len", param.name));
             }
         }
@@ -421,11 +415,7 @@ fn render_call_arg(
 ) -> Result<Vec<String>> {
     if is_gpu_slice_type(param_ty) {
         let name = slice_ident(expr)?;
-        Ok(vec![
-            format!("{name}_data"),
-            format!("{name}_offset"),
-            format!("{name}_len"),
-        ])
+        Ok(vec![format!("{name}_data"), format!("{name}_len")])
     } else {
         Ok(vec![render_expr(expr, scope, function_map)?])
     }
@@ -487,7 +477,7 @@ fn render_slice_access(
         bail!("Metal GPU kernel lowering expected `{name}` to be a GpuSlice value");
     }
     Ok(format!(
-        "{name}_data[{name}_offset + (uint)({})]",
+        "{name}_data[(uint)({})]",
         render_expr(index, scope, function_map)?
     ))
 }

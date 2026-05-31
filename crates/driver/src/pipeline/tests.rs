@@ -8116,6 +8116,43 @@ fn native_build_and_run_metal_host_gpu_download_roundtrip_program() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(target_vendor = "apple")]
+#[test]
+fn native_build_and_run_metal_gpu_kernel_suite_program() {
+    let project_name = format!(
+        "fozzylang-gpu-metal-kernel-suite-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_metal_kernel_suite\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_metal_kernel_suite\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nuse core.simd;\nkernel fn vector_add(left: GpuSlice<f32>, right: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = left[i] + right[i]\n    }\n}\nkernel fn saxpy(x: GpuSlice<f32>, y: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = x[i] * 2.0f32 + y[i]\n    }\n}\nkernel fn relu(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        let value = input[i]\n        if value > 0.0f32 {\n            output[i] = value\n        } else {\n            output[i] = 0.0f32\n        }\n    }\n}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n\n    let left: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let right: [f32; 4] = simd.f32x4_store(simd.f32x4_new(10.0, 20.0, 30.0, 40.0))\n    let left_buf: GpuBuffer<f32> = gpu.upload_f32(dev, left)\n    let right_buf: GpuBuffer<f32> = gpu.upload_f32(dev, right)\n    let add_buf: GpuBuffer<f32> = gpu.alloc_f32(dev, 4)\n    let add_event = gpu.launch4(vector_add, 1, 64, gpu.slice(left_buf, 0, 4), gpu.slice(right_buf, 0, 4), gpu.slice(add_buf, 0, 4), 4)\n    gpu.wait(add_event)\n    let add_out: Vec<f32> = gpu.download_f32(add_buf)\n    gpu.free(left_buf)\n    gpu.free(right_buf)\n    gpu.free(add_buf)\n    if add_out[0] != 11.0f32 || add_out[1] != 22.0f32 || add_out[2] != 33.0f32 || add_out[3] != 44.0f32 {\n        return 11\n    }\n\n    let saxpy_x: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let saxpy_y: [f32; 4] = simd.f32x4_store(simd.f32x4_new(5.0, 6.0, 7.0, 8.0))\n    let saxpy_x_buf: GpuBuffer<f32> = gpu.upload_f32(dev, saxpy_x)\n    let saxpy_y_buf: GpuBuffer<f32> = gpu.upload_f32(dev, saxpy_y)\n    let saxpy_out_buf: GpuBuffer<f32> = gpu.alloc_f32(dev, 4)\n    let saxpy_event = gpu.launch4(saxpy, 1, 64, gpu.slice(saxpy_x_buf, 0, 4), gpu.slice(saxpy_y_buf, 0, 4), gpu.slice(saxpy_out_buf, 0, 4), 4)\n    gpu.wait(saxpy_event)\n    let saxpy_out: Vec<f32> = gpu.download_f32(saxpy_out_buf)\n    gpu.free(saxpy_x_buf)\n    gpu.free(saxpy_y_buf)\n    gpu.free(saxpy_out_buf)\n    if saxpy_out[0] != 7.0f32 || saxpy_out[1] != 10.0f32 || saxpy_out[2] != 13.0f32 || saxpy_out[3] != 16.0f32 {\n        return 12\n    }\n\n    let relu_values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(-1.0, -2.0, 3.0, 4.0))\n    let relu_in_buf: GpuBuffer<f32> = gpu.upload_f32(dev, relu_values)\n    let relu_out_buf: GpuBuffer<f32> = gpu.alloc_f32(dev, 4)\n    let relu_event = gpu.launch3(relu, 1, 64, gpu.slice(relu_in_buf, 0, 4), gpu.slice(relu_out_buf, 0, 4), 4)\n    gpu.wait(relu_event)\n    let relu_out: Vec<f32> = gpu.download_f32(relu_out_buf)\n    gpu.free(relu_in_buf)\n    gpu.free(relu_out_buf)\n    if relu_out[0] != 0.0f32 || relu_out[1] != 0.0f32 || relu_out[2] != 3.0f32 || relu_out[3] != 4.0f32 {\n        return 13\n    }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Dev, None)
+        .expect("metal kernel suite build should succeed");
+    assert_eq!(artifact.status, "ok");
+    let exit = run_native_exit(
+        artifact
+            .output
+            .as_deref()
+            .expect("metal kernel suite output should exist"),
+    );
+    assert_eq!(exit, 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn cross_backend_non_i32_and_aggregate_signatures_execute_consistently() {
     let project_name = format!(
