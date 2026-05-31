@@ -96,7 +96,22 @@ pub(super) fn convert_fozzy_trace_to_native(
     let mut execution_order = Vec::new();
     let mut async_schedule = Vec::new();
     let mut rpc_frames = Vec::new();
+    let mut runtime_event_counts = std::collections::BTreeMap::<String, usize>::new();
     let mut capability = "thread";
+    let mut capability_set = std::collections::BTreeSet::<String>::new();
+    let mut checkpoint_count = 0usize;
+
+    for event in &events {
+        if let Some(name) = event.get("name").and_then(|value| value.as_str()) {
+            *runtime_event_counts.entry(name.to_string()).or_insert(0) += 1;
+            if name == "memory_checkpoint" {
+                checkpoint_count += 1;
+            }
+            if let Some(capability_name) = name.strip_prefix("capability_") {
+                capability_set.insert(capability_name.to_string());
+            }
+        }
+    }
 
     for decision in decisions {
         let Some(kind) = decision.get("kind").and_then(|value| value.as_str()) else {
@@ -118,10 +133,12 @@ pub(super) fn convert_fozzy_trace_to_native(
                 }
                 if label.contains("rpc") {
                     capability = "net";
+                    capability_set.insert("net".to_string());
                 }
             }
             "rpc_send" | "rpc_recv" | "rpc_deadline" | "rpc_cancel" => {
                 capability = "net";
+                capability_set.insert("net".to_string());
                 rpc_frames.push(RpcFrameEventOwned {
                     kind: kind.to_string(),
                     method: decision
@@ -137,6 +154,7 @@ pub(super) fn convert_fozzy_trace_to_native(
             }
             "rpc.frame" => {
                 capability = "net";
+                capability_set.insert("net".to_string());
                 let event = decision
                     .get("event")
                     .and_then(|value| value.as_str())
@@ -176,6 +194,32 @@ pub(super) fn convert_fozzy_trace_to_native(
         execution_order.push(0);
     }
 
+    let runtime_events = runtime_event_counts
+        .into_iter()
+        .map(|(name, count)| {
+            serde_json::json!({
+                "name": name,
+                "count": count,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut causal_links = Vec::new();
+    for window in execution_order.windows(2) {
+        causal_links.push(serde_json::json!({
+            "from": format!("task:{}", window[0]),
+            "to": format!("task:{}", window[1]),
+            "relation": "schedule.next",
+        }));
+    }
+    for window in rpc_frames.windows(2) {
+        causal_links.push(serde_json::json!({
+            "from": format!("rpc:{}:{}:{}", window[0].kind, window[0].method, window[0].task_id),
+            "to": format!("rpc:{}:{}:{}", window[1].kind, window[1].method, window[1].task_id),
+            "relation": "rpc.frame.order",
+        }));
+    }
+    let compatibility = fzscenario::compatibility_info();
+
     let trace_path = output
         .map(Path::to_path_buf)
         .unwrap_or_else(|| default_native_trace_path(target));
@@ -191,6 +235,7 @@ pub(super) fn convert_fozzy_trace_to_native(
 
     let native_trace = serde_json::json!({
         "schemaVersion": "fozzylang.thread_trace.v0",
+        "compatibility": compatibility,
         "capability": capability,
         "scheduler": "fifo",
         "seed": seed,
@@ -198,14 +243,17 @@ pub(super) fn convert_fozzy_trace_to_native(
         "asyncSchedule": async_schedule,
         "rpcFrames": rpc_frames,
         "events": events,
-        "runtimeEvents": [],
-        "causalLinks": [],
+        "runtimeEvents": runtime_events,
+        "causalLinks": causal_links,
+        "capabilitySet": capability_set.into_iter().collect::<Vec<_>>(),
+        "checkpointCount": checkpoint_count,
     });
     std::fs::write(&trace_path, serde_json::to_vec_pretty(&native_trace)?)
         .with_context(|| format!("failed writing native trace: {}", trace_path.display()))?;
 
     let manifest = serde_json::json!({
         "schemaVersion": "fozzylang.artifacts.v0",
+        "compatibility": fzscenario::compatibility_info(),
         "trace": trace_path.display().to_string(),
         "goalTrace": target.display().to_string(),
     });

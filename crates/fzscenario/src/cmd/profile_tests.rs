@@ -7,6 +7,9 @@ fn sample_trace() -> TraceFile {
         format: "fozzy-trace".to_string(),
         version: crate::CURRENT_TRACE_VERSION,
         engine: crate::version_info(),
+        compatibility: crate::TraceCompatibility {
+            versions: crate::compatibility_info(),
+        },
         mode: RunMode::Run,
         scenario_path: None,
         scenario: Some(ScenarioV1Steps {
@@ -54,6 +57,7 @@ fn sample_trace() -> TraceFile {
                 )]),
             },
         ],
+        replay_contract: crate::TraceReplayContract::default(),
         summary: RunSummary {
             status: ExitStatus::Pass,
             mode: RunMode::Run,
@@ -81,6 +85,9 @@ fn sample_trace_without_heap() -> TraceFile {
         format: "fozzy-trace".to_string(),
         version: crate::CURRENT_TRACE_VERSION,
         engine: crate::version_info(),
+        compatibility: crate::TraceCompatibility {
+            versions: crate::compatibility_info(),
+        },
         mode: RunMode::Run,
         scenario_path: None,
         scenario: Some(ScenarioV1Steps {
@@ -118,6 +125,7 @@ fn sample_trace_without_heap() -> TraceFile {
                 fields: serde_json::Map::new(),
             },
         ],
+        replay_contract: crate::TraceReplayContract::default(),
         summary: RunSummary {
             status: ExitStatus::Pass,
             mode: RunMode::Run,

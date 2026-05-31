@@ -381,6 +381,9 @@ mod tests {
                 format: crate::TRACE_FORMAT.to_string(),
                 version: crate::CURRENT_TRACE_VERSION,
                 engine: crate::version_info(),
+                compatibility: crate::TraceCompatibility {
+                    versions: crate::compatibility_info(),
+                },
                 mode: RunMode::Run,
                 scenario_path: None,
                 scenario: Some(crate::ScenarioV1Steps {
@@ -402,6 +405,7 @@ mod tests {
                 }),
                 decisions: Vec::new(),
                 events: Vec::new(),
+                replay_contract: crate::TraceReplayContract::default(),
                 summary: RunSummary {
                     status: ExitStatus::Pass,
                     mode: RunMode::Run,

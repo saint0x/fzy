@@ -8,18 +8,18 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use formatter::{format_source, is_fzy_source_path};
-use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
+use runtime::{DeterministicExecutor, Scheduler, TaskEvent, plan_async_checkpoints};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
-    parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact,
-    Output,
+    BuildArtifact, BuildProfile, LibraryArtifact, Output, compile_file_with_backend,
+    compile_library_with_backend, emit_ir, lower_fir_cached, parse_program, refresh_lockfile,
+    verify_file,
 };
 
 mod interop;
@@ -27,12 +27,12 @@ mod source;
 mod trace_native;
 
 use self::interop::{
-    generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
-    HeaderArtifact,
+    HeaderArtifact, generate_c_headers, generate_rpc_artifacts, render_headers,
+    render_rpc_artifacts,
 };
 use self::source::{
-    discover_nested_project_roots, discover_project_roots, load_resolved_module_set,
-    resolve_source, ResolvedModuleSource,
+    ResolvedModuleSource, discover_nested_project_roots, discover_project_roots,
+    load_resolved_module_set, resolve_source,
 };
 use self::trace_native::{
     convert_fozzy_trace_to_native, ensure_goal_trace_from_scenario, native_explore,
@@ -40,7 +40,7 @@ use self::trace_native::{
 };
 
 #[cfg(test)]
-use self::trace_native::{build_live_http_probe_steps, FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION};
+use self::trace_native::{FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION, build_live_http_probe_steps};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -2490,8 +2490,7 @@ fn write_interop_artifact_manifest(
 }
 
 fn manifest_relative_path(base: &Path, path: &Path) -> String {
-    relative_path_from(base, path)
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    relative_path_from(base, path).unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 fn relative_path_from(base: &Path, path: &Path) -> Option<String> {
@@ -2528,7 +2527,9 @@ fn normalized_path_components(path: &Path) -> Option<Vec<String>> {
     let mut out = Vec::new();
     for component in path.components() {
         match component {
-            Component::Prefix(prefix) => out.push(prefix.as_os_str().to_string_lossy().into_owned()),
+            Component::Prefix(prefix) => {
+                out.push(prefix.as_os_str().to_string_lossy().into_owned())
+            }
             Component::RootDir => out.push("/".to_string()),
             Component::CurDir => {}
             Component::ParentDir => {
@@ -4692,7 +4693,10 @@ fn audit_memory_command(path: &Path, format: Format) -> Result<String> {
             .with_context(|| format!("failed reading {}", json_path.display()))?,
     )
     .with_context(|| format!("failed parsing {}", json_path.display()))?;
-    let owner_count = payload["owners"].as_array().map(|items| items.len()).unwrap_or(0);
+    let owner_count = payload["owners"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
     let violation_count = payload["violations"]
         .as_array()
         .map(|items| items.len())
@@ -4730,8 +4734,14 @@ fn audit_ffi_command(path: &Path, format: Format) -> Result<String> {
             .with_context(|| format!("failed reading {}", json_path.display()))?,
     )
     .with_context(|| format!("failed parsing {}", json_path.display()))?;
-    let import_count = payload["imports"].as_array().map(|items| items.len()).unwrap_or(0);
-    let export_count = payload["exports"].as_array().map(|items| items.len()).unwrap_or(0);
+    let import_count = payload["imports"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let export_count = payload["exports"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
     match format {
         Format::Text => Ok(render_text_fields(&[
             ("status", "ok".to_string()),
@@ -11495,12 +11505,20 @@ mod tests {
         .expect("headers command should succeed");
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("typedef uint64_t fz_async_handle_t;"));
-        assert!(header_text
-            .contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"));
-        assert!(header_text
-            .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);"));
-        assert!(header_text
-            .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"));
+        assert!(
+            header_text.contains(
+                "int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"
+            )
+        );
+        assert!(
+            header_text
+                .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);")
+        );
+        assert!(
+            header_text.contains(
+                "int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"
+            )
+        );
         assert!(header_text.contains("int32_t flush_async_drop(fz_async_handle_t handle);"));
         assert!(!header_text.contains("int32_t flush(int32_t code);"));
 
@@ -11660,7 +11678,9 @@ mod tests {
             Format::Text,
         )
         .expect("check command should return diagnostics");
-        assert!(output.contains("must declare ownership suffix and paired length/context contract"));
+        assert!(
+            output.contains("must declare ownership suffix and paired length/context contract")
+        );
 
         let _ = std::fs::remove_file(source);
     }
@@ -12007,9 +12027,11 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for signature changes");
-        assert!(error
-            .to_string()
-            .contains("signature changed for export `add`"));
+        assert!(
+            error
+                .to_string()
+                .contains("signature changed for export `add`")
+        );
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -12063,9 +12085,11 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for weakened contracts");
-        assert!(error
-            .to_string()
-            .contains("contract weakened/changed for export `consume`"));
+        assert!(
+            error
+                .to_string()
+                .contains("contract weakened/changed for export `consume`")
+        );
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -12126,9 +12150,11 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for async mode changes");
-        assert!(error
-            .to_string()
-            .contains("signature changed for export `flush`"));
+        assert!(
+            error
+                .to_string()
+                .contains("signature changed for export `flush`")
+        );
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -12382,10 +12408,30 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&output).expect("build output should be valid json");
         assert_eq!(payload["buildMode"].as_str(), Some("lib"));
-        assert!(payload.get("staticLib").and_then(|value| value.as_str()).is_some());
-        assert!(payload.get("sharedLib").and_then(|value| value.as_str()).is_some());
-        assert!(payload.get("header").and_then(|value| value.as_str()).is_some());
-        assert!(payload.get("abiManifest").and_then(|value| value.as_str()).is_some());
+        assert!(
+            payload
+                .get("staticLib")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            payload
+                .get("sharedLib")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            payload
+                .get("header")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            payload
+                .get("abiManifest")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
         let artifact_manifest = std::path::PathBuf::from(
             payload["artifactManifest"]
                 .as_str()
@@ -12455,22 +12501,30 @@ mod tests {
             interop.get("buildMode").and_then(|value| value.as_str()),
             Some("lib")
         );
-        assert!(interop
-            .get("staticLib")
-            .and_then(|value| value.as_str())
-            .is_some());
-        assert!(interop
-            .get("sharedLib")
-            .and_then(|value| value.as_str())
-            .is_some());
-        assert!(interop
-            .get("header")
-            .and_then(|value| value.as_str())
-            .is_some());
-        assert!(interop
-            .get("abiManifest")
-            .and_then(|value| value.as_str())
-            .is_some());
+        assert!(
+            interop
+                .get("staticLib")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            interop
+                .get("sharedLib")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            interop
+                .get("header")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            interop
+                .get("abiManifest")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
         assert_eq!(
             interop
                 .get("hostLifecycle")
@@ -14190,9 +14244,11 @@ fn main() -> i32 {
             .output()
             .expect("direct binary should run");
         assert_eq!(direct.status.code(), Some(0));
-        assert!(std::fs::read_to_string(&report_path)
-            .expect("report should exist after direct run")
-            .contains("\"status\":\"0\""));
+        assert!(
+            std::fs::read_to_string(&report_path)
+                .expect("report should exist after direct run")
+                .contains("\"status\":\"0\"")
+        );
 
         let _ = std::fs::remove_file(&report_path);
         let wrapped = run(
@@ -14223,9 +14279,11 @@ fn main() -> i32 {
             wrapped.contains("\"exitCode\":0"),
             "unexpected wrapped output: {wrapped}"
         );
-        assert!(std::fs::read_to_string(&report_path)
-            .expect("report should exist after wrapped run")
-            .contains("\"status\":\"0\""));
+        assert!(
+            std::fs::read_to_string(&report_path)
+                .expect("report should exist after wrapped run")
+                .contains("\"status\":\"0\"")
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -16557,13 +16615,79 @@ fn main() -> i32 {
         let trace_text =
             std::fs::read_to_string(&native_trace).expect("native trace should be written");
         assert!(trace_text.contains("\"schemaVersion\": \"fozzylang.thread_trace.v0\""));
+        assert!(trace_text.contains("\"compatibility\""));
+        assert!(trace_text.contains("\"checkpointCount\": 0"));
         assert!(trace_text.contains("\"event\": \"rpc_send\""));
         let manifest_text =
             std::fs::read_to_string(&native_manifest).expect("native manifest should be written");
+        assert!(manifest_text.contains("\"compatibility\""));
         assert!(manifest_text.contains("\"goalTrace\""));
         assert!(manifest_text.contains("goal.fozzy"));
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn trace_verify_reports_compatibility_and_replay_contract_checks() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let scenario =
+            std::env::temp_dir().join(format!("fozzylang-trace-verify-compat-{suffix}.fozzy.json"));
+        let trace = std::env::temp_dir().join(format!(
+            "fozzylang-trace-verify-compat-{suffix}.trace.fozzy"
+        ));
+        std::fs::write(
+            &scenario,
+            serde_json::json!({
+                "version": 1,
+                "name": "trace-verify-compat",
+                "steps": [
+                    {"type": "trace_event", "name": "boot"},
+                    {"type": "memory_checkpoint", "name": "after_boot"},
+                    {"type": "assert_eq_int", "a": 1, "b": 1}
+                ]
+            })
+            .to_string(),
+        )
+        .expect("scenario should be written");
+
+        let run_output = run(
+            Command::Run {
+                path: scenario.clone(),
+                args: Vec::new(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(7),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("run should record trace");
+        assert!(run_output.contains("\"status\":\"pass\""));
+
+        let verify_output = run(
+            Command::TraceVerify {
+                trace: trace.clone(),
+                strict: true,
+            },
+            Format::Json,
+        )
+        .expect("trace verify should succeed");
+        assert!(verify_output.contains("\"compatibility\""));
+        assert!(verify_output.contains("\"traceSchemaVersion\":\"fozzy-trace.v4\""));
+        assert!(verify_output.contains("\"name\":\"compatibility_set\""));
+        assert!(verify_output.contains("\"name\":\"checkpoint_count_match\""));
+
+        let _ = std::fs::remove_file(scenario);
+        let _ = std::fs::remove_file(trace);
     }
 
     #[test]

@@ -12,7 +12,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `21. Diagnostic stability`
 - `22. Canary-app gates`
 - `23. Unsafe/FFI audit hardening`
-- `24. Trace/replay compatibility system`
 - `25. v1 syntax and profile freeze`
 - `26. Stdlib and capability policy`
 - `27. Error/perf/docs/compat policy`
@@ -132,21 +131,6 @@ Required tests:
 - Verifier and driver contract regressions.
 - JSON schema tests for audit outputs.
 - Fozzy scenarios that fail on missing or invalid proof, ownership, or FFI metadata.
-
-### 24. Trace/replay compatibility system
-
-Checklist:
-
-- Harden trace schema fields for schema version, scheduler, seed, execution order, async schedule, RPC frames, runtime events, causal links, and capability set.
-- Add validation rules for schema validity, replay success, trace matches run, ordered RPC frames, deterministic async schedule, and matching checkpoint count.
-- Version and publish the compatibility set: FZY language version, trace schema version, manifest schema version, runtime ABI version, native import table version, and diagnostic catalog version.
-- Ensure produced artifacts include the relevant versions so breakage is explicit rather than inferred.
-
-Required tests:
-
-- Trace schema validation tests.
-- Replay compatibility tests across representative artifact versions when introduced.
-- Deterministic Fozzy trace lifecycle for every active hardening area.
 
 ## Second-Wave v1 Lock-In
 

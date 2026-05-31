@@ -2,12 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::{
-    Decision, ExploreTrace, FozzyError, FozzyResult, FuzzTrace, MemoryTrace, RecordCollisionPolicy,
-    RunMode, RunSummary, ScenarioV1Steps, VersionInfo,
+    CompatibilityInfo, Decision, ExploreTrace, FozzyError, FozzyResult, FuzzTrace, MemoryTrace,
+    RecordCollisionPolicy, RunMode, RunSummary, ScenarioV1Steps, VersionInfo,
 };
 
 pub const CURRENT_TRACE_VERSION: u32 = 4;
@@ -33,6 +34,8 @@ pub struct TraceFile {
     pub format: String,
     pub version: u32,
     pub engine: VersionInfo,
+    #[serde(default)]
+    pub compatibility: TraceCompatibility,
     pub mode: RunMode,
     pub scenario_path: Option<String>,
     pub scenario: Option<ScenarioV1Steps>,
@@ -44,6 +47,8 @@ pub struct TraceFile {
     pub memory: Option<MemoryTrace>,
     pub decisions: Vec<Decision>,
     pub events: Vec<TraceEvent>,
+    #[serde(rename = "replayContract", default)]
+    pub replay_contract: TraceReplayContract,
     pub summary: RunSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
@@ -57,6 +62,61 @@ pub struct TraceEvent {
     pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceCompatibility {
+    #[serde(flatten)]
+    pub versions: CompatibilityInfo,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceReplayContract {
+    pub scheduler: String,
+    pub seed: u64,
+    #[serde(rename = "executionOrder")]
+    pub execution_order: Vec<u64>,
+    #[serde(rename = "asyncSchedule")]
+    pub async_schedule: Vec<u64>,
+    #[serde(rename = "rpcFrames")]
+    pub rpc_frames: Vec<TraceRpcFrame>,
+    #[serde(rename = "runtimeEvents")]
+    pub runtime_events: Vec<TraceRuntimeEvent>,
+    #[serde(rename = "causalLinks")]
+    pub causal_links: Vec<TraceCausalLink>,
+    #[serde(rename = "capabilitySet")]
+    pub capability_set: Vec<String>,
+    #[serde(rename = "checkpointCount")]
+    pub checkpoint_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceRpcFrame {
+    pub kind: String,
+    pub method: String,
+    #[serde(rename = "taskId")]
+    pub task_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceRuntimeEvent {
+    pub name: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceCausalLink {
+    pub from: String,
+    pub to: String,
+    pub relation: String,
+}
+
+impl Default for TraceCompatibility {
+    fn default() -> Self {
+        Self {
+            versions: crate::compatibility_info(),
+        }
+    }
+}
+
 impl TraceFile {
     pub fn new(
         mode: RunMode,
@@ -66,10 +126,14 @@ impl TraceFile {
         events: Vec<TraceEvent>,
         summary: RunSummary,
     ) -> Self {
+        let replay_contract = build_replay_contract(summary.identity.seed, &decisions, &events);
         Self {
             format: TRACE_FORMAT.to_string(),
             version: CURRENT_TRACE_VERSION,
             engine: crate::version_info(),
+            compatibility: TraceCompatibility {
+                versions: crate::compatibility_info(),
+            },
             mode,
             scenario_path,
             scenario,
@@ -78,6 +142,7 @@ impl TraceFile {
             memory: None,
             decisions,
             events,
+            replay_contract,
             summary,
             checksum: None,
         }
@@ -89,10 +154,15 @@ impl TraceFile {
         events: Vec<TraceEvent>,
         summary: RunSummary,
     ) -> Self {
+        let decisions = Vec::new();
+        let replay_contract = build_replay_contract(summary.identity.seed, &decisions, &events);
         Self {
             format: TRACE_FORMAT.to_string(),
             version: CURRENT_TRACE_VERSION,
             engine: crate::version_info(),
+            compatibility: TraceCompatibility {
+                versions: crate::compatibility_info(),
+            },
             mode: RunMode::Fuzz,
             scenario_path: None,
             scenario: None,
@@ -102,8 +172,9 @@ impl TraceFile {
             }),
             explore: None,
             memory: None,
-            decisions: Vec::new(),
+            decisions,
             events,
+            replay_contract,
             summary,
             checksum: None,
         }
@@ -115,10 +186,14 @@ impl TraceFile {
         events: Vec<TraceEvent>,
         summary: RunSummary,
     ) -> Self {
+        let replay_contract = build_replay_contract(summary.identity.seed, &decisions, &events);
         Self {
             format: TRACE_FORMAT.to_string(),
             version: CURRENT_TRACE_VERSION,
             engine: crate::version_info(),
+            compatibility: TraceCompatibility {
+                versions: crate::compatibility_info(),
+            },
             mode: RunMode::Explore,
             scenario_path: None,
             scenario: None,
@@ -127,6 +202,7 @@ impl TraceFile {
             memory: None,
             decisions,
             events,
+            replay_contract,
             summary,
             checksum: None,
         }
@@ -140,6 +216,7 @@ impl TraceFile {
             format: &self.format,
             version: self.version,
             engine: &self.engine,
+            compatibility: &self.compatibility,
             mode: self.mode,
             scenario_path: self.scenario_path.as_ref(),
             scenario: self.scenario.as_ref(),
@@ -148,6 +225,7 @@ impl TraceFile {
             memory: self.memory.as_ref(),
             decisions: &self.decisions,
             events: &self.events,
+            replay_contract: &self.replay_contract,
             summary: &self.summary,
             checksum: None,
         })?;
@@ -161,6 +239,7 @@ impl TraceFile {
                 format: &self.format,
                 version: self.version,
                 engine: &self.engine,
+                compatibility: &self.compatibility,
                 mode: self.mode,
                 scenario_path: self.scenario_path.as_ref(),
                 scenario: self.scenario.as_ref(),
@@ -169,6 +248,7 @@ impl TraceFile {
                 memory: self.memory.as_ref(),
                 decisions: &self.decisions,
                 events: &self.events,
+                replay_contract: &self.replay_contract,
                 summary: &self.summary,
                 checksum: Some(checksum.as_str()),
             })?
@@ -177,6 +257,7 @@ impl TraceFile {
                 format: &self.format,
                 version: self.version,
                 engine: &self.engine,
+                compatibility: &self.compatibility,
                 mode: self.mode,
                 scenario_path: self.scenario_path.as_ref(),
                 scenario: self.scenario.as_ref(),
@@ -185,6 +266,7 @@ impl TraceFile {
                 memory: self.memory.as_ref(),
                 decisions: &self.decisions,
                 events: &self.events,
+                replay_contract: &self.replay_contract,
                 summary: &self.summary,
                 checksum: Some(checksum.as_str()),
             })?
@@ -222,6 +304,7 @@ struct TraceWriteView<'a> {
     format: &'a str,
     version: u32,
     engine: &'a VersionInfo,
+    compatibility: &'a TraceCompatibility,
     mode: RunMode,
     scenario_path: Option<&'a String>,
     scenario: Option<&'a ScenarioV1Steps>,
@@ -233,6 +316,8 @@ struct TraceWriteView<'a> {
     memory: Option<&'a MemoryTrace>,
     decisions: &'a [Decision],
     events: &'a [TraceEvent],
+    #[serde(rename = "replayContract")]
+    replay_contract: &'a TraceReplayContract,
     summary: &'a RunSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checksum: Option<&'a str>,
@@ -243,12 +328,24 @@ pub struct TraceVerifyReport {
     pub ok: bool,
     pub path: String,
     pub version: u32,
+    #[serde(rename = "traceSchemaVersion")]
+    pub trace_schema_version: String,
+    pub compatibility: TraceCompatibility,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<TraceVerifyCheck>,
     #[serde(rename = "checksumPresent")]
     pub checksum_present: bool,
     #[serde(rename = "checksumValid")]
     pub checksum_valid: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceVerifyCheck {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
 }
 
 pub fn trace_schema_warnings(version: u32) -> Vec<String> {
@@ -265,14 +362,350 @@ pub fn verify_trace_file(path: &Path) -> FozzyResult<TraceVerifyReport> {
     let t = TraceFile::read_json(path)?;
     let mut warnings = trace_schema_warnings(t.version);
     warnings.extend(trace_replay_warnings(&t));
+    let checks = trace_verify_checks(&t, &mut warnings);
     Ok(TraceVerifyReport {
-        ok: true,
+        ok: checks.iter().all(|check| check.ok),
         path: path.display().to_string(),
         version: t.version,
+        trace_schema_version: format!("{}.v{}", t.format, t.version),
+        compatibility: t.compatibility.clone(),
+        checks,
         checksum_present: t.checksum.is_some(),
         checksum_valid: t.checksum.is_some(),
         warnings,
     })
+}
+
+fn build_replay_contract(
+    seed: u64,
+    decisions: &[Decision],
+    events: &[TraceEvent],
+) -> TraceReplayContract {
+    let mut execution_order = Vec::new();
+    let mut async_schedule = Vec::new();
+    let mut capability_set = BTreeSet::new();
+    let mut rpc_frames = Vec::new();
+    let mut checkpoint_count = 0usize;
+    let mut runtime_event_counts = BTreeMap::<String, usize>::new();
+
+    for decision in decisions {
+        match decision {
+            Decision::SchedulerPick { task_id, label } => {
+                execution_order.push(*task_id);
+                if label.to_ascii_lowercase().contains("async")
+                    || label.to_ascii_lowercase().contains("await")
+                {
+                    async_schedule.push(*task_id);
+                }
+            }
+            Decision::Step { .. } => {}
+            _ => {}
+        }
+    }
+
+    for event in events {
+        *runtime_event_counts.entry(event.name.clone()).or_insert(0) += 1;
+        if event.name == "memory_checkpoint" {
+            checkpoint_count += 1;
+        }
+        if let Some(capability) = event.name.strip_prefix("capability_") {
+            capability_set.insert(capability.to_string());
+        }
+        match event.name.as_str() {
+            "proc_spawn" => {
+                capability_set.insert("proc".to_string());
+            }
+            "http_request" => {
+                capability_set.insert("http".to_string());
+            }
+            "memory_checkpoint" => {
+                capability_set.insert("memory".to_string());
+            }
+            _ => {}
+        }
+        if let Some(frame) = trace_rpc_frame_from_event(event) {
+            rpc_frames.push(frame);
+        }
+    }
+
+    let runtime_events = runtime_event_counts
+        .into_iter()
+        .map(|(name, count)| TraceRuntimeEvent { name, count })
+        .collect::<Vec<_>>();
+
+    let mut causal_links = Vec::new();
+    for window in execution_order.windows(2) {
+        causal_links.push(TraceCausalLink {
+            from: format!("task:{}", window[0]),
+            to: format!("task:{}", window[1]),
+            relation: "schedule.next".to_string(),
+        });
+    }
+    for window in rpc_frames.windows(2) {
+        causal_links.push(TraceCausalLink {
+            from: format!(
+                "rpc:{}:{}:{}",
+                window[0].kind, window[0].method, window[0].task_id
+            ),
+            to: format!(
+                "rpc:{}:{}:{}",
+                window[1].kind, window[1].method, window[1].task_id
+            ),
+            relation: "rpc.frame.order".to_string(),
+        });
+    }
+
+    TraceReplayContract {
+        scheduler: "decision_replay".to_string(),
+        seed,
+        execution_order,
+        async_schedule,
+        rpc_frames,
+        runtime_events,
+        causal_links,
+        capability_set: capability_set.into_iter().collect(),
+        checkpoint_count,
+    }
+}
+
+impl Default for TraceRpcFrame {
+    fn default() -> Self {
+        Self {
+            kind: String::new(),
+            method: String::new(),
+            task_id: 0,
+        }
+    }
+}
+
+impl Default for TraceRuntimeEvent {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            count: 0,
+        }
+    }
+}
+
+impl Default for TraceCausalLink {
+    fn default() -> Self {
+        Self {
+            from: String::new(),
+            to: String::new(),
+            relation: String::new(),
+        }
+    }
+}
+
+fn trace_rpc_frame_from_event(event: &TraceEvent) -> Option<TraceRpcFrame> {
+    let kind = match event.name.as_str() {
+        "rpc_send" | "rpc_recv" | "rpc_deadline" | "rpc_cancel" => event.name.clone(),
+        "rpc.frame" => event
+            .fields
+            .get("event")
+            .and_then(|value| value.as_str())
+            .unwrap_or("rpc_recv")
+            .to_string(),
+        _ => return None,
+    };
+    let method = event
+        .fields
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let task_id = event
+        .fields
+        .get("taskId")
+        .or_else(|| event.fields.get("task_id"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    Some(TraceRpcFrame {
+        kind,
+        method,
+        task_id,
+    })
+}
+
+fn trace_verify_checks(trace: &TraceFile, warnings: &mut Vec<String>) -> Vec<TraceVerifyCheck> {
+    let mut checks = Vec::new();
+    checks.push(TraceVerifyCheck {
+        name: "compatibility_set".to_string(),
+        ok: trace.compatibility.versions.trace_schema_version
+            == format!("{}.v{}", TRACE_FORMAT, trace.version),
+        detail: format!(
+            "language={} trace={} manifest={} runtimeAbi={} nativeImportTable={} diagnostics={}",
+            trace.compatibility.versions.language_version,
+            trace.compatibility.versions.trace_schema_version,
+            trace.compatibility.versions.manifest_schema_version,
+            trace.compatibility.versions.runtime_abi_version,
+            trace.compatibility.versions.native_import_table_version,
+            trace.compatibility.versions.diagnostic_catalog_version
+        ),
+    });
+
+    let seed_ok = trace.replay_contract.seed == trace.summary.identity.seed;
+    if !seed_ok {
+        warnings
+            .push("trace replay contract seed does not match summary identity seed".to_string());
+    }
+    checks.push(TraceVerifyCheck {
+        name: "seed_matches_summary".to_string(),
+        ok: seed_ok,
+        detail: format!(
+            "contract_seed={} summary_seed={}",
+            trace.replay_contract.seed, trace.summary.identity.seed
+        ),
+    });
+
+    let execution_order_ok =
+        !trace.replay_contract.execution_order.is_empty() || trace.decisions.is_empty();
+    if !execution_order_ok {
+        warnings.push("trace executionOrder is empty despite recorded decisions".to_string());
+    }
+    checks.push(TraceVerifyCheck {
+        name: "execution_order_present".to_string(),
+        ok: execution_order_ok,
+        detail: format!(
+            "execution_order={} decisions={}",
+            trace.replay_contract.execution_order.len(),
+            trace.decisions.len()
+        ),
+    });
+
+    let async_schedule_ok = trace
+        .replay_contract
+        .async_schedule
+        .iter()
+        .all(|task_id| trace.replay_contract.execution_order.contains(task_id));
+    if !async_schedule_ok {
+        warnings.push(
+            "trace asyncSchedule references task ids missing from executionOrder".to_string(),
+        );
+    }
+    checks.push(TraceVerifyCheck {
+        name: "async_schedule_subset".to_string(),
+        ok: async_schedule_ok,
+        detail: format!(
+            "async_schedule={} execution_order={}",
+            trace.replay_contract.async_schedule.len(),
+            trace.replay_contract.execution_order.len()
+        ),
+    });
+
+    let rpc_frames_ok = validate_trace_rpc_frames(&trace.replay_contract.rpc_frames, warnings);
+    checks.push(TraceVerifyCheck {
+        name: "rpc_frames_ordered".to_string(),
+        ok: rpc_frames_ok,
+        detail: format!("rpc_frames={}", trace.replay_contract.rpc_frames.len()),
+    });
+
+    let runtime_event_count: usize = trace
+        .replay_contract
+        .runtime_events
+        .iter()
+        .map(|event| event.count)
+        .sum();
+    let runtime_events_ok = runtime_event_count == trace.events.len();
+    if !runtime_events_ok {
+        warnings.push(format!(
+            "trace runtimeEvents count {} does not match event list {}",
+            runtime_event_count,
+            trace.events.len()
+        ));
+    }
+    checks.push(TraceVerifyCheck {
+        name: "runtime_events_match".to_string(),
+        ok: runtime_events_ok,
+        detail: format!(
+            "runtime_events={} events={}",
+            runtime_event_count,
+            trace.events.len()
+        ),
+    });
+
+    let checkpoints = trace
+        .events
+        .iter()
+        .filter(|event| event.name == "memory_checkpoint")
+        .count();
+    let checkpoint_ok = checkpoints == trace.replay_contract.checkpoint_count;
+    if !checkpoint_ok {
+        warnings.push(format!(
+            "trace checkpointCount {} does not match memory_checkpoint events {}",
+            trace.replay_contract.checkpoint_count, checkpoints
+        ));
+    }
+    checks.push(TraceVerifyCheck {
+        name: "checkpoint_count_match".to_string(),
+        ok: checkpoint_ok,
+        detail: format!(
+            "checkpoint_count={} memory_checkpoint_events={}",
+            trace.replay_contract.checkpoint_count, checkpoints
+        ),
+    });
+
+    let causal_links_ok = trace.replay_contract.causal_links.len()
+        >= trace
+            .replay_contract
+            .execution_order
+            .len()
+            .saturating_sub(1);
+    if !causal_links_ok {
+        warnings.push("trace causalLinks are incomplete for executionOrder".to_string());
+    }
+    checks.push(TraceVerifyCheck {
+        name: "causal_links_present".to_string(),
+        ok: causal_links_ok,
+        detail: format!(
+            "causal_links={} execution_order={}",
+            trace.replay_contract.causal_links.len(),
+            trace.replay_contract.execution_order.len()
+        ),
+    });
+
+    checks
+}
+
+fn validate_trace_rpc_frames(frames: &[TraceRpcFrame], warnings: &mut Vec<String>) -> bool {
+    let mut inflight = BTreeMap::<String, usize>::new();
+    let mut ok = true;
+    for frame in frames {
+        if frame.method.trim().is_empty() || frame.task_id == 0 {
+            ok = false;
+            warnings.push(format!(
+                "trace rpc frame `{}` has incomplete method/task identity",
+                frame.kind
+            ));
+        }
+        match frame.kind.as_str() {
+            "rpc_send" => {
+                *inflight.entry(frame.method.clone()).or_insert(0) += 1;
+            }
+            "rpc_recv" | "rpc_deadline" | "rpc_cancel" => {
+                let entry = inflight.entry(frame.method.clone()).or_insert(0);
+                if *entry == 0 {
+                    ok = false;
+                    warnings.push(format!(
+                        "trace rpc frame `{}` for `{}` is out of order",
+                        frame.kind, frame.method
+                    ));
+                } else {
+                    *entry -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    for (method, count) in inflight {
+        if count > 0 {
+            ok = false;
+            warnings.push(format!(
+                "trace rpcFrames left {count} in-flight request(s) for `{method}`"
+            ));
+        }
+    }
+    ok
 }
 
 pub fn write_trace_with_policy(
@@ -830,6 +1263,109 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|w| w.contains("host fs backend") && w.contains("replay may drift"))
+        );
+    }
+
+    #[test]
+    fn verify_report_includes_compatibility_and_replay_contract_checks() {
+        let path = temp_file("compat.fozzy");
+        let trace = TraceFile::new(
+            RunMode::Run,
+            None,
+            Some(ScenarioV1Steps {
+                version: 1,
+                name: "compat".to_string(),
+                steps: Vec::new(),
+            }),
+            vec![Decision::SchedulerPick {
+                task_id: 7,
+                label: "async_worker".to_string(),
+            }],
+            vec![
+                TraceEvent {
+                    time_ms: 0,
+                    name: "capability_proc".to_string(),
+                    fields: serde_json::Map::new(),
+                },
+                TraceEvent {
+                    time_ms: 1,
+                    name: "memory_checkpoint".to_string(),
+                    fields: serde_json::Map::new(),
+                },
+            ],
+            sample_summary(None),
+        );
+        trace.write_json(&path).expect("write");
+
+        let verify = verify_trace_file(&path).expect("verify");
+        assert_eq!(
+            verify.compatibility.versions.trace_schema_version,
+            format!("{}.v{}", TRACE_FORMAT, CURRENT_TRACE_VERSION)
+        );
+        assert!(
+            verify
+                .checks
+                .iter()
+                .any(|check| check.name == "compatibility_set" && check.ok)
+        );
+        assert!(
+            verify
+                .checks
+                .iter()
+                .any(|check| check.name == "checkpoint_count_match" && check.ok)
+        );
+        assert!(verify.warnings.is_empty(), "{:#?}", verify.warnings);
+    }
+
+    #[test]
+    fn verify_warns_on_rpc_frame_order_drift() {
+        let path = temp_file("rpc-order.fozzy");
+        let raw = r#"{
+          "format":"fozzy-trace",
+          "version":4,
+          "engine":{"version":"0.1.0","compatibility":{"languageVersion":"fozzylang.language.v1","traceSchemaVersion":"fozzy-trace.v4","manifestSchemaVersion":"fozzy.run_manifest.v1","runtimeAbiVersion":"fozzylang.runtime.v0","nativeImportTableVersion":"fozzylang.native_runtime_contracts.v1","diagnosticCatalogVersion":"fozzylang.diagnostic_catalog.v1"}},
+          "compatibility":{"languageVersion":"fozzylang.language.v1","traceSchemaVersion":"fozzy-trace.v4","manifestSchemaVersion":"fozzy.run_manifest.v1","runtimeAbiVersion":"fozzylang.runtime.v0","nativeImportTableVersion":"fozzylang.native_runtime_contracts.v1","diagnosticCatalogVersion":"fozzylang.diagnostic_catalog.v1"},
+          "mode":"run",
+          "scenario_path":null,
+          "scenario":{"version":1,"name":"x","steps":[]},
+          "decisions":[],
+          "events":[
+            {"time_ms":0,"name":"rpc_recv","fields":{"method":"Ping","taskId":7}}
+          ],
+          "replayContract":{
+            "scheduler":"decision_replay",
+            "seed":1,
+            "executionOrder":[],
+            "asyncSchedule":[],
+            "rpcFrames":[{"kind":"rpc_recv","method":"Ping","taskId":7}],
+            "runtimeEvents":[{"name":"rpc_recv","count":1}],
+            "causalLinks":[],
+            "capabilitySet":["net"],
+            "checkpointCount":0
+          },
+          "summary":{
+            "status":"pass",
+            "mode":"run",
+            "identity":{"runId":"r1","seed":1},
+            "startedAt":"2026-01-01T00:00:00Z",
+            "finishedAt":"2026-01-01T00:00:00Z",
+            "durationMs":0
+          }
+        }"#;
+        std::fs::write(&path, raw).expect("write");
+
+        let verify = verify_trace_file(&path).expect("verify");
+        assert!(
+            verify
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("rpc frame `rpc_recv` for `Ping` is out of order"))
+        );
+        assert!(
+            verify
+                .checks
+                .iter()
+                .any(|check| check.name == "rpc_frames_ordered" && !check.ok)
         );
     }
 }

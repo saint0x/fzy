@@ -28,6 +28,23 @@ pub struct VersionInfo {
     pub commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_date: Option<String>,
+    pub compatibility: CompatibilityInfo,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompatibilityInfo {
+    #[serde(rename = "languageVersion")]
+    pub language_version: String,
+    #[serde(rename = "traceSchemaVersion")]
+    pub trace_schema_version: String,
+    #[serde(rename = "manifestSchemaVersion")]
+    pub manifest_schema_version: String,
+    #[serde(rename = "runtimeAbiVersion")]
+    pub runtime_abi_version: String,
+    #[serde(rename = "nativeImportTableVersion")]
+    pub native_import_table_version: String,
+    #[serde(rename = "diagnosticCatalogVersion")]
+    pub diagnostic_catalog_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,8 +63,20 @@ pub fn version_info() -> VersionInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             commit: resolved_commit_hash(),
             build_date: option_env!("FOZZY_BUILD_DATE").map(|s| s.to_string()),
+            compatibility: compatibility_info(),
         })
         .clone()
+}
+
+pub fn compatibility_info() -> CompatibilityInfo {
+    CompatibilityInfo {
+        language_version: "fozzylang.language.v1".to_string(),
+        trace_schema_version: format!("{}.v{}", crate::TRACE_FORMAT, crate::CURRENT_TRACE_VERSION),
+        manifest_schema_version: "fozzy.run_manifest.v1".to_string(),
+        runtime_abi_version: "fozzylang.runtime.v0".to_string(),
+        native_import_table_version: "fozzylang.native_runtime_contracts.v1".to_string(),
+        diagnostic_catalog_version: "fozzylang.diagnostic_catalog.v1".to_string(),
+    }
 }
 
 fn resolved_commit_hash() -> Option<String> {
