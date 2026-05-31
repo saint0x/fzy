@@ -286,50 +286,136 @@ int32_t fz_native_time_tick(int32_t handle) {
   return 0;
 }
 
-int32_t fz_native_fs_open(void) {
-  pthread_mutex_lock(&fz_fs_lock);
-  int fd = fz_fs_ensure_open();
-  pthread_mutex_unlock(&fz_fs_lock);
+int32_t fz_native_fs_open(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') {
+    fz_set_last_error(EINVAL, 3, "fs.open failed: path must not be empty");
+    return -1;
+  }
+  int fd = open(path, O_CREAT | O_RDWR, 0644);
+  if (fd < 0) {
+    fz_set_last_error(errno, 3, "fs.open failed");
+    return -1;
+  }
+  (void)fz_mark_cloexec(fd);
   return fd;
 }
 
-int32_t fz_native_fs_write(void) {
-  pthread_mutex_lock(&fz_fs_lock);
-  int fd = fz_fs_ensure_open();
-  if (fd < 0) {
-    pthread_mutex_unlock(&fz_fs_lock);
+int32_t fz_native_fs_close(int32_t handle) {
+  if (handle < 0) {
+    fz_set_last_error(EINVAL, 3, "fs.close failed: invalid handle");
     return -1;
   }
-  const char* payload = "fozzy\n";
-  ssize_t wrote = write(fd, payload, strlen(payload));
-  pthread_mutex_unlock(&fz_fs_lock);
-  return wrote < 0 ? -1 : (int32_t)wrote;
-}
-
-int32_t fz_native_fs_read(void) {
-  pthread_mutex_lock(&fz_fs_lock);
-  int fd = fz_fs_ensure_open();
-  if (fd < 0) {
-    pthread_mutex_unlock(&fz_fs_lock);
+  if (close(handle) != 0) {
+    fz_set_last_error(errno, 3, "fs.close failed");
     return -1;
   }
-  lseek(fd, 0, SEEK_SET);
-  char buf[4096];
-  ssize_t got = read(fd, buf, sizeof(buf));
-  pthread_mutex_unlock(&fz_fs_lock);
-  return got < 0 ? -1 : (int32_t)got;
+  return 0;
 }
 
-int32_t fz_native_fs_flush(void) {
-  pthread_mutex_lock(&fz_fs_lock);
-  int fd = fz_fs_ensure_open();
-  int rc = (fd < 0) ? -1 : fsync(fd);
-  pthread_mutex_unlock(&fz_fs_lock);
-  return rc == 0 ? 0 : -1;
+int32_t fz_native_fs_write(int32_t handle, int32_t content_id) {
+  const char* content = fz_lookup_string(content_id);
+  if (handle < 0) {
+    fz_set_last_error(EINVAL, 3, "fs.write failed: invalid handle");
+    return -1;
+  }
+  if (content == NULL) content = "";
+  if (lseek(handle, 0, SEEK_END) < 0) {
+    fz_set_last_error(errno, 3, "fs.write failed: seek failed");
+    return -1;
+  }
+  size_t left = strlen(content);
+  const char* p = content;
+  while (left > 0) {
+    ssize_t wrote = write(handle, p, left);
+    if (wrote < 0) {
+      if (errno == EINTR) continue;
+      fz_set_last_error(errno, 3, "fs.write failed");
+      return -1;
+    }
+    if (wrote == 0) {
+      break;
+    }
+    p += wrote;
+    left -= (size_t)wrote;
+  }
+  return 0;
 }
 
-int32_t fz_native_fs_fsync(void) {
-  return fz_native_fs_flush();
+int32_t fz_native_fs_read(int32_t handle, int32_t limit) {
+  if (handle < 0) {
+    fz_set_last_error(EINVAL, 3, "fs.read failed: invalid handle");
+    return fz_intern_slice("", 0);
+  }
+  if (limit < 0) {
+    fz_set_last_error(EINVAL, 3, "fs.read failed: limit must be >= 0");
+    return fz_intern_slice("", 0);
+  }
+  if (lseek(handle, 0, SEEK_SET) < 0) {
+    fz_set_last_error(errno, 3, "fs.read failed: seek failed");
+    return fz_intern_slice("", 0);
+  }
+  size_t cap = (size_t)limit;
+  if (cap > 1048576) cap = 1048576;
+  fz_bytes_buf buf;
+  fz_bytes_buf_init(&buf);
+  char tmp[4096];
+  while (buf.len < cap) {
+    size_t chunk = sizeof(tmp);
+    if (cap - buf.len < chunk) {
+      chunk = cap - buf.len;
+    }
+    if (chunk == 0) {
+      break;
+    }
+    ssize_t got = read(handle, tmp, chunk);
+    if (got > 0) {
+      if (fz_bytes_buf_append(&buf, tmp, (size_t)got) != 0) {
+        fz_set_last_error(ENOMEM, 3, "fs.read failed: buffer alloc failed");
+        break;
+      }
+      continue;
+    }
+    if (got == 0) break;
+    if (errno == EINTR) continue;
+    fz_set_last_error(errno, 3, "fs.read failed");
+    break;
+  }
+  int32_t out = fz_intern_slice(buf.data == NULL ? "" : buf.data, buf.len);
+  fz_bytes_buf_free(&buf);
+  return out;
+}
+
+int32_t fz_native_fs_flush(int32_t handle) {
+  if (handle < 0) {
+    fz_set_last_error(EINVAL, 3, "fs.flush failed: invalid handle");
+    return -1;
+  }
+  return fsync(handle) == 0 ? 0 : -1;
+}
+
+int32_t fz_native_fs_fsync(int32_t handle) {
+  if (handle < 0) {
+    fz_set_last_error(EINVAL, 3, "fs.fsync failed: invalid handle");
+    return -1;
+  }
+  if (fsync(handle) != 0) {
+    fz_set_last_error(errno, 3, "fs.fsync failed");
+    return -1;
+  }
+  return 0;
+}
+
+int32_t fz_native_fs_lock(int32_t handle) {
+  if (handle < 0) {
+    fz_set_last_error(EINVAL, 3, "fs.lock failed: invalid handle");
+    return -1;
+  }
+  if (lockf(handle, F_LOCK, 0) != 0) {
+    fz_set_last_error(errno, 3, "fs.lock failed");
+    return -1;
+  }
+  return 0;
 }
 
 int32_t fz_native_fs_atomic_write(void) {

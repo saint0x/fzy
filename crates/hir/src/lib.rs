@@ -4470,9 +4470,9 @@ const RUNTIME_HANDLE_CONTRACTS: &[RuntimeHandleContract] = &[
         closable: true,
         send_safe: false,
         async_stable: true,
-        producer_intrinsics: &[],
-        consumer_intrinsics: &[],
-        observer_intrinsics: &[],
+        producer_intrinsics: &["fs.open"],
+        consumer_intrinsics: &["fs.close"],
+        observer_intrinsics: &["fs.write", "fs.read", "fs.flush", "fs.fsync", "fs.lock"],
     },
     RuntimeHandleContract {
         name: "JsonHandle",
@@ -14012,6 +14012,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "time.elapsed_ms",
         "time.deadline_after",
         "fs.open",
+        "fs.close",
         "fs.write",
         "fs.flush",
         "fs.atomic_write",
@@ -14197,6 +14198,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     };
     let proc_env = Type::Named {
         name: "ProcessEnv".to_string(),
+        args: Vec::new(),
+    };
+    let file_handle = Type::Named {
+        name: "FileHandle".to_string(),
         args: Vec::new(),
     };
     let kv_handle = Type::Named {
@@ -14626,8 +14631,13 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "time.sleep_ms" => (vec![i32.clone()], i32.clone()),
         "time.interval" | "time.tick" => (vec![i32.clone()], i32.clone()),
         "time.elapsed_ms" | "time.deadline_after" => (vec![i32.clone()], i32.clone()),
-        "fs.open" | "fs.write" | "fs.flush" | "fs.atomic_write" | "fs.rename_atomic"
-        | "fs.fsync" | "fs.lock" | "fs.read" => (vec![], i32.clone()),
+        "fs.open" => (vec![str_ty.clone()], file_handle.clone()),
+        "fs.close" | "fs.flush" | "fs.fsync" | "fs.lock" => {
+            (vec![file_handle.clone()], i32.clone())
+        }
+        "fs.write" => (vec![file_handle.clone(), str_ty.clone()], i32.clone()),
+        "fs.read" => (vec![file_handle.clone(), i32.clone()], str_ty.clone()),
+        "fs.atomic_write" | "fs.rename_atomic" => (vec![], i32.clone()),
         "fs.read_file" => (vec![str_ty.clone()], str_ty.clone()),
         "fs.write_file" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "fs.mkdir" | "fs.exists" | "fs.is_file" | "fs.is_dir" | "fs.is_symlink"
@@ -17157,6 +17167,70 @@ mod tests {
     }
 
     #[test]
+    fn file_handles_without_close_report_linear_leaks() {
+        let source = r#"
+            use core.fs;
+            fn main() -> i32 {
+                let file = fs.open("/tmp/fzy-file-handle-leak");
+                discard fs.write(file, "hello");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `file` was not consumed/freed")
+        }));
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`file`")));
+    }
+
+    #[test]
+    fn fs_close_consumes_file_handle() {
+        let source = r#"
+            use core.fs;
+            fn main() -> i32 {
+                let file = fs.open("/tmp/fzy-file-handle-close");
+                discard fs.write(file, "hello");
+                discard fs.flush(file);
+                discard fs.close(file);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `file` was not consumed/freed")
+        }));
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("function `main` leaks allocation")
+                && detail.contains("`file`")));
+    }
+
+    #[test]
+    fn file_close_wrapper_can_consume_linear_param() {
+        let source = r#"
+            use core.fs;
+            fn close_file(file: FileHandle) -> i32 {
+                return fs.close(file);
+            }
+            fn main() -> i32 {
+                let file = fs.open("/tmp/fzy-file-handle-wrapper");
+                discard fs.write(file, "hello");
+                discard close_file(file);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
+    }
+
+    #[test]
     fn current_process_cli_intrinsics_typecheck() {
         let source = r#"
             use core.proc;
@@ -18707,6 +18781,32 @@ mod tests {
         }));
         assert!(!typed.linear_type_violations.iter().any(|detail| {
             detail.contains("function `open_store` linear value `store` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn file_handle_wrapper_return_counts_as_transfer() {
+        let source = r#"
+            use core.fs;
+            fn open_file() -> FileHandle {
+                return fs.open("/tmp/fzy-file-handle-return");
+            }
+            fn main() -> i32 {
+                let file = open_file();
+                discard fs.write(file, "hello");
+                discard fs.close(file);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> open_file` crosses function with potential resource escape",
+            )
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `open_file` linear value `file` was not consumed/freed")
         }));
     }
 

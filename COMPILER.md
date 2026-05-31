@@ -75,7 +75,7 @@ Required tests:
 
 Checklist:
 
-- Finish defining the shipped handle set and contract for any still-unlocked handle families such as `FileHandle`.
+- Finish defining the shipped handle set and contract for any still-unlocked handle families.
 - For each handle, declare whether it is copy, owned, linear, closable, send-safe, and async-stable.
 - Make those handle rules visible to HIR, verifier, stdlib docs, runtime shim contracts, and diagnostics.
 - Reject any runtime or helper path that consumes or aliases a handle in a way the handle matrix does not permit.

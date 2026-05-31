@@ -453,27 +453,37 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "fs.open",
         symbol: "fz_native_fs_open",
-        arity: 0,
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.close",
+        symbol: "fz_native_fs_close",
+        arity: 1,
     },
     NativeRuntimeImport {
         callee: "fs.write",
         symbol: "fz_native_fs_write",
-        arity: 0,
+        arity: 2,
     },
     NativeRuntimeImport {
         callee: "fs.read",
         symbol: "fz_native_fs_read",
-        arity: 0,
+        arity: 2,
     },
     NativeRuntimeImport {
         callee: "fs.flush",
         symbol: "fz_native_fs_flush",
-        arity: 0,
+        arity: 1,
     },
     NativeRuntimeImport {
         callee: "fs.fsync",
         symbol: "fz_native_fs_fsync",
-        arity: 0,
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.lock",
+        symbol: "fz_native_fs_lock",
+        arity: 1,
     },
     NativeRuntimeImport {
         callee: "fs.atomic_write",
@@ -1211,6 +1221,12 @@ fn default_blocking_behavior(callee: &str) -> &'static str {
     if matches!(
         callee,
         "proc.wait"
+            | "fs.open"
+            | "fs.read"
+            | "fs.write"
+            | "fs.flush"
+            | "fs.fsync"
+            | "fs.lock"
             | "http.read"
             | "http.read_headers"
             | "http.stream_read"
@@ -1253,6 +1269,7 @@ fn default_linearity(callee: &str) -> &'static str {
             | "task.group_begin"
             | "task.group_spawn"
             | "storage.kv_open"
+            | "fs.open"
     ) {
         "produces_linear_handle"
     } else if matches!(
@@ -1283,6 +1300,7 @@ fn default_linearity(callee: &str) -> &'static str {
             | "route.write_405"
             | "proc.close"
             | "storage.kv_close"
+            | "fs.close"
     ) {
         "consumes_linear_handle"
     } else if matches!(
@@ -1330,6 +1348,11 @@ fn default_linearity(callee: &str) -> &'static str {
             | "proc.stdout"
             | "proc.stderr"
             | "proc.exit_code"
+            | "fs.write"
+            | "fs.read"
+            | "fs.flush"
+            | "fs.fsync"
+            | "fs.lock"
             | "channel.send"
             | "channel.recv"
             | "storage.kv_get"
@@ -1624,6 +1647,26 @@ pub(super) fn native_runtime_contract_for_callee(
         }
         "json.has" => {
             contract.arg_ownership = "borrow_handle_key";
+            contract.return_ownership = "status";
+        }
+        "fs.open" => {
+            contract.arg_ownership = "borrow_path";
+            contract.return_ownership = "owned_file_handle";
+        }
+        "fs.close" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "fs.write" => {
+            contract.arg_ownership = "borrow_handle_bytes";
+            contract.return_ownership = "status";
+        }
+        "fs.read" => {
+            contract.arg_ownership = "borrow_handle_limit";
+            contract.return_ownership = "value";
+        }
+        "fs.flush" | "fs.fsync" | "fs.lock" => {
+            contract.arg_ownership = "borrow_handle";
             contract.return_ownership = "status";
         }
         "fs.listdir" => {

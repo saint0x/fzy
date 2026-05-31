@@ -144,7 +144,7 @@ let err = proc.stderr(handle)
 ## Resource-Management Guidance
 
 - Pair owned resources with same-scope `defer` cleanup whenever possible.
-- Canonical safe patterns include `defer free(ptr)` for heap memory, `defer proc.close(handle)` for process handles, and `defer close(handle)` for other linear stdlib/runtime wrappers that expose bare `close(...)`.
+- Canonical safe patterns include `defer free(ptr)` for heap memory, `defer proc.close(handle)` for process handles, `defer fs.close(file)` for filesystem handles, and `defer close(handle)` for other linear stdlib/runtime wrappers that expose bare `close(...)`.
 - `alloc(...)` / `free(...)` remain part of the safe subset when verifier tracking succeeds; they do not require `unsafe` unless combined with unchecked raw-memory operations.
 
 ### Handle Contract Matrix

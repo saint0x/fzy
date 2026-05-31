@@ -154,7 +154,7 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "use core.http;\nuse core.proc;\nuse core.storage;\nuse core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn main() -> i32 {\n    let conn = http.accept()\n    discard http.write_json(conn, 200, \"{}\")\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard http.stream_close(stream)\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(handle)\n    let task = spawn(worker)\n    discard join(task)\n    let ctx_task = thread.spawn_ctx(worker, 7)\n    discard join(ctx_task)\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_close(store)\n    let payload = json.parse(\"{}\")\n    let items = json.to_list(payload)\n    let table = map.new()\n    discard list.len(items)\n    discard map.len(table)\n    return 0\n}\n",
+        "use core.fs;\nuse core.http;\nuse core.proc;\nuse core.storage;\nuse core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn main() -> i32 {\n    let conn = http.accept()\n    discard http.write_json(conn, 200, \"{}\")\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard http.stream_close(stream)\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(handle)\n    let task = spawn(worker)\n    discard join(task)\n    let ctx_task = thread.spawn_ctx(worker, 7)\n    discard join(ctx_task)\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_close(store)\n    let file = fs.open(\"/tmp/fzy-handle-contract-file.txt\")\n    discard fs.write(file, \"hello\")\n    discard fs.close(file)\n    let payload = json.parse(\"{}\")\n    let items = json.to_list(payload)\n    let table = map.new()\n    discard list.len(items)\n    discard map.len(table)\n    return 0\n}\n",
     )
     .expect("source should be written");
 
@@ -168,6 +168,7 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
     assert!(handle_contracts.contains("\"name\": \"JsonHandle\""));
     assert!(handle_contracts.contains("\"producerIntrinsics\""));
     assert!(handle_contracts.contains("\"name\": \"KvStoreHandle\""));
+    assert!(handle_contracts.contains("\"name\": \"FileHandle\""));
 
     let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
         .expect("native runtime contracts should exist");
@@ -179,6 +180,8 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
     assert!(runtime_contracts.contains("\"linearity\": \"produces_handle\""));
     assert!(runtime_contracts.contains("\"callee\": \"list.len\""));
     assert!(runtime_contracts.contains("\"linearity\": \"observes_handle\""));
+    assert!(runtime_contracts.contains("\"callee\": \"fs.close\""));
+    assert!(runtime_contracts.contains("\"callee\": \"fs.read\""));
     assert!(runtime_contracts.contains("\"callee\": \"thread.spawn_ctx\""));
     assert!(runtime_contracts.contains("\"returnOwnership\": \"owned_task_handle\""));
 }
@@ -260,6 +263,43 @@ fn compile_file_memory_report_tracks_kv_store_handles() {
     assert!(
         memory_report.contains("\"type\":\"KvStoreHandle\"")
             || memory_report.contains("\"type\": \"KvStoreHandle\"")
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_file_memory_report_tracks_file_handles() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-report-file-handle-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_report_file_handle\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_report_file_handle\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.fs;\nfn main() -> i32 {\n    let file = fs.open(\"/tmp/fzy-memory-report-file-handle.txt\")\n    discard fs.write(file, \"hello\")\n    discard fs.flush(file)\n    discard fs.close(file)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let memory_report = std::fs::read_to_string(root.join(".fz/memory-report.json"))
+        .expect("memory report should exist");
+    assert!(
+        memory_report.contains("\"name\":\"file\"") || memory_report.contains("\"name\": \"file\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"FileHandle\"")
+            || memory_report.contains("\"type\": \"FileHandle\"")
     );
 
     let _ = std::fs::remove_dir_all(root);
@@ -351,6 +391,45 @@ fn compile_file_runtime_contracts_cover_runtime_handle_consumers() {
     assert!(runtime_contracts.contains("\"argOwnership\": \"consume_arg0\""));
     assert!(runtime_contracts.contains("\"callee\": \"join\""));
     assert!(runtime_contracts.contains("\"linearity\": \"consumes_linear_handle\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_file_runtime_contracts_cover_file_handle_consumers() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-runtime-contracts-file-handle-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"runtime_contracts_file_handle\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"runtime_contracts_file_handle\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.fs;\nfn main() -> i32 {\n    let file = fs.open(\"/tmp/fzy-runtime-contract-file-handle.txt\")\n    discard fs.write(file, \"hello\")\n    discard fs.flush(file)\n    discard fs.fsync(file)\n    discard fs.lock(file)\n    discard fs.close(file)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+        .expect("native runtime contracts should exist");
+    assert!(runtime_contracts.contains("\"callee\": \"fs.open\""));
+    assert!(runtime_contracts.contains("\"returnOwnership\": \"owned_file_handle\""));
+    assert!(runtime_contracts.contains("\"callee\": \"fs.close\""));
+    assert!(runtime_contracts.contains("\"argOwnership\": \"consume_arg0\""));
+    assert!(runtime_contracts.contains("\"callee\": \"fs.write\""));
+    assert!(runtime_contracts.contains("\"argOwnership\": \"borrow_handle_bytes\""));
+    assert!(runtime_contracts.contains("\"callee\": \"fs.read\""));
+    assert!(runtime_contracts.contains("\"argOwnership\": \"borrow_handle_limit\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"observes_linear_handle\""));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1454,6 +1533,42 @@ fn verify_process_wrapper_reuse_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_file_handle_wrapper_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-file-handle-wrapper-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.fs;\nfn close_file(file: FileHandle) -> i32 {\n    return fs.close(file)\n}\nfn main() -> i32 {\n    let file = fs.open(\"/tmp/fzy-file-wrapper-reuse.txt\")\n    discard fs.write(file, \"hello\")\n    discard close_file(file)\n    discard fs.close(file)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `file` after move/consume"
+        })
+        .expect("file-handle wrapper reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("file-handle wrapper reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_kv_store_wrapper_reuse_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-memory-kv-store-wrapper-reuse-{}.fzy",
@@ -2147,6 +2262,37 @@ fn verify_process_handle_return_does_not_report_resource_escape() {
 }
 
 #[test]
+fn verify_file_handle_return_does_not_report_resource_escape() {
+    let file_name = format!(
+        "fozzylang-memory-file-handle-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.fs;\nfn open_file() -> FileHandle {\n    return fs.open(\"/tmp/fzy-file-return.txt\")\n}\nfn main() -> i32 {\n    let file = open_file()\n    discard fs.write(file, \"hello\")\n    discard fs.close(file)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `file` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_kv_store_return_does_not_report_resource_escape() {
     let file_name = format!(
         "fozzylang-memory-kv-store-return-{}.fzy",
@@ -2502,6 +2648,36 @@ fn verify_kv_close_wrapper_consumes_handle() {
             || diagnostic
                 .message
                 .contains("linear value `store` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_file_close_wrapper_consumes_handle() {
+    let file_name = format!(
+        "fozzylang-memory-file-close-wrapper-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.fs;\nfn close_file(file: FileHandle) -> i32 {\n    return fs.close(file)\n}\nfn main() -> i32 {\n    let file = fs.open(\"/tmp/fzy-file-close-wrapper.txt\")\n    discard fs.write(file, \"hello\")\n    discard close_file(file)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` linear value `file` was not consumed/freed")
     }));
 
     let _ = std::fs::remove_file(path);
@@ -3172,6 +3348,42 @@ fn verify_process_builder_env_leak_diagnostic_is_snapshot_stable() {
         .code
         .as_deref()
         .expect("process-builder env leak diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_file_handle_leak_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-file-handle-leak-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.fs;\nfn main() -> i32 {\n    let file = fs.open(\"/tmp/fzy-file-handle-leak.txt\")\n    discard fs.write(file, \"hello\")\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` linear value `file` was not consumed/freed"
+        })
+        .expect("file-handle leak diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("linear resources must be consumed exactly once")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("file-handle leak diagnostic should carry stable code");
 
     let _ = std::fs::remove_file(path);
 }
