@@ -1,0 +1,26 @@
+use model;
+use thread;
+
+test "det_ascii_ripple_dimensions" {
+    if model.width() != 32 {
+        checkpoint()
+    }
+    if model.height() != 12 {
+        checkpoint()
+    }
+    if model.cell_count() != 384 {
+        checkpoint()
+    }
+}
+
+test "det_ascii_ripple_frame_budget" {
+    if model.frame_count() != 6 {
+        checkpoint()
+    }
+    if model.grid_size() != 6 {
+        checkpoint()
+    }
+    if model.block_size() != 64 {
+        checkpoint()
+    }
+}

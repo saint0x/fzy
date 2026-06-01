@@ -81,8 +81,29 @@ pub struct Function {
     pub is_pub: bool,
     pub is_pubext: bool,
     pub is_extern: bool,
+    pub execution_space: ExecutionSpace,
     pub abi: Option<String>,
     pub ffi_panic: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum ExecutionSpace {
+    #[default]
+    Host,
+    Pure,
+    Device,
+    Kernel,
+}
+
+impl ExecutionSpace {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExecutionSpace::Host => "host",
+            ExecutionSpace::Pure => "pure",
+            ExecutionSpace::Device => "device",
+            ExecutionSpace::Kernel => "kernel",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,27 @@
+use model;
+
+test "det_gpu_model_pixels" {
+    let pixels = model.sample_pixels()
+    let expected = model.expected_pixels()
+    if pixels[0] != 0.0f32 {
+        checkpoint()
+    }
+    if pixels[7] != 0.875f32 {
+        checkpoint()
+    }
+    if model.validate_expected_contract() != 0 {
+        checkpoint()
+    }
+}
+
+test "det_gpu_launch_contract_constants" {
+    if model.pixel_count() != 8 {
+        checkpoint()
+    }
+    if model.grid_size() != 1 {
+        checkpoint()
+    }
+    if model.block_size() != 64 {
+        checkpoint()
+    }
+}

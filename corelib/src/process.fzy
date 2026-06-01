@@ -35,7 +35,7 @@ fn has_flag(flag: str) -> i32 {
         if argv(index) == flag {
             return 1
         }
-        index += 1
+        index = index + 1
     }
     return 0
 }
@@ -79,9 +79,9 @@ fn class_score(class: ExitClass) -> i32 {
 
 fn budget_score(argv_count: i32, env_count: i32, limits: ProcessLimits) -> i32 {
     let mut score = (argv_count * 7) + (env_count * 5)
-    score += limits.max_children % 97
-    score += limits.timeout_ms % 89
-    score += limits.max_output_bytes % 83
+    score = score + (limits.max_children % 97)
+    score = score + (limits.timeout_ms % 89)
+    score = score + (limits.max_output_bytes % 83)
     return score % 251
 }
 
@@ -96,7 +96,7 @@ fn retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
         if delay > max_ms {
             delay = max_ms
         }
-        i += 1
+        i = i + 1
     }
     return delay
 }

@@ -46,11 +46,11 @@ fn transcript_kv(label: str, value: str, label_width: i32) -> i32 {
 
 fn sample() -> i32 {
     let mut acc = 0
-    acc += print("")
-    acc += eprint("")
-    acc += term.stdin_eof()
-    acc += is_interactive()
-    acc += transcript_line("")
-    acc += transcript_kv("mode", "chat", 8)
+    acc = acc + print("")
+    acc = acc + eprint("")
+    acc = acc + term.stdin_eof()
+    acc = acc + is_interactive()
+    acc = acc + transcript_line("")
+    acc = acc + transcript_kv("mode", "chat", 8)
     return acc % 251
 }

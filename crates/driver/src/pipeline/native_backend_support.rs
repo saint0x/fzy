@@ -810,8 +810,14 @@ fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet
 
 pub(super) fn native_backend_supports_call(callee: &str) -> bool {
     callee.starts_with("simd.__")
+        || callee == "__index_assign"
+        || is_gpu_host_runtime_call(callee)
         || native_runtime_import_for_callee(callee).is_some()
         || native_data_plane_import_for_callee(callee).is_some()
+}
+
+fn is_gpu_host_runtime_call(callee: &str) -> bool {
+    callee.starts_with("gpu.")
 }
 
 pub(super) fn declare_native_runtime_imports(
@@ -837,6 +843,52 @@ pub(super) fn declare_native_runtime_imports(
                 params.push(pointer_sized_clif_type());
                 sig.params.push(AbiParam::new(pointer_sized_clif_type()));
                 ret = None;
+            }
+            "gpu.device_memory_bytes" => {
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                sig.returns.push(AbiParam::new(types::I64));
+                ret = Some(types::I64);
+            }
+            "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32" => {
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                params.push(pointer_sized_clif_type());
+                sig.params.push(AbiParam::new(pointer_sized_clif_type()));
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                sig.returns.push(AbiParam::new(types::I32));
+            }
+            "gpu.download_f32" | "gpu.download_i32" | "gpu.download_u32" => {
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                sig.returns.push(AbiParam::new(pointer_sized_clif_type()));
+                ret = Some(pointer_sized_clif_type());
+            }
+            "gpu.slice" => {
+                for _ in 0..import.arity {
+                    params.push(types::I32);
+                    sig.params.push(AbiParam::new(types::I32));
+                }
+                sig.returns.push(AbiParam::new(pointer_sized_clif_type()));
+                ret = Some(pointer_sized_clif_type());
+            }
+            "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4" => {
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                for _ in 5..import.arity {
+                    params.push(pointer_sized_clif_type());
+                    sig.params.push(AbiParam::new(pointer_sized_clif_type()));
+                }
+                sig.returns.push(AbiParam::new(types::I32));
             }
             _ => {
                 for _ in 0..import.arity {
@@ -898,6 +950,30 @@ pub(super) fn declare_native_runtime_imports(
             NATIVE_STR_PTR_SYMBOL,
             vec![types::I32],
             Some(pointer_sized_clif_type()),
+        ),
+        (
+            NATIVE_VEC_LEN,
+            NATIVE_VEC_LEN_SYMBOL,
+            vec![pointer_sized_clif_type()],
+            Some(types::I32),
+        ),
+        (
+            NATIVE_VEC_GET_I32,
+            NATIVE_VEC_GET_I32_SYMBOL,
+            vec![pointer_sized_clif_type(), types::I32],
+            Some(types::I32),
+        ),
+        (
+            NATIVE_VEC_GET_U32,
+            NATIVE_VEC_GET_U32_SYMBOL,
+            vec![pointer_sized_clif_type(), types::I32],
+            Some(types::I32),
+        ),
+        (
+            NATIVE_VEC_GET_F32,
+            NATIVE_VEC_GET_F32_SYMBOL,
+            vec![pointer_sized_clif_type(), types::I32],
+            Some(types::F32),
         ),
     ];
     for (callee, symbol, params, ret) in internal_helpers {

@@ -42,10 +42,10 @@ fn ip_class_score(host: str) -> i32 {
 
 fn endpoint_score(host: str, endpoint: Endpoint, kind: SocketKind) -> i32 {
     let mut score = socket_kind_score(kind)
-    score += ip_class_score(host)
-    score += endpoint.port % 97
-    if endpoint.tls == 1 { score += 37 }
-    if endpoint.ipv6 == 1 { score += 41 }
+    score = score + ip_class_score(host)
+    score = score + (endpoint.port % 97)
+    if endpoint.tls == 1 { score = score + 37 }
+    if endpoint.ipv6 == 1 { score = score + 41 }
     return score % 251
 }
 

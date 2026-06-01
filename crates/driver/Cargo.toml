@@ -16,6 +16,7 @@ toml.workspace = true
 ast = { path = "../ast" }
 parser = { path = "../parser" }
 hir = { path = "../hir" }
+kernel_ir = { path = "../kernel_ir" }
 fir = { path = "../fir" }
 verifier = { path = "../verifier" }
 session = { path = "../session" }

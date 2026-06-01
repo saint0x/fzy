@@ -1,0 +1,6 @@
+use core.gpu;
+
+host fn describe_default_device() -> str {
+    let dev = gpu.default_device()
+    return gpu.device_name(dev)
+}

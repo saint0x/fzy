@@ -112,6 +112,7 @@ This gate includes:
 - safety-claim integrity gate (`scripts/safety_claim_integrity_gate.py`)
 - release-blocking FFI examples gate (`fz headers` + `fz abi-check`)
 - strict deterministic and host-backed Fozzy lifecycle
+- for GPU changes, a real recorded GPU trace plus `trace verify`, `replay`, and `ci`
 - determinism flake-budget enforcement (`scripts/determinism_flake_budget_gate.py`)
 - full command-surface checks
 - LSP editor + determinism/protocol smoke

@@ -1,0 +1,11 @@
+use core.gpu;
+
+use services;
+
+host fn boot() -> i32 {
+    if gpu.device_count() < 1 {
+        return 31
+    }
+    discard services.describe_default_device()
+    return 0
+}

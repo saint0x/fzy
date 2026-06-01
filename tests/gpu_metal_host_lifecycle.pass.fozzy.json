@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "gpu-metal-host-lifecycle-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, platform, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd();\nif platform.system() != 'Darwin':\n    print('gpu-metal-host-lifecycle-skipped')\n    raise SystemExit(0)\nroot = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-gpu-metal-host-lifecycle-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text(textwrap.dedent('''\\\n    [package]\n    name=\"gpu_metal_host_lifecycle\"\n    version=\"0.1.0\"\n\n    [[target.bin]]\n    name=\"gpu_metal_host_lifecycle\"\n    path=\"src/main.fzy\"\n''')); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\n    use core.gpu;\n    host fn main() -> i32 {\n        let count = gpu.device_count();\n        if count < 1 {\n            return 11;\n        }\n        let dev = gpu.default_device();\n        let name = gpu.device_name(dev);\n        let bytes = gpu.device_memory_bytes(dev);\n        let zero: i64 = 0;\n        if str.len(name) <= 0 {\n            return 12;\n        }\n        if bytes <= zero {\n            return 13;\n        }\n        let buf = gpu.alloc_f32(dev, 16);\n        let window = gpu.slice(buf, 4, 8);\n        discard window;\n        gpu.free(buf);\n        return 0;\n    }\n''')); trace = root / 'artifacts' / 'gpu-metal-host.trace.fozzy'; proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(root), '--det', '--seed', '4242', '--record', str(trace), '--json'], cwd=str(repo), capture_output=True, text=True); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload['status'] == 'pass', payload; native_trace = root / 'artifacts' / 'gpu-metal-host.trace.native.trace.json'; native_payload = json.loads(native_trace.read_text()); kinds = [event['kind'] for event in native_payload.get('runtimeEvents', [])];\nfor required in ['gpu.device_select', 'gpu.alloc', 'gpu.slice', 'gpu.free']:\n    assert required in kinds, (required, kinds)\nprint('gpu-metal-host-lifecycle-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "gpu-metal-host-lifecycle-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, platform, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd();\nif platform.system() != 'Darwin':\n    print('gpu-metal-host-lifecycle-skipped')\n    raise SystemExit(0)\nroot = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-gpu-metal-host-lifecycle-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text(textwrap.dedent('''\\\n    [package]\n    name=\"gpu_metal_host_lifecycle\"\n    version=\"0.1.0\"\n\n    [[target.bin]]\n    name=\"gpu_metal_host_lifecycle\"\n    path=\"src/main.fzy\"\n''')); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\n    use core.gpu;\n    host fn main() -> i32 {\n        let count = gpu.device_count();\n        if count < 1 {\n            return 11;\n        }\n        let dev = gpu.default_device();\n        let name = gpu.device_name(dev);\n        let bytes = gpu.device_memory_bytes(dev);\n        let zero: i64 = 0;\n        if str.len(name) <= 0 {\n            return 12;\n        }\n        if bytes <= zero {\n            return 13;\n        }\n        let buf = gpu.alloc_f32(dev, 16);\n        let window = gpu.slice(buf, 4, 8);\n        discard window;\n        gpu.free(buf);\n        return 0;\n    }\n''')); trace = root / 'artifacts' / 'gpu-metal-host.trace.fozzy'; proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(root), '--det', '--seed', '4242', '--record', str(trace), '--json'], cwd=str(repo), capture_output=True, text=True); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload['status'] == 'pass', payload; native_trace = root / 'artifacts' / 'gpu-metal-host.trace.native.trace.json'; native_payload = json.loads(native_trace.read_text()); kinds = [event['kind'] for event in native_payload.get('runtimeEvents', [])];\nfor required in ['gpu.device_select', 'gpu.alloc', 'gpu.slice', 'gpu.free']:\n    assert required in kinds, (required, kinds)\nprint('gpu-metal-host-lifecycle-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "gpu-metal-host-lifecycle-ok\n"
+    }
+  ]
+}

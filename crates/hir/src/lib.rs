@@ -17,6 +17,7 @@ pub struct TypedFunction {
     pub is_unsafe: bool,
     pub is_async: bool,
     pub is_extern: bool,
+    pub execution_space: ast::ExecutionSpace,
     pub abi: Option<String>,
     pub ffi_panic: Option<String>,
     pub required_capabilities: Vec<String>,
@@ -33,6 +34,7 @@ struct PendingTypedFunction {
     is_unsafe: bool,
     is_async: bool,
     is_extern: bool,
+    execution_space: ast::ExecutionSpace,
     abi: Option<String>,
     ffi_panic: Option<String>,
 }
@@ -634,6 +636,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     is_unsafe: function.is_unsafe,
                     is_async: function.is_async,
                     is_extern: function.is_extern,
+                    execution_space: function.execution_space,
                     abi: function.abi.clone(),
                     ffi_panic: function.ffi_panic.clone(),
                 });
@@ -653,6 +656,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     is_unsafe: false,
                     is_async: false,
                     is_extern: false,
+                    execution_space: ast::ExecutionSpace::Host,
                     abi: None,
                     ffi_panic: None,
                 });
@@ -726,6 +730,7 @@ pub fn lower(module: &Module) -> TypedModule {
                         is_unsafe: method.is_unsafe,
                         is_async: method.is_async,
                         is_extern: method.is_extern,
+                        execution_space: method.execution_space,
                         abi: method.abi.clone(),
                         ffi_panic: method.ffi_panic.clone(),
                     });
@@ -757,6 +762,7 @@ pub fn lower(module: &Module) -> TypedModule {
                 is_unsafe: pending.is_unsafe,
                 is_async: pending.is_async,
                 is_extern: pending.is_extern,
+                execution_space: pending.execution_space,
                 abi: pending.abi,
                 ffi_panic: pending.ffi_panic,
                 required_capabilities: Vec::new(),
@@ -815,6 +821,7 @@ pub fn lower(module: &Module) -> TypedModule {
             is_unsafe: pending.is_unsafe,
             is_async: pending.is_async,
             is_extern: pending.is_extern,
+            execution_space: pending.execution_space,
             abi: pending.abi,
             ffi_panic: pending.ffi_panic,
             required_capabilities: Vec::new(),
@@ -829,12 +836,18 @@ pub fn lower(module: &Module) -> TypedModule {
             function.required_capabilities = entry.required.clone();
         }
     }
+    for detail in analyze_execution_spaces(&typed_functions) {
+        record_type_error(&mut type_errors, &mut type_error_details, detail);
+    }
     validate_async_semantics(
         &typed_functions,
         &fn_async,
         &mut type_errors,
         &mut type_error_details,
     );
+    for detail in analyze_device_safe_types(&typed_functions, &struct_defs, &enum_defs) {
+        record_type_error(&mut type_errors, &mut type_error_details, detail);
+    }
 
     let entry_return_type = typed_functions
         .iter()
@@ -2116,6 +2129,38 @@ struct BorrowBinding {
 
 type FunctionSignatures<'a> = BTreeMap<&'a str, &'a TypedFunction>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GpuSliceAccessMode {
+    Observe,
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
+impl GpuSliceAccessMode {
+    fn with_read(self) -> Self {
+        match self {
+            Self::Observe => Self::ReadOnly,
+            Self::ReadOnly => Self::ReadOnly,
+            Self::WriteOnly => Self::ReadWrite,
+            Self::ReadWrite => Self::ReadWrite,
+        }
+    }
+
+    fn with_write(self) -> Self {
+        match self {
+            Self::Observe => Self::WriteOnly,
+            Self::ReadOnly => Self::ReadWrite,
+            Self::WriteOnly => Self::WriteOnly,
+            Self::ReadWrite => Self::ReadWrite,
+        }
+    }
+
+    fn is_read_only_like(self) -> bool {
+        matches!(self, Self::Observe | Self::ReadOnly)
+    }
+}
+
 fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let signatures = functions
@@ -2136,6 +2181,1573 @@ fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
         );
     }
     violations
+}
+
+fn analyze_gpu_kernel_contracts(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let signatures = functions
+        .iter()
+        .map(|function| (function.name.clone(), function.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let slice_access = build_gpu_slice_access_summaries(functions, &signatures);
+    let barrier_summary = build_gpu_barrier_summary(functions);
+    violations.extend(validate_gpu_kernel_launch_abi(functions));
+    for function in functions {
+        let mut bindings = BTreeMap::<String, BorrowBinding>::new();
+        for param in &function.params {
+            if matches!(&param.ty, Type::Named { name, args } if name == "GpuSlice" && args.len() == 1)
+            {
+                bindings.insert(
+                    param.name.clone(),
+                    BorrowBinding {
+                        owner: param.name.clone(),
+                        mutable: true,
+                    },
+                );
+            }
+        }
+        analyze_gpu_kernel_contract_block(
+            function,
+            &function.body,
+            &mut bindings,
+            &signatures,
+            &slice_access,
+            &barrier_summary,
+            0,
+            &mut violations,
+        );
+    }
+    violations
+}
+
+fn analyze_gpu_kernel_contract_block(
+    function: &TypedFunction,
+    body: &[Stmt],
+    bindings: &mut BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    slice_access: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
+    barrier_summary: &BTreeMap<String, bool>,
+    divergent_depth: usize,
+    violations: &mut Vec<String>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Let {
+                name, value, ty, ..
+            } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    value,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let explicit_ty = ty
+                    .as_ref()
+                    .or_else(|| function.local_types.get(name))
+                    .or_else(|| {
+                        function
+                            .params
+                            .iter()
+                            .find(|param| param.name == *name)
+                            .map(|param| &param.ty)
+                    });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr_owned(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(name.clone(), binding);
+                } else {
+                    bindings.remove(name);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    value,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let explicit_ty = function.local_types.get(target).or_else(|| {
+                    function
+                        .params
+                        .iter()
+                        .find(|param| param.name == *target)
+                        .map(|param| &param.ty)
+                });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr_owned(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(target.clone(), binding);
+                } else {
+                    bindings.remove(target);
+                }
+            }
+            Stmt::CompoundAssign { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Defer(value)
+            | Stmt::Requires(value)
+            | Stmt::Ensures(value)
+            | Stmt::Expr(value) => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    value,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    condition,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let mut then_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    then_body,
+                    &mut then_bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+                let mut else_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    else_body,
+                    &mut else_bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+            Stmt::While { condition, body } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    condition,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let mut loop_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    body,
+                    &mut loop_bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+            Stmt::Loop { body } => {
+                let mut loop_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    body,
+                    &mut loop_bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    iterable,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let mut loop_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    body,
+                    &mut loop_bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    analyze_gpu_kernel_contract_block(
+                        function,
+                        std::slice::from_ref(init.as_ref()),
+                        bindings,
+                        signatures,
+                        slice_access,
+                        barrier_summary,
+                        divergent_depth,
+                        violations,
+                    );
+                }
+                if let Some(condition) = condition {
+                    analyze_gpu_kernel_contract_expr(
+                        function,
+                        condition,
+                        bindings,
+                        signatures,
+                        slice_access,
+                        barrier_summary,
+                        divergent_depth,
+                        violations,
+                    );
+                }
+                let mut loop_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    body,
+                    &mut loop_bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+                if let Some(step) = step {
+                    analyze_gpu_kernel_contract_block(
+                        function,
+                        std::slice::from_ref(step.as_ref()),
+                        bindings,
+                        signatures,
+                        slice_access,
+                        barrier_summary,
+                        divergent_depth + 1,
+                        violations,
+                    );
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    scrutinee,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                for arm in arms {
+                    let mut arm_bindings = bindings.clone();
+                    if let Some(guard) = &arm.guard {
+                        analyze_gpu_kernel_contract_expr(
+                            function,
+                            guard,
+                            &mut arm_bindings,
+                            signatures,
+                            slice_access,
+                            barrier_summary,
+                            divergent_depth + 1,
+                            violations,
+                        );
+                    }
+                    analyze_gpu_kernel_contract_expr(
+                        function,
+                        &arm.value,
+                        &mut arm_bindings,
+                        signatures,
+                        slice_access,
+                        barrier_summary,
+                        divergent_depth + 1,
+                        violations,
+                    );
+                }
+            }
+            Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue | Stmt::LetPattern { .. } => {}
+        }
+    }
+}
+
+fn validate_gpu_kernel_launch_abi(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in functions {
+        if function.execution_space != ast::ExecutionSpace::Kernel {
+            continue;
+        }
+        for param in &function.params {
+            if !is_supported_gpu_launch_abi_type(&param.ty) {
+                violations.push(format!(
+                    "kernel function `{}` parameter `{}` uses type `{}` that is not yet supported by the stable GPU launch ABI",
+                    function.name, param.name, param.ty
+                ));
+            }
+        }
+    }
+    violations
+}
+
+fn is_supported_gpu_launch_abi_type(ty: &Type) -> bool {
+    match ty {
+        Type::Int {
+            signed: true,
+            bits: 32,
+        }
+        | Type::Int {
+            signed: false,
+            bits: 32,
+        }
+        | Type::Float { bits: 32 } => true,
+        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => matches!(
+            &args[0],
+            Type::Float { bits: 32 }
+                | Type::Int {
+                    signed: true,
+                    bits: 32
+                }
+                | Type::Int {
+                    signed: false,
+                    bits: 32
+                }
+        ),
+        _ => false,
+    }
+}
+
+fn analyze_gpu_kernel_contract_expr(
+    function: &TypedFunction,
+    expr: &Expr,
+    bindings: &mut BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    slice_access: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
+    barrier_summary: &BTreeMap<String, bool>,
+    divergent_depth: usize,
+    violations: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if divergent_depth > 0
+                && matches!(
+                    function.execution_space,
+                    ast::ExecutionSpace::Device | ast::ExecutionSpace::Kernel
+                )
+            {
+                if callee == "gpu.barrier" {
+                    violations.push(format!(
+                        "{} function `{}` cannot use `gpu.barrier` inside divergent control flow",
+                        execution_space_label(function.execution_space),
+                        function.name
+                    ));
+                } else if barrier_summary.get(callee).copied().unwrap_or(false) {
+                    violations.push(format!(
+                        "{} function `{}` cannot call barrier-carrying function `{}` inside divergent control flow",
+                        execution_space_label(function.execution_space),
+                        function.name,
+                        callee
+                    ));
+                }
+            }
+            if is_gpu_launch_callee(callee) {
+                analyze_gpu_launch_aliases(
+                    function,
+                    callee,
+                    args,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    violations,
+                );
+            }
+            for arg in args {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    arg,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+            }
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                condition,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                then_expr,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                else_expr,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::Discard(inner) => analyze_gpu_kernel_contract_expr(
+            function,
+            inner,
+            bindings,
+            signatures,
+            slice_access,
+            barrier_summary,
+            divergent_depth,
+            violations,
+        ),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                try_expr,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                catch_expr,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::Match { scrutinee, arms } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                scrutinee,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    analyze_gpu_kernel_contract_expr(
+                        function,
+                        guard,
+                        bindings,
+                        signatures,
+                        slice_access,
+                        barrier_summary,
+                        divergent_depth + 1,
+                        violations,
+                    );
+                }
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    &arm.value,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+        }
+        Expr::While { condition, body } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                condition,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            let mut loop_bindings = bindings.clone();
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                &mut loop_bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    std::slice::from_ref(init.as_ref()),
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+            }
+            if let Some(condition) = condition {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    condition,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+            }
+            let mut loop_bindings = bindings.clone();
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                &mut loop_bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+            if let Some(step) = step {
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    std::slice::from_ref(step.as_ref()),
+                    bindings,
+                    signatures,
+                    slice_access,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                iterable,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            let mut loop_bindings = bindings.clone();
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                &mut loop_bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::Loop { body } => {
+            let mut loop_bindings = bindings.clone();
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                &mut loop_bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::FieldAccess { base, .. } | Expr::Group(base) => analyze_gpu_kernel_contract_expr(
+            function,
+            base,
+            bindings,
+            signatures,
+            slice_access,
+            barrier_summary,
+            divergent_depth,
+            violations,
+        ),
+        Expr::Index { base, index } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                base,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                index,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+        }
+        Expr::Unary { expr, .. } => analyze_gpu_kernel_contract_expr(
+            function,
+            expr,
+            bindings,
+            signatures,
+            slice_access,
+            barrier_summary,
+            divergent_depth,
+            violations,
+        ),
+        Expr::Binary { left, right, .. } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                left,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                right,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+        }
+        Expr::Await(inner) | Expr::Return(Some(inner)) => analyze_gpu_kernel_contract_expr(
+            function,
+            inner,
+            bindings,
+            signatures,
+            slice_access,
+            barrier_summary,
+            divergent_depth,
+            violations,
+        ),
+        Expr::Range { start, end, .. } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                start,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                end,
+                bindings,
+                signatures,
+                slice_access,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+        }
+        Expr::Return(None)
+        | Expr::Ident(_)
+        | Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Char(_)
+        | Expr::Break(_)
+        | Expr::Continue
+        | Expr::Closure { .. }
+        | Expr::ArrayLiteral(_)
+        | Expr::Tuple(_)
+        | Expr::StructInit { .. }
+        | Expr::EnumInit { .. }
+        | Expr::ObjectLiteral(_) => {}
+    }
+}
+
+fn is_gpu_launch_callee(callee: &str) -> bool {
+    matches!(
+        callee,
+        "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4"
+    )
+}
+
+fn gpu_base_callee(callee: &str) -> &str {
+    callee.split('<').next().unwrap_or(callee)
+}
+
+fn analyze_gpu_launch_aliases(
+    function: &TypedFunction,
+    callee: &str,
+    args: &[Expr],
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    slice_access: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
+    violations: &mut Vec<String>,
+) {
+    let Some(Expr::Ident(kernel_name)) = args.first() else {
+        return;
+    };
+    let Some(kernel) = signatures.get(kernel_name) else {
+        return;
+    };
+    if kernel.execution_space != ast::ExecutionSpace::Kernel {
+        return;
+    }
+    let mut seen = BTreeMap::<String, String>::new();
+    let access_summary = slice_access.get(&kernel.name);
+    for (index, param) in kernel.params.iter().enumerate() {
+        let Some(arg) = args.get(index + 3) else {
+            continue;
+        };
+        let Type::Named {
+            name,
+            args: named_args,
+        } = &param.ty
+        else {
+            continue;
+        };
+        if name != "GpuSlice" || named_args.len() != 1 {
+            continue;
+        }
+        let Some(owner) = infer_gpu_slice_owner_name(arg, bindings, signatures) else {
+            continue;
+        };
+        if let Some(previous_param) = seen.insert(owner.clone(), param.name.clone()) {
+            let current_mode = access_summary
+                .and_then(|summary| summary.get(&param.name))
+                .copied()
+                .unwrap_or(GpuSliceAccessMode::ReadWrite);
+            let previous_mode = access_summary
+                .and_then(|summary| summary.get(&previous_param))
+                .copied()
+                .unwrap_or(GpuSliceAccessMode::ReadWrite);
+            if current_mode.is_read_only_like() && previous_mode.is_read_only_like() {
+                continue;
+            }
+            violations.push(format!(
+                "host function `{}` launch `{}` via `{}` aliases GpuSlice parameters `{}` and `{}` through owner `{}`",
+                function.name,
+                kernel.name,
+                callee,
+                previous_param,
+                param.name,
+                owner
+            ));
+        }
+    }
+}
+
+fn build_gpu_slice_access_summaries(
+    functions: &[TypedFunction],
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>> {
+    let mut summaries = functions
+        .iter()
+        .map(|function| {
+            (
+                function.name.clone(),
+                function
+                    .params
+                    .iter()
+                    .filter(|param| matches!(&param.ty, Type::Named { name, args } if name == "GpuSlice" && args.len() == 1))
+                    .map(|param| (param.name.clone(), GpuSliceAccessMode::Observe))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    loop {
+        let snapshot = summaries.clone();
+        let mut changed = false;
+        for function in functions {
+            let mut bindings = function
+                .params
+                .iter()
+                .filter(|param| matches!(&param.ty, Type::Named { name, args } if name == "GpuSlice" && args.len() == 1))
+                .map(|param| {
+                    (
+                        param.name.clone(),
+                        BorrowBinding {
+                            owner: param.name.clone(),
+                            mutable: true,
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let mut updates = BTreeMap::<String, GpuSliceAccessMode>::new();
+            collect_gpu_stmt_slice_access(
+                function,
+                &function.body,
+                &mut bindings,
+                signatures,
+                &snapshot,
+                &mut updates,
+            );
+            let summary = summaries.entry(function.name.clone()).or_default();
+            for (param, mode) in updates {
+                let entry = summary.entry(param).or_insert(GpuSliceAccessMode::Observe);
+                if *entry != mode {
+                    *entry = mode;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    summaries
+}
+
+fn collect_gpu_stmt_slice_access(
+    function: &TypedFunction,
+    body: &[Stmt],
+    bindings: &mut BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    summaries: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
+    out: &mut BTreeMap<String, GpuSliceAccessMode>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Let {
+                name, value, ty, ..
+            } => {
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
+                let explicit_ty = ty
+                    .as_ref()
+                    .or_else(|| function.local_types.get(name))
+                    .or_else(|| {
+                        function
+                            .params
+                            .iter()
+                            .find(|param| param.name == *name)
+                            .map(|param| &param.ty)
+                    });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr_owned(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(name.clone(), binding);
+                } else {
+                    bindings.remove(name);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
+                let explicit_ty = function.local_types.get(target).or_else(|| {
+                    function
+                        .params
+                        .iter()
+                        .find(|param| param.name == *target)
+                        .map(|param| &param.ty)
+                });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr_owned(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(target.clone(), binding);
+                } else {
+                    bindings.remove(target);
+                }
+            }
+            Stmt::CompoundAssign { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value))
+            | Stmt::Defer(value)
+            | Stmt::Requires(value)
+            | Stmt::Ensures(value) => {
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                collect_gpu_expr_slice_access(
+                    function, condition, bindings, signatures, summaries, out,
+                );
+                collect_gpu_stmt_slice_access(
+                    function,
+                    then_body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+                collect_gpu_stmt_slice_access(
+                    function,
+                    else_body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            Stmt::While { condition, body } => {
+                collect_gpu_expr_slice_access(
+                    function, condition, bindings, signatures, summaries, out,
+                );
+                collect_gpu_stmt_slice_access(
+                    function,
+                    body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            Stmt::Loop { body } => {
+                collect_gpu_stmt_slice_access(
+                    function,
+                    body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    collect_gpu_stmt_slice_access(
+                        function,
+                        std::slice::from_ref(init.as_ref()),
+                        bindings,
+                        signatures,
+                        summaries,
+                        out,
+                    );
+                }
+                if let Some(condition) = condition {
+                    collect_gpu_expr_slice_access(
+                        function, condition, bindings, signatures, summaries, out,
+                    );
+                }
+                collect_gpu_stmt_slice_access(
+                    function,
+                    body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+                if let Some(step) = step {
+                    collect_gpu_stmt_slice_access(
+                        function,
+                        std::slice::from_ref(step.as_ref()),
+                        bindings,
+                        signatures,
+                        summaries,
+                        out,
+                    );
+                }
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                collect_gpu_expr_slice_access(
+                    function, iterable, bindings, signatures, summaries, out,
+                );
+                collect_gpu_stmt_slice_access(
+                    function,
+                    body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            Stmt::Match { scrutinee, arms } => {
+                collect_gpu_expr_slice_access(
+                    function, scrutinee, bindings, signatures, summaries, out,
+                );
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_gpu_expr_slice_access(
+                            function, guard, bindings, signatures, summaries, out,
+                        );
+                    }
+                    collect_gpu_expr_slice_access(
+                        function, &arm.value, bindings, signatures, summaries, out,
+                    );
+                }
+            }
+            Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue | Stmt::LetPattern { .. } => {}
+        }
+    }
+}
+
+fn collect_gpu_expr_slice_access(
+    function: &TypedFunction,
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    summaries: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
+    out: &mut BTreeMap<String, GpuSliceAccessMode>,
+) {
+    match expr {
+        Expr::Index { base, index } => {
+            mark_gpu_slice_read(base, bindings, signatures, out);
+            collect_gpu_expr_slice_access(function, index, bindings, signatures, summaries, out);
+        }
+        Expr::Call { callee, args } if gpu_base_callee(callee) == "__index_assign" => {
+            if let Some(base) = args.first() {
+                mark_gpu_slice_write(base, bindings, signatures, out);
+            }
+            for arg in args.iter().skip(1) {
+                collect_gpu_expr_slice_access(function, arg, bindings, signatures, summaries, out);
+            }
+        }
+        Expr::Call { callee, args } => {
+            let callee = gpu_base_callee(callee);
+            match callee {
+                "gpu.load_f32" | "gpu.load_i32" | "gpu.load_u32" => {
+                    if let Some(base) = args.first() {
+                        mark_gpu_slice_read(base, bindings, signatures, out);
+                    }
+                }
+                "gpu.store_f32" | "gpu.store_i32" | "gpu.store_u32" => {
+                    if let Some(base) = args.first() {
+                        mark_gpu_slice_write(base, bindings, signatures, out);
+                    }
+                }
+                _ => {}
+            }
+            if let (Some(callee_fn), Some(summary)) =
+                (signatures.get(callee), summaries.get(callee))
+            {
+                for (index, arg) in args.iter().enumerate() {
+                    if let Some(param) = callee_fn.params.get(index) {
+                        if let Some(mode) = summary.get(&param.name).copied() {
+                            match mode {
+                                GpuSliceAccessMode::Observe => {}
+                                GpuSliceAccessMode::ReadOnly => {
+                                    mark_gpu_slice_read(arg, bindings, signatures, out)
+                                }
+                                GpuSliceAccessMode::WriteOnly => {
+                                    mark_gpu_slice_write(arg, bindings, signatures, out)
+                                }
+                                GpuSliceAccessMode::ReadWrite => {
+                                    mark_gpu_slice_read(arg, bindings, signatures, out);
+                                    mark_gpu_slice_write(arg, bindings, signatures, out);
+                                }
+                            }
+                        }
+                    }
+                    collect_gpu_expr_slice_access(
+                        function, arg, bindings, signatures, summaries, out,
+                    );
+                }
+            } else {
+                for arg in args {
+                    collect_gpu_expr_slice_access(
+                        function, arg, bindings, signatures, summaries, out,
+                    );
+                }
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_gpu_expr_slice_access(
+                function, condition, bindings, signatures, summaries, out,
+            );
+            collect_gpu_expr_slice_access(
+                function, then_expr, bindings, signatures, summaries, out,
+            );
+            collect_gpu_expr_slice_access(
+                function, else_expr, bindings, signatures, summaries, out,
+            );
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_gpu_expr_slice_access(
+                function, scrutinee, bindings, signatures, summaries, out,
+            );
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_gpu_expr_slice_access(
+                        function, guard, bindings, signatures, summaries, out,
+                    );
+                }
+                collect_gpu_expr_slice_access(
+                    function, &arm.value, bindings, signatures, summaries, out,
+                );
+            }
+        }
+        Expr::While { condition, body } => {
+            collect_gpu_expr_slice_access(
+                function, condition, bindings, signatures, summaries, out,
+            );
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_gpu_stmt_slice_access(
+                    function,
+                    std::slice::from_ref(init.as_ref()),
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_gpu_expr_slice_access(
+                    function, condition, bindings, signatures, summaries, out,
+                );
+            }
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+            if let Some(step) = step {
+                collect_gpu_stmt_slice_access(
+                    function,
+                    std::slice::from_ref(step.as_ref()),
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            collect_gpu_expr_slice_access(function, iterable, bindings, signatures, summaries, out);
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+        }
+        Expr::Loop { body } => {
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+        }
+        Expr::Group(inner)
+        | Expr::FieldAccess { base: inner, .. }
+        | Expr::Unary { expr: inner, .. }
+        | Expr::Await(inner)
+        | Expr::Discard(inner)
+        | Expr::Return(Some(inner)) => {
+            collect_gpu_expr_slice_access(function, inner, bindings, signatures, summaries, out)
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_gpu_expr_slice_access(function, left, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(function, right, bindings, signatures, summaries, out);
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_gpu_expr_slice_access(function, try_expr, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(
+                function, catch_expr, bindings, signatures, summaries, out,
+            );
+        }
+        Expr::Range { start, end, .. } => {
+            collect_gpu_expr_slice_access(function, start, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(function, end, bindings, signatures, summaries, out);
+        }
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
+            }
+        }
+        Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for value in payload {
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
+            }
+            for (_, value) in named_payload {
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
+            }
+        }
+        Expr::ArrayLiteral(values) | Expr::Tuple(values) => {
+            for value in values {
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
+            }
+        }
+        Expr::Closure { .. }
+        | Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Bool(_)
+        | Expr::Char(_)
+        | Expr::Str(_)
+        | Expr::Ident(_)
+        | Expr::Break(_)
+        | Expr::Continue
+        | Expr::Return(None) => {}
+    }
+}
+
+fn mark_gpu_slice_read(
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    out: &mut BTreeMap<String, GpuSliceAccessMode>,
+) {
+    if let Some(owner) = infer_gpu_slice_owner_name(expr, bindings, signatures) {
+        let entry = out.entry(owner).or_insert(GpuSliceAccessMode::Observe);
+        *entry = entry.with_read();
+    }
+}
+
+fn mark_gpu_slice_write(
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    out: &mut BTreeMap<String, GpuSliceAccessMode>,
+) {
+    if let Some(owner) = infer_gpu_slice_owner_name(expr, bindings, signatures) {
+        let entry = out.entry(owner).or_insert(GpuSliceAccessMode::Observe);
+        *entry = entry.with_write();
+    }
+}
+
+fn build_gpu_barrier_summary(functions: &[TypedFunction]) -> BTreeMap<String, bool> {
+    let function_map = functions
+        .iter()
+        .map(|function| (function.name.clone(), function))
+        .collect::<BTreeMap<_, _>>();
+    let mut cache = BTreeMap::new();
+    for function in functions {
+        let mut visiting = BTreeSet::new();
+        let contains =
+            function_contains_gpu_barrier(function, &function_map, &mut cache, &mut visiting);
+        cache.insert(function.name.clone(), contains);
+    }
+    cache
+}
+
+fn function_contains_gpu_barrier(
+    function: &TypedFunction,
+    functions: &BTreeMap<String, &TypedFunction>,
+    cache: &mut BTreeMap<String, bool>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    if let Some(cached) = cache.get(&function.name) {
+        return *cached;
+    }
+    if !visiting.insert(function.name.clone()) {
+        return false;
+    }
+    let contains = block_contains_gpu_barrier(&function.body, functions, cache, visiting);
+    visiting.remove(&function.name);
+    cache.insert(function.name.clone(), contains);
+    contains
+}
+
+fn block_contains_gpu_barrier(
+    body: &[Stmt],
+    functions: &BTreeMap<String, &TypedFunction>,
+    cache: &mut BTreeMap<String, bool>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    body.iter()
+        .any(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
+}
+
+fn stmt_contains_gpu_barrier(
+    stmt: &Stmt,
+    functions: &BTreeMap<String, &TypedFunction>,
+    cache: &mut BTreeMap<String, bool>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Expr(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Return(Some(value)) => expr_contains_gpu_barrier(value, functions, cache, visiting),
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_gpu_barrier(condition, functions, cache, visiting)
+                || block_contains_gpu_barrier(then_body, functions, cache, visiting)
+                || block_contains_gpu_barrier(else_body, functions, cache, visiting)
+        }
+        Stmt::While { condition, body } => {
+            expr_contains_gpu_barrier(condition, functions, cache, visiting)
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Stmt::Loop { body } => block_contains_gpu_barrier(body, functions, cache, visiting),
+        Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_gpu_barrier(iterable, functions, cache, visiting)
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
+                || condition
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_gpu_barrier(expr, functions, cache, visiting))
+                || step
+                    .as_deref()
+                    .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Stmt::Match { scrutinee, arms } => {
+            expr_contains_gpu_barrier(scrutinee, functions, cache, visiting)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(|guard| {
+                        expr_contains_gpu_barrier(guard, functions, cache, visiting)
+                    }) || expr_contains_gpu_barrier(&arm.value, functions, cache, visiting)
+                })
+        }
+        Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => false,
+    }
+}
+
+fn expr_contains_gpu_barrier(
+    expr: &Expr,
+    functions: &BTreeMap<String, &TypedFunction>,
+    cache: &mut BTreeMap<String, bool>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    match expr {
+        Expr::Call { callee, args } => {
+            callee == "gpu.barrier"
+                || functions.get(callee).is_some_and(|function| {
+                    function_contains_gpu_barrier(function, functions, cache, visiting)
+                })
+                || args
+                    .iter()
+                    .any(|arg| expr_contains_gpu_barrier(arg, functions, cache, visiting))
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_contains_gpu_barrier(condition, functions, cache, visiting)
+                || expr_contains_gpu_barrier(then_expr, functions, cache, visiting)
+                || expr_contains_gpu_barrier(else_expr, functions, cache, visiting)
+        }
+        Expr::Discard(inner) => expr_contains_gpu_barrier(inner, functions, cache, visiting),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            expr_contains_gpu_barrier(try_expr, functions, cache, visiting)
+                || expr_contains_gpu_barrier(catch_expr, functions, cache, visiting)
+        }
+        Expr::Match { scrutinee, arms } => {
+            expr_contains_gpu_barrier(scrutinee, functions, cache, visiting)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(|guard| {
+                        expr_contains_gpu_barrier(guard, functions, cache, visiting)
+                    }) || expr_contains_gpu_barrier(&arm.value, functions, cache, visiting)
+                })
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Expr::While { condition, body } => {
+            expr_contains_gpu_barrier(condition, functions, cache, visiting)
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
+                || condition
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_gpu_barrier(expr, functions, cache, visiting))
+                || step
+                    .as_deref()
+                    .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            expr_contains_gpu_barrier(iterable, functions, cache, visiting)
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Expr::Loop { body } => block_contains_gpu_barrier(body, functions, cache, visiting),
+        Expr::FieldAccess { base, .. } | Expr::Group(base) | Expr::Await(base) => {
+            expr_contains_gpu_barrier(base, functions, cache, visiting)
+        }
+        Expr::Index { base, index } => {
+            expr_contains_gpu_barrier(base, functions, cache, visiting)
+                || expr_contains_gpu_barrier(index, functions, cache, visiting)
+        }
+        Expr::Unary { expr, .. } | Expr::Return(Some(expr)) => {
+            expr_contains_gpu_barrier(expr, functions, cache, visiting)
+        }
+        Expr::Range { start, end, .. } => {
+            expr_contains_gpu_barrier(start, functions, cache, visiting)
+                || expr_contains_gpu_barrier(end, functions, cache, visiting)
+        }
+        Expr::Binary { left, right, .. } => {
+            expr_contains_gpu_barrier(left, functions, cache, visiting)
+                || expr_contains_gpu_barrier(right, functions, cache, visiting)
+        }
+        Expr::Return(None)
+        | Expr::Ident(_)
+        | Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Char(_)
+        | Expr::Break(_)
+        | Expr::Continue
+        | Expr::Closure { .. }
+        | Expr::ArrayLiteral(_)
+        | Expr::Tuple(_)
+        | Expr::StructInit { .. }
+        | Expr::EnumInit { .. }
+        | Expr::ObjectLiteral(_) => false,
+    }
 }
 
 fn analyze_live_borrow_block(
@@ -2230,8 +3842,18 @@ fn analyze_live_borrow_block(
             Stmt::Let {
                 name, value, ty, ..
             } => {
+                let explicit_ty = ty
+                    .as_ref()
+                    .or_else(|| function.local_types.get(name))
+                    .or_else(|| {
+                        function
+                            .params
+                            .iter()
+                            .find(|param| param.name == *name)
+                            .map(|param| &param.ty)
+                    });
                 if let Some(binding) =
-                    infer_borrow_binding_from_expr(value, ty.as_ref(), bindings, signatures)
+                    infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
                 {
                     bindings.insert(name.clone(), binding);
                 } else {
@@ -2417,8 +4039,18 @@ fn stmt_borrow_creations(
         Stmt::Let {
             name, value, ty, ..
         } => {
+            let explicit_ty = ty
+                .as_ref()
+                .or_else(|| function.local_types.get(name))
+                .or_else(|| {
+                    function
+                        .params
+                        .iter()
+                        .find(|param| param.name == *name)
+                        .map(|param| &param.ty)
+                });
             if let Some(binding) =
-                infer_borrow_binding_from_expr(value, ty.as_ref(), bindings, signatures)
+                infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
             {
                 out.push(BorrowCreation {
                     owner: binding.owner,
@@ -2563,13 +4195,46 @@ fn infer_borrow_binding_from_expr(
     bindings: &CowBindings<BorrowBinding>,
     signatures: &FunctionSignatures<'_>,
 ) -> Option<BorrowBinding> {
-    let Type::Ref { mutable, .. } = explicit_ty? else {
-        return None;
-    };
-    infer_borrow_owner_name(value, bindings, signatures).map(|owner| BorrowBinding {
-        owner,
-        mutable: *mutable,
-    })
+    match explicit_ty? {
+        Type::Ref { mutable, .. } => {
+            infer_borrow_owner_name(value, bindings, signatures).map(|owner| BorrowBinding {
+                owner,
+                mutable: *mutable,
+            })
+        }
+        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+            infer_gpu_slice_owner_name_borrowed(value, bindings, signatures).map(|owner| {
+                BorrowBinding {
+                    owner,
+                    // Until readonly/writeonly qualifiers land, treat live GPU slices as mutable views.
+                    mutable: true,
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+fn infer_borrow_binding_from_expr_owned(
+    value: &Expr,
+    explicit_ty: Option<&Type>,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> Option<BorrowBinding> {
+    match explicit_ty? {
+        Type::Ref { mutable, .. } => infer_borrow_owner_name_owned(value, bindings, signatures)
+            .map(|owner| BorrowBinding {
+                owner,
+                mutable: *mutable,
+            }),
+        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+            infer_gpu_slice_owner_name(value, bindings, signatures).map(|owner| BorrowBinding {
+                owner,
+                mutable: true,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn infer_borrow_owner_name(
@@ -2643,6 +4308,218 @@ fn infer_borrow_owner_name(
             }
         }
         _ => None,
+    }
+}
+
+fn infer_borrow_owner_name_owned(
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name) => Some(
+            bindings
+                .get(name)
+                .map(|binding| binding.owner.clone())
+                .unwrap_or_else(|| name.clone()),
+        ),
+        Expr::Group(inner) | Expr::FieldAccess { base: inner, .. } => {
+            infer_borrow_owner_name_owned(inner, bindings, signatures)
+        }
+        Expr::Call { callee, args } => signatures.get(callee).and_then(|function| {
+            let Type::Ref {
+                lifetime: Some(return_lifetime),
+                ..
+            } = &function.return_type
+            else {
+                return None;
+            };
+            let matching = function
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, param)| match &param.ty {
+                    Type::Ref {
+                        lifetime: Some(param_lifetime),
+                        ..
+                    } if param_lifetime == return_lifetime => args.get(index),
+                    _ => None,
+                })
+                .filter_map(|arg| infer_borrow_owner_name_owned(arg, bindings, signatures))
+                .collect::<Vec<_>>();
+            if matching.is_empty() {
+                None
+            } else if matching.windows(2).all(|window| window[0] == window[1]) {
+                matching.first().cloned()
+            } else {
+                None
+            }
+        }),
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_owner = infer_borrow_owner_name_owned(then_expr, bindings, signatures);
+            let else_owner = infer_borrow_owner_name_owned(else_expr, bindings, signatures);
+            if then_owner == else_owner {
+                then_owner
+            } else {
+                None
+            }
+        }
+        Expr::Match { arms, .. } => {
+            let owners = arms
+                .iter()
+                .filter_map(|arm| infer_borrow_owner_name_owned(&arm.value, bindings, signatures))
+                .collect::<Vec<_>>();
+            if owners.is_empty() {
+                None
+            } else if owners.windows(2).all(|window| window[0] == window[1]) {
+                owners.first().cloned()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn infer_gpu_slice_owner_name_borrowed(
+    expr: &Expr,
+    bindings: &CowBindings<BorrowBinding>,
+    signatures: &FunctionSignatures<'_>,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name) => Some(
+            bindings
+                .get(name)
+                .map(|binding| binding.owner.clone())
+                .unwrap_or_else(|| name.clone()),
+        ),
+        Expr::Group(inner) | Expr::FieldAccess { base: inner, .. } => {
+            infer_gpu_slice_owner_name_borrowed(inner, bindings, signatures)
+        }
+        Expr::Call { callee, args } if callee == "gpu.slice" => args
+            .first()
+            .and_then(|arg| infer_gpu_slice_owner_name_borrowed(arg, bindings, signatures)),
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_owner = infer_gpu_slice_owner_name_borrowed(then_expr, bindings, signatures);
+            let else_owner = infer_gpu_slice_owner_name_borrowed(else_expr, bindings, signatures);
+            if then_owner == else_owner {
+                then_owner
+            } else {
+                None
+            }
+        }
+        Expr::Match { arms, .. } => {
+            let owners = arms
+                .iter()
+                .filter_map(|arm| {
+                    infer_gpu_slice_owner_name_borrowed(&arm.value, bindings, signatures)
+                })
+                .collect::<Vec<_>>();
+            if owners.is_empty() {
+                None
+            } else if owners.windows(2).all(|window| window[0] == window[1]) {
+                owners.first().cloned()
+            } else {
+                None
+            }
+        }
+        Expr::Call { callee, args } => signatures.get(callee.as_str()).and_then(|function| {
+            let Type::Named { name, args: ret_args } = &function.return_type else {
+                return None;
+            };
+            if name != "GpuSlice" || ret_args.len() != 1 {
+                return None;
+            }
+            function
+                .params
+                .iter()
+                .enumerate()
+                .find(|(_, param)| {
+                    matches!(&param.ty, Type::Named { name, args } if name == "GpuSlice" && args.len() == 1)
+                })
+                .and_then(|(index, _)| args.get(index))
+                .and_then(|arg| infer_gpu_slice_owner_name_borrowed(arg, bindings, signatures))
+        }),
+        _ => None,
+    }
+}
+
+fn infer_gpu_slice_owner_name(
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name) => Some(
+            bindings
+                .get(name)
+                .map(|binding| binding.owner.clone())
+                .unwrap_or_else(|| name.clone()),
+        ),
+        Expr::Group(inner) | Expr::FieldAccess { base: inner, .. } => {
+            infer_gpu_slice_owner_name(inner, bindings, signatures)
+        }
+        Expr::Call { callee, args } if callee == "gpu.slice" => args
+            .first()
+            .and_then(|arg| infer_gpu_slice_owner_name(arg, bindings, signatures)),
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_owner = infer_gpu_slice_owner_name(then_expr, bindings, signatures);
+            let else_owner = infer_gpu_slice_owner_name(else_expr, bindings, signatures);
+            if then_owner == else_owner {
+                then_owner
+            } else {
+                None
+            }
+        }
+        Expr::Match { arms, .. } => {
+            let owners = arms
+                .iter()
+                .filter_map(|arm| infer_gpu_slice_owner_name(&arm.value, bindings, signatures))
+                .collect::<Vec<_>>();
+            if owners.is_empty() {
+                None
+            } else if owners.windows(2).all(|window| window[0] == window[1]) {
+                owners.first().cloned()
+            } else {
+                None
+            }
+        }
+        Expr::Call { callee, args } => signatures.get(callee).and_then(|function| match &function
+            .return_type
+        {
+            Type::Named {
+                name,
+                args: named_args,
+            } if name == "GpuSlice" && named_args.len() == 1 => args
+                .iter()
+                .filter_map(|arg| infer_gpu_slice_owner_name(arg, bindings, signatures))
+                .collect::<Vec<_>>()
+                .first()
+                .cloned(),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+fn execution_space_label(execution: ast::ExecutionSpace) -> &'static str {
+    match execution {
+        ast::ExecutionSpace::Host => "host",
+        ast::ExecutionSpace::Pure => "pure",
+        ast::ExecutionSpace::Device => "device",
+        ast::ExecutionSpace::Kernel => "kernel",
     }
 }
 
@@ -4691,6 +6568,92 @@ const RUNTIME_HANDLE_CONTRACTS: &[RuntimeHandleContract] = &[
         consumer_intrinsics: &[],
         observer_intrinsics: &[],
     },
+    RuntimeHandleContract {
+        name: "GpuDevice",
+        copy: true,
+        owned: false,
+        linear: false,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &["gpu.default_device"],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &["gpu.device_name", "gpu.device_memory_bytes"],
+    },
+    RuntimeHandleContract {
+        name: "GpuBuffer",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &[
+            "gpu.alloc_f32",
+            "gpu.alloc_i32",
+            "gpu.alloc_u32",
+            "gpu.upload_f32",
+            "gpu.upload_i32",
+            "gpu.upload_u32",
+        ],
+        consumer_intrinsics: &["gpu.free"],
+        observer_intrinsics: &[
+            "gpu.slice",
+            "gpu.download_f32",
+            "gpu.download_i32",
+            "gpu.download_u32",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "GpuSlice",
+        copy: true,
+        owned: false,
+        linear: false,
+        closable: false,
+        send_safe: false,
+        async_stable: false,
+        producer_intrinsics: &["gpu.slice"],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[
+            "gpu.slice_len",
+            "gpu.load_f32",
+            "gpu.load_i32",
+            "gpu.load_u32",
+            "gpu.store_f32",
+            "gpu.store_i32",
+            "gpu.store_u32",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "GpuEvent",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &[
+            "gpu.launch0",
+            "gpu.launch1",
+            "gpu.launch2",
+            "gpu.launch3",
+            "gpu.launch4",
+        ],
+        consumer_intrinsics: &["gpu.wait", "gpu.wait_async"],
+        observer_intrinsics: &[],
+    },
+    RuntimeHandleContract {
+        name: "GpuStream",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &[],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[],
+    },
 ];
 
 pub fn runtime_handle_contracts() -> &'static [RuntimeHandleContract] {
@@ -4839,6 +6802,9 @@ fn collect_function_caps_and_calls(
                         "error" | "err" | "std.error" => {
                             self.caps.insert("error".to_string());
                         }
+                        "gpu" => {
+                            self.caps.insert("gpu".to_string());
+                        }
                         _ => {}
                     }
                 }
@@ -4856,6 +6822,554 @@ fn collect_function_caps_and_calls(
     for stmt in &function.body {
         collector.visit_stmt(stmt);
     }
+
+    if function.execution_space != ast::ExecutionSpace::Host {
+        caps.remove("gpu");
+    }
+}
+
+fn analyze_execution_spaces(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let function_map = functions
+        .iter()
+        .map(|function| (function.name.as_str(), function))
+        .collect::<BTreeMap<_, _>>();
+
+    for function in functions {
+        validate_execution_space_function_shape(function, &mut violations);
+        for stmt in &function.body {
+            analyze_execution_space_stmt(function, stmt, &function_map, &mut violations);
+        }
+    }
+
+    violations
+}
+
+fn validate_execution_space_function_shape(function: &TypedFunction, violations: &mut Vec<String>) {
+    let execution = function.execution_space;
+    if execution != ast::ExecutionSpace::Host && function.is_async {
+        violations.push(format!(
+            "{} function `{}` cannot be async",
+            execution.as_str(),
+            function.name
+        ));
+    }
+    if execution != ast::ExecutionSpace::Host && function.is_extern {
+        violations.push(format!(
+            "{} function `{}` cannot use an extern ABI boundary",
+            execution.as_str(),
+            function.name
+        ));
+    }
+    if execution == ast::ExecutionSpace::Kernel && function.return_type != Type::Void {
+        violations.push(format!(
+            "kernel function `{}` must return `void`, found `{}`",
+            function.name, function.return_type
+        ));
+    }
+}
+
+fn analyze_execution_space_stmt(
+    function: &TypedFunction,
+    stmt: &Stmt,
+    function_map: &BTreeMap<&str, &TypedFunction>,
+    violations: &mut Vec<String>,
+) {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => {
+            analyze_execution_space_expr(function, value, function_map, violations);
+        }
+        Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => {}
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            analyze_execution_space_expr(function, condition, function_map, violations);
+            for stmt in then_body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+            for stmt in else_body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::While { condition, body } => {
+            analyze_execution_space_expr(function, condition, function_map, violations);
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                analyze_execution_space_stmt(function, init, function_map, violations);
+            }
+            if let Some(condition) = condition {
+                analyze_execution_space_expr(function, condition, function_map, violations);
+            }
+            if let Some(step) = step {
+                analyze_execution_space_stmt(function, step, function_map, violations);
+            }
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            analyze_execution_space_expr(function, iterable, function_map, violations);
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::Loop { body } => {
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            analyze_execution_space_expr(function, scrutinee, function_map, violations);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    analyze_execution_space_expr(function, guard, function_map, violations);
+                }
+                analyze_execution_space_expr(function, &arm.value, function_map, violations);
+            }
+        }
+    }
+}
+
+fn analyze_execution_space_expr(
+    function: &TypedFunction,
+    expr: &Expr,
+    function_map: &BTreeMap<&str, &TypedFunction>,
+    violations: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            validate_execution_space_call(function, callee, function_map, violations);
+            for arg in args {
+                analyze_execution_space_expr(function, arg, function_map, violations);
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::FieldAccess { base, .. } => {
+            analyze_execution_space_expr(function, base, function_map, violations);
+        }
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                analyze_execution_space_expr(function, value, function_map, violations);
+            }
+        }
+        Expr::EnumInit { payload, .. } | Expr::Tuple(payload) | Expr::ArrayLiteral(payload) => {
+            for value in payload {
+                analyze_execution_space_expr(function, value, function_map, violations);
+            }
+        }
+        Expr::Closure { body, .. } | Expr::Group(body) | Expr::Discard(body) => {
+            analyze_execution_space_expr(function, body, function_map, violations);
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            analyze_execution_space_expr(function, try_expr, function_map, violations);
+            analyze_execution_space_expr(function, catch_expr, function_map, violations);
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            analyze_execution_space_expr(function, condition, function_map, violations);
+            analyze_execution_space_expr(function, then_expr, function_map, violations);
+            analyze_execution_space_expr(function, else_expr, function_map, violations);
+        }
+        Expr::Match { scrutinee, arms } => {
+            analyze_execution_space_expr(function, scrutinee, function_map, violations);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    analyze_execution_space_expr(function, guard, function_map, violations);
+                }
+                analyze_execution_space_expr(function, &arm.value, function_map, violations);
+            }
+        }
+        Expr::While { condition, body } => {
+            analyze_execution_space_expr(function, condition, function_map, violations);
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                analyze_execution_space_stmt(function, init, function_map, violations);
+            }
+            if let Some(condition) = condition {
+                analyze_execution_space_expr(function, condition, function_map, violations);
+            }
+            if let Some(step) = step {
+                analyze_execution_space_stmt(function, step, function_map, violations);
+            }
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            analyze_execution_space_expr(function, iterable, function_map, violations);
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::Loop { body } => {
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::Return(Some(value)) | Expr::Break(Some(value)) => {
+            analyze_execution_space_expr(function, value, function_map, violations);
+        }
+        Expr::Return(None) | Expr::Break(None) | Expr::Continue => {}
+        Expr::Range { start, end, .. } => {
+            analyze_execution_space_expr(function, start, function_map, violations);
+            analyze_execution_space_expr(function, end, function_map, violations);
+        }
+        Expr::Index { base, index } => {
+            analyze_execution_space_expr(function, base, function_map, violations);
+            analyze_execution_space_expr(function, index, function_map, violations);
+        }
+        Expr::Await(inner) => {
+            if function.execution_space != ast::ExecutionSpace::Host {
+                violations.push(format!(
+                    "{} function `{}` cannot use `await`",
+                    function.execution_space.as_str(),
+                    function.name
+                ));
+            }
+            analyze_execution_space_expr(function, inner, function_map, violations);
+        }
+        Expr::Unary { expr, .. } => {
+            analyze_execution_space_expr(function, expr, function_map, violations);
+        }
+        Expr::Binary { left, right, .. } => {
+            analyze_execution_space_expr(function, left, function_map, violations);
+            analyze_execution_space_expr(function, right, function_map, violations);
+        }
+        Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Ident(_) => {}
+    }
+}
+
+fn validate_execution_space_call(
+    function: &TypedFunction,
+    callee: &str,
+    function_map: &BTreeMap<&str, &TypedFunction>,
+    violations: &mut Vec<String>,
+) {
+    let caller_space = function.execution_space;
+    if caller_space == ast::ExecutionSpace::Host {
+        if callee == "__index_assign" {
+            return;
+        }
+        if is_gpu_device_intrinsic(callee) {
+            violations.push(format!(
+                "host function `{}` cannot call device-only GPU intrinsic `{}`",
+                function.name, callee
+            ));
+            return;
+        }
+        if let Some(target) = function_map.get(callee) {
+            if target.execution_space == ast::ExecutionSpace::Kernel {
+                violations.push(format!(
+                    "host function `{}` cannot call kernel function `{}` directly; launch it from a GPU runtime API instead",
+                    function.name, callee
+                ));
+            }
+        }
+        return;
+    }
+
+    if callee == "__index_assign" {
+        return;
+    }
+
+    if let Some(target) = function_map.get(callee) {
+        let allowed = match caller_space {
+            ast::ExecutionSpace::Pure => target.execution_space == ast::ExecutionSpace::Pure,
+            ast::ExecutionSpace::Device => matches!(
+                target.execution_space,
+                ast::ExecutionSpace::Pure | ast::ExecutionSpace::Device
+            ),
+            ast::ExecutionSpace::Kernel => matches!(
+                target.execution_space,
+                ast::ExecutionSpace::Pure | ast::ExecutionSpace::Device
+            ),
+            ast::ExecutionSpace::Host => true,
+        };
+        if !allowed {
+            violations.push(format!(
+                "{} function `{}` cannot call {} function `{}`",
+                caller_space.as_str(),
+                function.name,
+                target.execution_space.as_str(),
+                callee
+            ));
+        }
+        return;
+    }
+
+    if execution_space_allows_intrinsic_call(caller_space, callee) {
+        return;
+    }
+
+    if caller_space == ast::ExecutionSpace::Pure && callee.starts_with("gpu.") {
+        violations.push(format!(
+            "pure function `{}` cannot call GPU API `{}`",
+            function.name, callee
+        ));
+        return;
+    }
+
+    if callee_looks_host_only(callee) {
+        violations.push(format!(
+            "{} function `{}` calls host-only API `{}`",
+            caller_space.as_str(),
+            function.name,
+            callee
+        ));
+    }
+}
+
+fn execution_space_allows_intrinsic_call(
+    execution_space: ast::ExecutionSpace,
+    callee: &str,
+) -> bool {
+    match execution_space {
+        ast::ExecutionSpace::Host => !is_gpu_device_intrinsic(callee),
+        ast::ExecutionSpace::Pure => callee.starts_with("simd."),
+        ast::ExecutionSpace::Device | ast::ExecutionSpace::Kernel => {
+            is_gpu_device_intrinsic(callee) || callee.starts_with("simd.")
+        }
+    }
+}
+
+fn is_gpu_device_intrinsic(callee: &str) -> bool {
+    matches!(
+        callee,
+        "gpu.global_id_x"
+            | "gpu.global_id_y"
+            | "gpu.global_id_z"
+            | "gpu.thread_id_x"
+            | "gpu.thread_id_y"
+            | "gpu.thread_id_z"
+            | "gpu.block_id_x"
+            | "gpu.block_id_y"
+            | "gpu.block_id_z"
+            | "gpu.block_dim_x"
+            | "gpu.block_dim_y"
+            | "gpu.block_dim_z"
+            | "gpu.grid_dim_x"
+            | "gpu.grid_dim_y"
+            | "gpu.grid_dim_z"
+            | "gpu.barrier"
+            | "gpu.load_f32"
+            | "gpu.load_i32"
+            | "gpu.load_u32"
+            | "gpu.store_f32"
+            | "gpu.store_i32"
+            | "gpu.store_u32"
+            | "gpu.slice_len"
+    )
+}
+
+fn callee_looks_host_only(callee: &str) -> bool {
+    callee.starts_with("fs.")
+        || callee.starts_with("http.")
+        || callee.starts_with("proc.")
+        || callee.starts_with("task.")
+        || callee.starts_with("thread.")
+        || callee.starts_with("log.")
+        || callee.starts_with("storage.")
+        || callee.starts_with("json.")
+        || callee.starts_with("list.")
+        || callee.starts_with("map.")
+        || callee.starts_with("error.")
+        || callee.starts_with("alloc.")
+        || callee.starts_with("env.")
+        || (callee.starts_with("gpu.") && !is_gpu_device_intrinsic(callee))
+}
+
+fn analyze_device_safe_types(
+    functions: &[TypedFunction],
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in functions {
+        match function.execution_space {
+            ast::ExecutionSpace::Host => {}
+            ast::ExecutionSpace::Pure => {
+                for param in &function.params {
+                    if !is_pure_safe_type(&param.ty, struct_defs, enum_defs) {
+                        violations.push(format!(
+                            "pure function `{}` parameter `{}` uses unsupported pure/device type `{}`",
+                            function.name, param.name, param.ty
+                        ));
+                    }
+                }
+                if !is_pure_safe_type(&function.return_type, struct_defs, enum_defs) {
+                    violations.push(format!(
+                        "pure function `{}` returns unsupported pure/device type `{}`",
+                        function.name, function.return_type
+                    ));
+                }
+                for (name, ty) in &function.local_types {
+                    if !is_pure_safe_type(ty, struct_defs, enum_defs) {
+                        violations.push(format!(
+                            "pure function `{}` local `{}` uses unsupported pure/device type `{}`",
+                            function.name, name, ty
+                        ));
+                    }
+                }
+            }
+            ast::ExecutionSpace::Device | ast::ExecutionSpace::Kernel => {
+                for param in &function.params {
+                    if !is_device_safe_type(&param.ty, struct_defs, enum_defs) {
+                        violations.push(format!(
+                            "{} function `{}` parameter `{}` uses unsupported device type `{}`",
+                            function.execution_space.as_str(),
+                            function.name,
+                            param.name,
+                            param.ty
+                        ));
+                    }
+                }
+                if !is_device_safe_type(&function.return_type, struct_defs, enum_defs) {
+                    violations.push(format!(
+                        "{} function `{}` returns unsupported device type `{}`",
+                        function.execution_space.as_str(),
+                        function.name,
+                        function.return_type
+                    ));
+                }
+                for (name, ty) in &function.local_types {
+                    if !is_device_safe_type(ty, struct_defs, enum_defs) {
+                        violations.push(format!(
+                            "{} function `{}` local `{}` uses unsupported device type `{}`",
+                            function.execution_space.as_str(),
+                            function.name,
+                            name,
+                            ty
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    violations
+}
+
+fn is_pure_safe_type(
+    ty: &Type,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> bool {
+    is_device_scalar_type(ty)
+        || matches!(ty, Type::Array { elem, .. } if is_pure_safe_type(elem, struct_defs, enum_defs))
+        || matches!(ty, Type::Named { name, .. } if is_named_device_aggregate(name, struct_defs, enum_defs, true))
+}
+
+fn is_device_safe_type(
+    ty: &Type,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> bool {
+    if is_device_scalar_type(ty) {
+        return true;
+    }
+    match ty {
+        Type::Array { elem, .. } => is_device_safe_type(elem, struct_defs, enum_defs),
+        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+            is_pure_safe_type(&args[0], struct_defs, enum_defs)
+        }
+        Type::Named { name, .. } => is_named_device_aggregate(name, struct_defs, enum_defs, false),
+        _ => false,
+    }
+}
+
+fn is_named_device_aggregate(
+    name: &str,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+    pure_mode: bool,
+) -> bool {
+    if let Some(struct_def) = struct_defs.get(name) {
+        return struct_def.fields.iter().all(|field| {
+            if pure_mode {
+                is_pure_safe_type(&field.ty, struct_defs, enum_defs)
+            } else {
+                is_device_safe_type(&field.ty, struct_defs, enum_defs)
+            }
+        });
+    }
+    if let Some(enum_def) = enum_defs.get(name) {
+        return enum_def.variants.iter().all(|variant| {
+            variant.payload.iter().all(|payload| {
+                if pure_mode {
+                    is_pure_safe_type(payload, struct_defs, enum_defs)
+                } else {
+                    is_device_safe_type(payload, struct_defs, enum_defs)
+                }
+            }) && variant.named_payload.iter().all(|field| {
+                if pure_mode {
+                    is_pure_safe_type(&field.ty, struct_defs, enum_defs)
+                } else {
+                    is_device_safe_type(&field.ty, struct_defs, enum_defs)
+                }
+            })
+        });
+    }
+    false
+}
+
+fn is_device_scalar_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Void
+            | Type::Bool
+            | Type::TypeVar(_)
+            | Type::Int {
+                signed: true,
+                bits: 32
+            }
+            | Type::Int {
+                signed: false,
+                bits: 32
+            }
+            | Type::Float { bits: 32 }
+    )
 }
 
 fn analyze_ownership(
@@ -4868,6 +7382,7 @@ fn analyze_ownership(
     let summaries = build_function_memory_summaries(functions);
     let ownership_summaries = build_function_ownership_summaries(functions);
     violations.extend(analyze_alias_and_provenance(functions));
+    violations.extend(analyze_gpu_kernel_contracts(functions));
     violations.extend(analyze_atomic_ordering_claims(functions));
     violations.extend(analyze_live_borrow_consumption(functions));
     for function in functions {
@@ -5243,6 +7758,12 @@ fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
             || callee.ends_with("route.write_405")
             || callee.ends_with("http.stream_close")
             || callee.ends_with("http.websocket_accept") =>
+        {
+            &[0]
+        }
+        _ if runtime_handle_contracts()
+            .iter()
+            .any(|contract| contract.consumer_intrinsics.contains(&callee)) =>
         {
             &[0]
         }
@@ -11504,6 +14025,81 @@ fn infer_expr_type(
                 resolve_method_call_target(fn_sigs, scopes, global_types, raw_callee)
                     .unwrap_or_else(|| raw_callee.to_string());
             let base_callee = resolved_callee.as_str();
+            if base_callee == "__index_assign" {
+                if args.len() != 3 {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        "indexed assignment expects exactly 3 arguments".to_string(),
+                    );
+                    return Some(Type::Void);
+                }
+                let base_ty = infer_expr_type(&args[0], scopes, env, state);
+                let index_ty = infer_expr_type(&args[1], scopes, env, state);
+                let value_ty = infer_expr_type(&args[2], scopes, env, state);
+                if !index_ty.as_ref().is_some_and(is_integer_type) {
+                    let found = index_ty
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!("index expression must be integer, got `{found}`"),
+                    );
+                }
+                match base_ty {
+                    Some(Type::Array { elem, .. })
+                    | Some(Type::Slice(elem))
+                    | Some(Type::Vec(elem)) => {
+                        if let Some(actual) = value_ty.as_ref() {
+                            if !expr_type_compatible(&elem, actual, &args[2]) {
+                                record_type_error(
+                                    state.errors,
+                                    state.type_error_details,
+                                    format!(
+                                        "indexed assignment type mismatch: expected `{}`, got `{}`",
+                                        elem, actual
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Some(Type::Named {
+                        name,
+                        args: named_args,
+                    }) if name == "GpuSlice" && named_args.len() == 1 => {
+                        if let Some(actual) = value_ty.as_ref() {
+                            if !expr_type_compatible(&named_args[0], actual, &args[2]) {
+                                record_type_error(
+                                    state.errors,
+                                    state.type_error_details,
+                                    format!(
+                                        "indexed assignment type mismatch: expected `{}`, got `{}`",
+                                        named_args[0], actual
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Some(Type::Str) => {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            "indexed assignment is not supported for type `str`".to_string(),
+                        );
+                    }
+                    Some(other) => {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!("indexed assignment is not supported for type `{other}`"),
+                        );
+                    }
+                    None => {}
+                }
+                return Some(Type::Void);
+            }
             if let Some(Type::Function { params, ret }) = scopes.get(base_callee) {
                 if explicit_types.is_some() {
                     record_type_error(
@@ -11647,8 +14243,13 @@ fn infer_expr_type(
                 record_type_error(state.errors, state.type_error_details, detail);
                 return None;
             };
-            let generics = fn_generics.get(base_callee).cloned().unwrap_or_default();
-            if !generics.is_empty() && explicit_types.is_none() {
+            let generics = if fn_sigs.contains_key(base_callee) {
+                fn_generics.get(base_callee).cloned().unwrap_or_default()
+            } else {
+                runtime_signature_generics(&params, &ret)
+            };
+            if fn_sigs.contains_key(base_callee) && !generics.is_empty() && explicit_types.is_none()
+            {
                 record_type_error(
                     state.errors,
                     state.type_error_details,
@@ -11709,6 +14310,29 @@ fn infer_expr_type(
                     signature_arg_types,
                 )
             } else {
+                let Some((resolved_params, resolved_ret, bindings)) = resolve_call_signature(
+                    &params,
+                    &ret,
+                    &generics,
+                    &signature_arg_types,
+                    explicit_types.as_deref(),
+                ) else {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "runtime call signature mismatch for `{}`: expected ({}) -> {}",
+                            base_callee,
+                            params
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            ret
+                        ),
+                    );
+                    return None;
+                };
                 if params.len() != args.len() {
                     let detail = if matches!(base_callee, "http.write" | "http.write_json")
                         && args.len() == 1
@@ -11735,7 +14359,11 @@ fn infer_expr_type(
                     record_type_error(state.errors, state.type_error_details, detail);
                     return None;
                 }
-                for (index, (expected, actual)) in params.iter().zip(arg_types.iter()).enumerate() {
+                for (index, (expected, actual)) in resolved_params
+                    .iter()
+                    .zip(signature_arg_types.iter())
+                    .enumerate()
+                {
                     let Some(actual) = actual else {
                         continue;
                     };
@@ -11760,11 +14388,11 @@ fn infer_expr_type(
                     }
                 }
                 (
-                    params.clone(),
-                    ret.clone(),
-                    Vec::new(),
-                    true,
-                    arg_types.clone(),
+                    resolved_params,
+                    resolved_ret,
+                    bindings,
+                    false,
+                    signature_arg_types,
                 )
             };
             if !bindings.is_empty() {
@@ -12515,6 +15143,9 @@ fn infer_expr_type(
                 Some(Type::Array { elem, .. }) => Some(*elem),
                 Some(Type::Slice(elem)) => Some(*elem),
                 Some(Type::Vec(elem)) => Some(*elem),
+                Some(Type::Named { name, args }) if name == "GpuSlice" && args.len() == 1 => {
+                    Some(args[0].clone())
+                }
                 Some(Type::Str) => Some(Type::Char),
                 Some(other) => {
                     record_type_error(
@@ -13694,6 +16325,63 @@ fn resolve_call_signature(
     ))
 }
 
+fn collect_typevars_from_type(ty: &Type, out: &mut BTreeSet<String>) {
+    match ty {
+        Type::TypeVar(name) => {
+            out.insert(name.clone());
+        }
+        Type::Ptr { to, .. } | Type::Ref { to, .. } => collect_typevars_from_type(to, out),
+        Type::Slice(inner)
+        | Type::Set(inner)
+        | Type::Deque(inner)
+        | Type::Ring(inner)
+        | Type::Option(inner)
+        | Type::Vec(inner)
+        | Type::Future(inner) => collect_typevars_from_type(inner, out),
+        Type::Array { elem, .. } => collect_typevars_from_type(elem, out),
+        Type::Result { ok, err } => {
+            collect_typevars_from_type(ok, out);
+            collect_typevars_from_type(err, out);
+        }
+        Type::Map { key, value } => {
+            collect_typevars_from_type(key, out);
+            collect_typevars_from_type(value, out);
+        }
+        Type::Tuple(items) => {
+            for item in items {
+                collect_typevars_from_type(item, out);
+            }
+        }
+        Type::Named { args, .. } => {
+            for arg in args {
+                collect_typevars_from_type(arg, out);
+            }
+        }
+        Type::Function { params, ret } => {
+            for param in params {
+                collect_typevars_from_type(param, out);
+            }
+            collect_typevars_from_type(ret, out);
+        }
+        _ => {}
+    }
+}
+
+fn runtime_signature_generics(params: &[Type], ret: &Type) -> Vec<ast::GenericParam> {
+    let mut names = BTreeSet::new();
+    for param in params {
+        collect_typevars_from_type(param, &mut names);
+    }
+    collect_typevars_from_type(ret, &mut names);
+    names
+        .into_iter()
+        .map(|name| ast::GenericParam {
+            name,
+            bounds: Vec::new(),
+        })
+        .collect()
+}
+
 fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<String, Type>) -> bool {
     match template {
         Type::TypeVar(name) => {
@@ -13738,6 +16426,7 @@ fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<Strin
         },
         Type::Slice(inner) => {
             matches!(concrete, Type::Slice(other) if bind_typevars(inner, other, bindings))
+                || matches!(concrete, Type::Array { elem, .. } if bind_typevars(inner, elem, bindings))
         }
         Type::Array { elem, len } => {
             matches!(concrete, Type::Array { elem: other_elem, len: other_len } if len == other_len && bind_typevars(elem, other_elem, bindings))
@@ -13895,6 +16584,51 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "task.group_join_all",
         "task.group_cancel",
         "task.parallel_map",
+        "gpu.device_count",
+        "gpu.default_device",
+        "gpu.device_name",
+        "gpu.device_memory_bytes",
+        "gpu.alloc_f32",
+        "gpu.alloc_i32",
+        "gpu.alloc_u32",
+        "gpu.free",
+        "gpu.upload_f32",
+        "gpu.upload_i32",
+        "gpu.upload_u32",
+        "gpu.download_f32",
+        "gpu.download_i32",
+        "gpu.download_u32",
+        "gpu.slice",
+        "gpu.slice_len",
+        "gpu.load_f32",
+        "gpu.load_i32",
+        "gpu.load_u32",
+        "gpu.store_f32",
+        "gpu.store_i32",
+        "gpu.store_u32",
+        "gpu.launch0",
+        "gpu.launch1",
+        "gpu.launch2",
+        "gpu.launch3",
+        "gpu.launch4",
+        "gpu.wait",
+        "gpu.wait_async",
+        "gpu.global_id_x",
+        "gpu.global_id_y",
+        "gpu.global_id_z",
+        "gpu.thread_id_x",
+        "gpu.thread_id_y",
+        "gpu.thread_id_z",
+        "gpu.block_id_x",
+        "gpu.block_id_y",
+        "gpu.block_id_z",
+        "gpu.block_dim_x",
+        "gpu.block_dim_y",
+        "gpu.block_dim_z",
+        "gpu.grid_dim_x",
+        "gpu.grid_dim_y",
+        "gpu.grid_dim_z",
+        "gpu.barrier",
         "alloc",
         "free",
         "close",
@@ -14235,7 +16969,7 @@ fn nearest_intrinsic_name(name: &str) -> Option<String> {
 fn builtin_namespace_hint(name: &str) -> Option<String> {
     let namespace = name.split('.').next()?;
     match namespace {
-        "env" | "str" | "json" | "list" | "map" | "route" => Some(format!(
+        "env" | "str" | "json" | "list" | "map" | "route" | "gpu" => Some(format!(
             "`{namespace}.*` is a builtin namespace; call it directly and do not treat `core.{namespace}` as an ordinary imported module"
         )),
         "process" => Some(
@@ -14274,6 +17008,10 @@ fn i32_type() -> Type {
 
 fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let i32 = i32_type();
+    let i64 = Type::Int {
+        signed: true,
+        bits: 64,
+    };
     let task_handle = Type::Named {
         name: "TaskHandle".to_string(),
         args: Vec::new(),
@@ -14329,6 +17067,57 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let channel_handle = Type::Named {
         name: "ChannelHandle".to_string(),
         args: Vec::new(),
+    };
+    let gpu_device = Type::Named {
+        name: "GpuDevice".to_string(),
+        args: Vec::new(),
+    };
+    let gpu_event = Type::Named {
+        name: "GpuEvent".to_string(),
+        args: Vec::new(),
+    };
+    let launch_a = Type::TypeVar("LaunchA".to_string());
+    let launch_b = Type::TypeVar("LaunchB".to_string());
+    let launch_c = Type::TypeVar("LaunchC".to_string());
+    let launch_d = Type::TypeVar("LaunchD".to_string());
+    let gpu_type_var = Type::TypeVar("T".to_string());
+    let gpu_buffer = Type::Named {
+        name: "GpuBuffer".to_string(),
+        args: vec![gpu_type_var.clone()],
+    };
+    let gpu_slice = Type::Named {
+        name: "GpuSlice".to_string(),
+        args: vec![gpu_type_var.clone()],
+    };
+    let gpu_buffer_f32 = Type::Named {
+        name: "GpuBuffer".to_string(),
+        args: vec![Type::Float { bits: 32 }],
+    };
+    let gpu_buffer_i32 = Type::Named {
+        name: "GpuBuffer".to_string(),
+        args: vec![i32.clone()],
+    };
+    let gpu_buffer_u32 = Type::Named {
+        name: "GpuBuffer".to_string(),
+        args: vec![Type::Int {
+            signed: false,
+            bits: 32,
+        }],
+    };
+    let gpu_slice_f32 = Type::Named {
+        name: "GpuSlice".to_string(),
+        args: vec![Type::Float { bits: 32 }],
+    };
+    let gpu_slice_i32 = Type::Named {
+        name: "GpuSlice".to_string(),
+        args: vec![i32.clone()],
+    };
+    let gpu_slice_u32 = Type::Named {
+        name: "GpuSlice".to_string(),
+        args: vec![Type::Int {
+            signed: false,
+            bits: 32,
+        }],
     };
     let task_fn = Type::Function {
         params: Vec::new(),
@@ -14390,6 +17179,145 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![task_group_handle.clone()], i32.clone())
         }
         "task.parallel_map" => (vec![task_group_handle.clone(), task_fn], i32.clone()),
+        "gpu.device_count" => (vec![], i32.clone()),
+        "gpu.default_device" => (vec![], gpu_device.clone()),
+        "gpu.device_name" => (vec![gpu_device.clone()], str_ty.clone()),
+        "gpu.device_memory_bytes" => (vec![gpu_device.clone()], i64.clone()),
+        "gpu.alloc_f32" => (
+            vec![gpu_device.clone(), i32.clone()],
+            gpu_buffer_f32.clone(),
+        ),
+        "gpu.alloc_i32" => (
+            vec![gpu_device.clone(), i32.clone()],
+            gpu_buffer_i32.clone(),
+        ),
+        "gpu.alloc_u32" => (
+            vec![gpu_device.clone(), i32.clone()],
+            gpu_buffer_u32.clone(),
+        ),
+        "gpu.free" => (vec![gpu_buffer.clone()], Type::Void),
+        "gpu.upload_f32" => (
+            vec![gpu_device.clone(), Type::Slice(Box::new(f32_ty.clone()))],
+            gpu_buffer_f32.clone(),
+        ),
+        "gpu.upload_i32" => (
+            vec![gpu_device.clone(), Type::Slice(Box::new(i32.clone()))],
+            gpu_buffer_i32.clone(),
+        ),
+        "gpu.upload_u32" => (
+            vec![gpu_device.clone(), Type::Slice(Box::new(u32_ty.clone()))],
+            gpu_buffer_u32.clone(),
+        ),
+        "gpu.download_f32" => (
+            vec![gpu_buffer_f32.clone()],
+            Type::Vec(Box::new(f32_ty.clone())),
+        ),
+        "gpu.download_i32" => (
+            vec![gpu_buffer_i32.clone()],
+            Type::Vec(Box::new(i32.clone())),
+        ),
+        "gpu.download_u32" => (
+            vec![gpu_buffer_u32.clone()],
+            Type::Vec(Box::new(u32_ty.clone())),
+        ),
+        "gpu.slice" => (
+            vec![gpu_buffer.clone(), i32.clone(), i32.clone()],
+            gpu_slice.clone(),
+        ),
+        "gpu.slice_len" => (vec![gpu_slice.clone()], i32.clone()),
+        "gpu.load_f32" => (vec![gpu_slice_f32.clone(), i32.clone()], f32_ty.clone()),
+        "gpu.load_i32" => (vec![gpu_slice_i32.clone(), i32.clone()], i32.clone()),
+        "gpu.load_u32" => (vec![gpu_slice_u32.clone(), i32.clone()], u32_ty.clone()),
+        "gpu.store_f32" => (
+            vec![gpu_slice_f32.clone(), i32.clone(), f32_ty.clone()],
+            Type::Void,
+        ),
+        "gpu.store_i32" => (
+            vec![gpu_slice_i32.clone(), i32.clone(), i32.clone()],
+            Type::Void,
+        ),
+        "gpu.store_u32" => (
+            vec![gpu_slice_u32.clone(), i32.clone(), u32_ty.clone()],
+            Type::Void,
+        ),
+        "gpu.launch0" => (
+            vec![
+                Type::Function {
+                    params: Vec::new(),
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.launch1" => (
+            vec![
+                Type::Function {
+                    params: vec![launch_a.clone()],
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+                launch_a.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.launch2" => (
+            vec![
+                Type::Function {
+                    params: vec![launch_a.clone(), launch_b.clone()],
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+                launch_a.clone(),
+                launch_b.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.launch3" => (
+            vec![
+                Type::Function {
+                    params: vec![launch_a.clone(), launch_b.clone(), launch_c.clone()],
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+                launch_a.clone(),
+                launch_b.clone(),
+                launch_c.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.launch4" => (
+            vec![
+                Type::Function {
+                    params: vec![
+                        launch_a.clone(),
+                        launch_b.clone(),
+                        launch_c.clone(),
+                        launch_d.clone(),
+                    ],
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+                launch_a.clone(),
+                launch_b.clone(),
+                launch_c.clone(),
+                launch_d.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.wait" => (vec![gpu_event.clone()], Type::Void),
+        "gpu.wait_async" => (vec![gpu_event.clone()], Type::Future(Box::new(Type::Void))),
+        "gpu.global_id_x" | "gpu.global_id_y" | "gpu.global_id_z" => (vec![], i32.clone()),
+        "gpu.thread_id_x" | "gpu.thread_id_y" | "gpu.thread_id_z" => (vec![], i32.clone()),
+        "gpu.block_id_x" | "gpu.block_id_y" | "gpu.block_id_z" => (vec![], i32.clone()),
+        "gpu.block_dim_x" | "gpu.block_dim_y" | "gpu.block_dim_z" => (vec![], i32.clone()),
+        "gpu.grid_dim_x" | "gpu.grid_dim_y" | "gpu.grid_dim_z" => (vec![], i32.clone()),
+        "gpu.barrier" => (vec![], Type::Void),
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
         "close" => (vec![http_handle.clone()], Type::Void),
@@ -14889,9 +17817,7 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
             }
             Some(Value::Tuple(values))
         }
-        Type::Named { name, args } if args.is_empty() && is_runtime_handle(name) => {
-            Some(Value::I32(0))
-        }
+        Type::Named { name, .. } if is_runtime_handle(name) => Some(Value::I32(0)),
         Type::Future(inner) => runtime_default_value(inner),
         Type::DynTrait(_) => Some(Value::I32(0)),
         Type::Void => Some(Value::I32(0)),
@@ -15507,6 +18433,11 @@ fn coercible_integer_literal_value(expr: &Expr) -> Option<i128> {
 fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
     if type_compatible(expected, actual) {
         return true;
+    }
+    if let (Type::Slice(expected_inner), Type::Array { elem, .. }) = (expected, actual) {
+        if type_compatible(expected_inner, elem) {
+            return true;
+        }
     }
     if let Type::Ref { to, .. } = expected {
         if expr_supports_implicit_borrow(expr) && type_compatible(to, actual) {
@@ -20371,6 +23302,497 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
         assert_eq!(typed.entry_return_const_i32, Some(7));
+    }
+
+    #[test]
+    fn execution_space_call_rules_are_enforced() {
+        let source = r#"
+            host fn load() -> i32 { return 1; }
+            pure fn square(x: i32) -> i32 { return x * x; }
+            device fn helper(x: i32) -> i32 { return square(x); }
+            kernel fn launch() -> i32 { return helper(load()); }
+        "#;
+        let module = parser::parse(source, "gpu_rules").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("kernel function `launch` must return `void`")));
+        assert!(
+            typed.type_error_details.iter().any(|detail| detail
+                .contains("device function `helper` cannot call host function `load`"))
+                || typed.type_error_details.iter().any(|detail| detail
+                    .contains("kernel function `launch` cannot call host function `load`"))
+        );
+    }
+
+    #[test]
+    fn host_gpu_capability_is_inferred() {
+        let source = r#"
+            host fn main() -> i32 {
+                discard gpu.device_count();
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_caps").expect("parse");
+        let typed = lower(&module);
+        let requirement = typed
+            .function_capability_requirements
+            .iter()
+            .find(|entry| entry.function == "main")
+            .expect("main capability requirement");
+        assert!(requirement.required.iter().any(|cap| cap == "gpu"));
+    }
+
+    #[test]
+    fn gpu_buffers_are_linear_resources() {
+        let source = r#"
+            use core.gpu;
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buf = gpu.alloc_f32(dev, 16);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_linear").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("linear value `buf` was not consumed/freed"))
+                || typed
+                    .ownership_violations
+                    .iter()
+                    .any(|detail| detail.contains("linear value `buf` was not consumed/freed"))
+                || typed
+                    .linear_type_violations
+                    .iter()
+                    .any(|detail| detail.contains("linear value `buf` was not consumed/freed"))
+        );
+    }
+
+    #[test]
+    fn host_cannot_call_device_gpu_intrinsics() {
+        let source = r#"
+            host fn main() -> i32 {
+                return gpu.global_id_x();
+            }
+        "#;
+        let module = parser::parse(source, "gpu_host_intrinsic").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains(
+                "host function `main` cannot call device-only GPU intrinsic `gpu.global_id_x`"
+            )));
+    }
+
+    #[test]
+    fn device_functions_reject_host_only_gpu_buffer_types() {
+        let source = r#"
+            device fn bad(buffer: GpuBuffer<f32>) -> i32 {
+                discard buffer;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_device_types").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("device function `bad` parameter `buffer` uses unsupported device type `GpuBuffer<f32>`")));
+    }
+
+    #[test]
+    fn gpu_slice_index_assignment_typechecks_in_kernel() {
+        let source = r#"
+            kernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+        "#;
+        let module = parser::parse(source, "gpu_index_assign").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn gpu_launch_event_must_be_consumed() {
+        let source = r#"
+            use core.gpu;
+            use core.thread;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch3(noop, 1, 64, input_view, output_view, 8);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_event").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("linear value `event` was not consumed/freed"))
+                || typed
+                    .linear_type_violations
+                    .iter()
+                    .any(|detail| detail.contains("linear value `event` was not consumed/freed"))
+        );
+    }
+
+    #[test]
+    fn gpu_launch_event_wait_passes() {
+        let source = r#"
+            use core.gpu;
+            use core.thread;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch3(noop, 1, 64, input_view, output_view, 8);
+                gpu.wait(event);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_wait").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(
+            typed.type_errors, 0,
+            "type errors: {:?}; ownership: {:?}; linear: {:?}",
+            typed.type_error_details, typed.ownership_violations, typed.linear_type_violations
+        );
+        assert!(typed
+            .linear_type_violations
+            .iter()
+            .all(|detail| !detail.contains("linear value `event`")));
+    }
+
+    #[test]
+    fn gpu_launch_event_wait_async_passes() {
+        let source = r#"
+            use core.gpu;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            async host fn flush(event: GpuEvent) -> void {
+                await gpu.wait_async(event);
+            }
+            async host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch3(noop, 1, 64, input_view, output_view, 8);
+                await flush(event);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_wait_async").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(
+            typed.type_errors, 0,
+            "type errors: {:?}; ownership: {:?}; linear: {:?}",
+            typed.type_error_details, typed.ownership_violations, typed.linear_type_violations
+        );
+        assert!(typed
+            .linear_type_violations
+            .iter()
+            .all(|detail| !detail.contains("linear value `event`")));
+    }
+
+    #[test]
+    fn gpu_wait_async_requires_async_context() {
+        let source = r#"
+            use core.gpu;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch3(noop, 1, 64, input_view, output_view, 8);
+                await gpu.wait_async(event);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_wait_async_async_ctx").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("uses `await` but is not declared async")));
+    }
+
+    #[test]
+    fn gpu_slice_live_view_blocks_free_of_owner() {
+        let source = r#"
+            use core.gpu;
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buffer = gpu.alloc_f32(dev, 8);
+                let view = gpu.slice(buffer, 0, 4);
+                gpu.free(buffer);
+                discard view;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_slice_live_view_free").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "consumes owner `buffer` via `gpu.free(buffer)` while borrowed reference `view` is still live"
+            )));
+    }
+
+    #[test]
+    fn gpu_slice_live_view_blocks_owner_access() {
+        let source = r#"
+            use core.gpu;
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buffer = gpu.alloc_f32(dev, 8);
+                let view = gpu.slice(buffer, 0, 4);
+                let downloaded = gpu.download_f32(buffer);
+                discard downloaded;
+                discard view;
+                gpu.free(buffer);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_slice_live_view_owner_access").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "accesses owner `buffer` via `let downloaded = gpu.download_f32(buffer)` while mutable borrowed reference `view` is still live"
+            )));
+    }
+
+    #[test]
+    fn gpu_competing_live_slices_from_same_buffer_are_rejected() {
+        let source = r#"
+            use core.gpu;
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buffer = gpu.alloc_f32(dev, 8);
+                let left = gpu.slice(buffer, 0, 4);
+                let right = gpu.slice(buffer, 4, 4);
+                discard left;
+                discard right;
+                gpu.free(buffer);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_competing_slices").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "creates mutable borrow `right` from owner `buffer` while mutable borrowed reference `left` is still live"
+            )));
+    }
+
+    #[test]
+    fn gpu_launch_rejects_aliased_slice_parameters() {
+        let source = r#"
+            use core.gpu;
+            kernel fn saxpy(input: GpuSlice<f32>, output: GpuSlice<f32>) -> void {
+                let i = gpu.global_id_x();
+                output[i] = input[i];
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buffer = gpu.alloc_f32(dev, 8);
+                let view = gpu.slice(buffer, 0, 8);
+                let event = gpu.launch2(saxpy, 1, 8, view, view);
+                gpu.wait(event);
+                discard view;
+                gpu.free(buffer);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_alias").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "host function `main` launch `saxpy` via `gpu.launch2` aliases GpuSlice parameters `input` and `output` through owner `buffer`"
+            )));
+    }
+
+    #[test]
+    fn gpu_launch_allows_aliased_readonly_slice_parameters() {
+        let source = r#"
+            use core.gpu;
+            kernel fn saxpy(input_a: GpuSlice<f32>, input_b: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input_a[i] + input_b[i];
+                }
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                let output = gpu.alloc_f32(dev, 8);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch4(saxpy, 1, 8, input_view, input_view, output_view, 8);
+                gpu.wait(event);
+                discard input_view;
+                discard output_view;
+                gpu.free(input);
+                gpu.free(output);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_readonly_alias").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("aliases GpuSlice parameters")),
+            "ownership violations: {:?}",
+            typed.ownership_violations
+        );
+    }
+
+    #[test]
+    fn kernel_param_outside_launch_abi_is_rejected() {
+        let source = r#"
+            struct Pair { x: f32, y: f32 }
+            kernel fn blend(input: GpuSlice<f32>, coeff: Pair, output: GpuSlice<f32>) -> void {
+                let i = gpu.global_id_x();
+                output[i] = input[i] + coeff.x + coeff.y;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_abi_shape").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "kernel function `blend` parameter `coeff` uses type `Pair` that is not yet supported by the stable GPU launch ABI"
+            )));
+    }
+
+    #[test]
+    fn kernel_barrier_in_divergent_branch_is_rejected() {
+        let source = r#"
+            use core.gpu;
+            kernel fn sync_then_store(output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    gpu.barrier();
+                    output[i] = 1.0;
+                }
+            }
+        "#;
+        let module = parser::parse(source, "gpu_barrier_branch").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "kernel function `sync_then_store` cannot use `gpu.barrier` inside divergent control flow"
+            )));
+    }
+
+    #[test]
+    fn kernel_barrier_helper_in_divergent_branch_is_rejected() {
+        let source = r#"
+            use core.gpu;
+            device fn sync_point() -> void {
+                gpu.barrier();
+            }
+            kernel fn sync_then_store(output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    sync_point();
+                    output[i] = 1.0;
+                }
+            }
+        "#;
+        let module = parser::parse(source, "gpu_barrier_helper_branch").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "kernel function `sync_then_store` cannot call barrier-carrying function `sync_point` inside divergent control flow"
+            )));
+    }
+
+    #[test]
+    fn kernel_barrier_in_straight_line_code_passes() {
+        let source = r#"
+            use core.gpu;
+            kernel fn sync_then_store(output: GpuSlice<f32>, n: i32) -> void {
+                gpu.barrier();
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = 1.0;
+                }
+            }
+        "#;
+        let module = parser::parse(source, "gpu_barrier_straight_line").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("gpu.barrier")),
+            "ownership violations: {:?}",
+            typed.ownership_violations
+        );
     }
 
     #[test]

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "gpu-trace-error-runtime-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-gpu-trace-error-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text(textwrap.dedent('''\\\n            [package]\n            name=\"gpu_trace_error_runtime\"\n            version=\"0.1.0\"\n\n            [[target.bin]]\n            name=\"gpu_trace_error_runtime\"\n            path=\"src/main.fzy\"\n        ''')); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\n            use core.gpu;\n            test \"gpu error trace\" {}\n            host fn flush(event: GpuEvent) -> void {\n                gpu.wait(event);\n            }\n            host fn main() -> i32 {\n                return 0;\n            }\n        ''')); trace = root / 'artifacts' / 'gpu-error.trace.fozzy'; proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'test', str(root), '--det', '--seed', '4242', '--record', str(trace), '--json'], cwd=str(repo), capture_output=True, text=True); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload['status'] == 'pass', payload; native_trace = root / 'artifacts' / 'gpu-error.trace.native.trace.json'; native_payload = json.loads(native_trace.read_text()); errors = [event for event in native_payload.get('runtimeEvents', []) if event['kind'] == 'gpu.error']; assert len(errors) == 1, errors; assert errors[0]['details']['detail']['reason'] == 'unknown_event_binding', errors; print('gpu-trace-error-runtime-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "gpu-trace-error-runtime-ok\n",
+      "stderr": "",
+      "times": 2
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-gpu-trace-error-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text(textwrap.dedent('''\\\n            [package]\n            name=\"gpu_trace_error_runtime\"\n            version=\"0.1.0\"\n\n            [[target.bin]]\n            name=\"gpu_trace_error_runtime\"\n            path=\"src/main.fzy\"\n        ''')); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\n            use core.gpu;\n            test \"gpu error trace\" {}\n            host fn flush(event: GpuEvent) -> void {\n                gpu.wait(event);\n            }\n            host fn main() -> i32 {\n                return 0;\n            }\n        ''')); trace = root / 'artifacts' / 'gpu-error.trace.fozzy'; proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'test', str(root), '--det', '--seed', '4242', '--record', str(trace), '--json'], cwd=str(repo), capture_output=True, text=True); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload['status'] == 'pass', payload; native_trace = root / 'artifacts' / 'gpu-error.trace.native.trace.json'; native_payload = json.loads(native_trace.read_text()); errors = [event for event in native_payload.get('runtimeEvents', []) if event['kind'] == 'gpu.error']; assert len(errors) == 1, errors; assert errors[0]['details']['detail']['reason'] == 'unknown_event_binding', errors; print('gpu-trace-error-runtime-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "gpu-trace-error-runtime-ok\n"
+    }
+  ]
+}

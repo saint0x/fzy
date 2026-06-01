@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "gpu-metal-upload-runtime-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, platform, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd();\nif platform.system() != 'Darwin':\n    print('gpu-metal-upload-runtime-skipped')\n    raise SystemExit(0)\nroot = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-gpu-metal-upload-runtime-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text(textwrap.dedent('''\\\n    [package]\n    name=\"gpu_metal_upload_runtime\"\n    version=\"0.1.0\"\n\n    [[target.bin]]\n    name=\"gpu_metal_upload_runtime\"\n    path=\"src/main.fzy\"\n''')); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\n    use core.gpu;\n    use core.simd;\n    host fn main() -> i32 {\n        let dev = gpu.default_device();\n        let values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0));\n        let buf: GpuBuffer<f32> = gpu.upload_f32(dev, values);\n        let window: GpuSlice<f32> = gpu.slice(buf, 1, 2);\n        discard window;\n        gpu.free(buf);\n        return 0;\n    }\n''')); trace = root / 'artifacts' / 'gpu-metal-upload.trace.fozzy'; proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(root), '--det', '--seed', '4242', '--record', str(trace), '--json'], cwd=str(repo), capture_output=True, text=True); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload['status'] == 'pass', payload; native_trace = root / 'artifacts' / 'gpu-metal-upload.trace.native.trace.json'; native_payload = json.loads(native_trace.read_text()); kinds = [event['kind'] for event in native_payload.get('runtimeEvents', [])];\nfor required in ['gpu.device_select', 'gpu.upload', 'gpu.slice', 'gpu.free']:\n    assert required in kinds, (required, kinds)\nprint('gpu-metal-upload-runtime-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "gpu-metal-upload-runtime-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, platform, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd();\nif platform.system() != 'Darwin':\n    print('gpu-metal-upload-runtime-skipped')\n    raise SystemExit(0)\nroot = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-gpu-metal-upload-runtime-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text(textwrap.dedent('''\\\n    [package]\n    name=\"gpu_metal_upload_runtime\"\n    version=\"0.1.0\"\n\n    [[target.bin]]\n    name=\"gpu_metal_upload_runtime\"\n    path=\"src/main.fzy\"\n''')); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\n    use core.gpu;\n    use core.simd;\n    host fn main() -> i32 {\n        let dev = gpu.default_device();\n        let values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0));\n        let buf: GpuBuffer<f32> = gpu.upload_f32(dev, values);\n        let window: GpuSlice<f32> = gpu.slice(buf, 1, 2);\n        discard window;\n        gpu.free(buf);\n        return 0;\n    }\n''')); trace = root / 'artifacts' / 'gpu-metal-upload.trace.fozzy'; proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(root), '--det', '--seed', '4242', '--record', str(trace), '--json'], cwd=str(repo), capture_output=True, text=True); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload['status'] == 'pass', payload; native_trace = root / 'artifacts' / 'gpu-metal-upload.trace.native.trace.json'; native_payload = json.loads(native_trace.read_text()); kinds = [event['kind'] for event in native_payload.get('runtimeEvents', [])];\nfor required in ['gpu.device_select', 'gpu.upload', 'gpu.slice', 'gpu.free']:\n    assert required in kinds, (required, kinds)\nprint('gpu-metal-upload-runtime-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "gpu-metal-upload-runtime-ok\n"
+    }
+  ]
+}

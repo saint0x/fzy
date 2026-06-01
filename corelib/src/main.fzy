@@ -19,6 +19,7 @@ mod process;
 mod term;
 mod threadkit;
 mod security;
+mod gpu;
 mod logkit;
 mod errorkit;
 mod util;
@@ -49,6 +50,7 @@ fn sanity() -> i32 {
     acc = (acc + term.sample()) % 251
     acc = (acc + threadkit.sample()) % 251
     acc = (acc + security.sample()) % 251
+    acc = (acc + gpu.sample()) % 251
     acc = (acc + logkit.sample()) % 251
     acc = (acc + errorkit.sample()) % 251
     acc = (acc + util.sample()) % 251

@@ -1,0 +1,31 @@
+fn width() -> i32 {
+    return 32
+}
+
+fn height() -> i32 {
+    return 12
+}
+
+fn cell_count() -> i32 {
+    return width() * height()
+}
+
+fn grid_size() -> i32 {
+    return 6
+}
+
+fn block_size() -> i32 {
+    return 64
+}
+
+fn frame_count() -> i32 {
+    return 6
+}
+
+fn min_sum() -> i32 {
+    return 600
+}
+
+fn max_sum() -> i32 {
+    return 2600
+}

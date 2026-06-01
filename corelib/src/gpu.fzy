@@ -1,0 +1,182 @@
+host fn device_count() -> i32 {
+    return gpu.device_count()
+}
+
+host fn default_device() -> GpuDevice {
+    return gpu.default_device()
+}
+
+host fn device_name(dev: GpuDevice) -> str {
+    return gpu.device_name(dev)
+}
+
+host fn device_memory_bytes(dev: GpuDevice) -> i64 {
+    return gpu.device_memory_bytes(dev)
+}
+
+host fn alloc_f32(dev: GpuDevice, len: i32) -> GpuBuffer<f32> {
+    return gpu.alloc_f32(dev, len)
+}
+
+host fn alloc_i32(dev: GpuDevice, len: i32) -> GpuBuffer<i32> {
+    return gpu.alloc_i32(dev, len)
+}
+
+host fn alloc_u32(dev: GpuDevice, len: i32) -> GpuBuffer<u32> {
+    return gpu.alloc_u32(dev, len)
+}
+
+host fn free<T>(buffer: GpuBuffer<T>) -> void {
+    discard gpu.free(buffer)
+}
+
+host fn upload_f32(dev: GpuDevice, values: []f32) -> GpuBuffer<f32> {
+    return gpu.upload_f32(dev, values)
+}
+
+host fn upload_i32(dev: GpuDevice, values: []i32) -> GpuBuffer<i32> {
+    return gpu.upload_i32(dev, values)
+}
+
+host fn upload_u32(dev: GpuDevice, values: []u32) -> GpuBuffer<u32> {
+    return gpu.upload_u32(dev, values)
+}
+
+host fn download_f32(buffer: GpuBuffer<f32>) -> Vec<f32> {
+    return gpu.download_f32(buffer)
+}
+
+host fn download_i32(buffer: GpuBuffer<i32>) -> Vec<i32> {
+    return gpu.download_i32(buffer)
+}
+
+host fn download_u32(buffer: GpuBuffer<u32>) -> Vec<u32> {
+    return gpu.download_u32(buffer)
+}
+
+host fn slice<T>(buffer: GpuBuffer<T>, offset: i32, len: i32) -> GpuSlice<T> {
+    return gpu.slice(buffer, offset, len)
+}
+
+device fn len<T>(buffer: GpuSlice<T>) -> i32 {
+    return gpu.slice_len(buffer)
+}
+
+device fn load_f32(buffer: GpuSlice<f32>, index: i32) -> f32 {
+    return gpu.load_f32(buffer, index)
+}
+
+device fn load_i32(buffer: GpuSlice<i32>, index: i32) -> i32 {
+    return gpu.load_i32(buffer, index)
+}
+
+device fn load_u32(buffer: GpuSlice<u32>, index: i32) -> u32 {
+    return gpu.load_u32(buffer, index)
+}
+
+device fn store_f32(buffer: GpuSlice<f32>, index: i32, value: f32) -> void {
+    discard gpu.store_f32(buffer, index, value)
+}
+
+device fn store_i32(buffer: GpuSlice<i32>, index: i32, value: i32) -> void {
+    discard gpu.store_i32(buffer, index, value)
+}
+
+device fn store_u32(buffer: GpuSlice<u32>, index: i32, value: u32) -> void {
+    discard gpu.store_u32(buffer, index, value)
+}
+
+host fn wait(event: GpuEvent) -> void {
+    discard gpu.wait(event)
+}
+
+async host fn wait_async(event: GpuEvent) -> void {
+    await gpu.wait_async(event)
+}
+
+host fn launch0(
+    kernel: fn() -> void,
+    grid: i32,
+    block: i32,
+) -> GpuEvent {
+    return gpu.launch0(kernel, grid, block)
+}
+
+host fn launch1<A>(
+    kernel: fn(A) -> void,
+    grid: i32,
+    block: i32,
+    a: A,
+) -> GpuEvent {
+    return gpu.launch1(kernel, grid, block, a)
+}
+
+host fn launch2<A, B>(
+    kernel: fn(A, B) -> void,
+    grid: i32,
+    block: i32,
+    a: A,
+    b: B,
+) -> GpuEvent {
+    return gpu.launch2(kernel, grid, block, a, b)
+}
+
+host fn launch3<A, B, C>(
+    kernel: fn(A, B, C) -> void,
+    grid: i32,
+    block: i32,
+    a: A,
+    b: B,
+    c: C,
+) -> GpuEvent {
+    return gpu.launch3(kernel, grid, block, a, b, c)
+}
+
+host fn launch4<A, B, C, D>(
+    kernel: fn(A, B, C, D) -> void,
+    grid: i32,
+    block: i32,
+    a: A,
+    b: B,
+    c: C,
+    d: D,
+) -> GpuEvent {
+    return gpu.launch4(kernel, grid, block, a, b, c, d)
+}
+
+device fn global_id_x() -> i32 { return gpu.global_id_x() }
+device fn global_id_y() -> i32 { return gpu.global_id_y() }
+device fn global_id_z() -> i32 { return gpu.global_id_z() }
+
+device fn thread_id_x() -> i32 { return gpu.thread_id_x() }
+device fn thread_id_y() -> i32 { return gpu.thread_id_y() }
+device fn thread_id_z() -> i32 { return gpu.thread_id_z() }
+
+device fn block_id_x() -> i32 { return gpu.block_id_x() }
+device fn block_id_y() -> i32 { return gpu.block_id_y() }
+device fn block_id_z() -> i32 { return gpu.block_id_z() }
+
+device fn block_dim_x() -> i32 { return gpu.block_dim_x() }
+device fn block_dim_y() -> i32 { return gpu.block_dim_y() }
+device fn block_dim_z() -> i32 { return gpu.block_dim_z() }
+
+device fn grid_dim_x() -> i32 { return gpu.grid_dim_x() }
+device fn grid_dim_y() -> i32 { return gpu.grid_dim_y() }
+device fn grid_dim_z() -> i32 { return gpu.grid_dim_z() }
+
+device fn barrier() -> void {
+    discard gpu.barrier()
+}
+
+fn sample() -> i32 {
+    let dev = default_device()
+    if device_count() < 0 {
+        return 1
+    }
+    let name = device_name(dev)
+    let bytes = device_memory_bytes(dev)
+    if str.len(name) < 0 || bytes < 0 {
+        return 2
+    }
+    return 0
+}

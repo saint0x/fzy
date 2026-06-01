@@ -1,0 +1,110 @@
+use core.gpu;
+use core.simd;
+use core.thread;
+
+mod api;
+mod cli;
+mod model;
+mod runtime;
+mod services;
+mod tests;
+
+struct AggregateReport {
+    sum: i32,
+    min: i32,
+    max: i32,
+}
+
+kernel fn bias_scores(input: GpuSlice<i32>, bias: i32, output: GpuSlice<i32>, n: i32) -> void {
+    let i = gpu.global_id_x()
+    if i < n {
+        output[i] = input[i] + bias
+    }
+}
+
+fn aggregate_scores(output: Vec<i32>) -> AggregateReport {
+    let left: [i32; 4] = [output[0], output[1], output[2], output[3]]
+    let right: [i32; 4] = [output[4], output[5], output[6], output[7]]
+    let left_vec = simd.i32x4_load(left)
+    let right_vec = simd.i32x4_load(right)
+    let sum = simd.i32x4_reduce_add(left_vec) + simd.i32x4_reduce_add(right_vec)
+    let mins = simd.i32x4_min(left_vec, right_vec)
+    let maxs = simd.i32x4_max(left_vec, right_vec)
+    return AggregateReport {
+        sum: sum,
+        min: simd.i32x4_reduce_min(mins),
+        max: simd.i32x4_reduce_max(maxs),
+    }
+}
+
+fn validate_output(output: Vec<i32>) -> i32 {
+    let expected = model.expected_output()
+    if output[0] != expected[0] { return 61 }
+    if output[1] != expected[1] { return 62 }
+    if output[2] != expected[2] { return 63 }
+    if output[3] != expected[3] { return 64 }
+    if output[4] != expected[4] { return 65 }
+    if output[5] != expected[5] { return 66 }
+    if output[6] != expected[6] { return 67 }
+    if output[7] != expected[7] { return 68 }
+    return 0
+}
+
+fn validate_report(report: AggregateReport) -> i32 {
+    if report.sum != model.expected_sum() { return 71 }
+    if report.min != model.expected_min() { return 72 }
+    if report.max != model.expected_max() { return 73 }
+    return 0
+}
+
+host fn run_gpu_cpu_aggregate() -> AggregateReport {
+    let dev = gpu.default_device()
+    let input = model.sample_scores()
+    let input_buf: GpuBuffer<i32> = gpu.upload_i32(dev, input)
+    defer gpu.free(input_buf)
+    let output_buf: GpuBuffer<i32> = gpu.alloc_i32(dev, model.score_count())
+    defer gpu.free(output_buf)
+    let event = gpu.launch4(
+        bias_scores,
+        model.grid_size(),
+        model.block_size(),
+        gpu.slice(input_buf, 0, model.score_count()),
+        model.bias(),
+        gpu.slice(output_buf, 0, model.score_count()),
+        model.score_count(),
+    )
+    gpu.wait(event)
+    let output: Vec<i32> = gpu.download_i32(output_buf)
+    let output_rc = validate_output(output)
+    if output_rc != 0 {
+        return AggregateReport { sum: output_rc, min: -1, max: -1 }
+    }
+    let report = aggregate_scores(output)
+    let report_rc = validate_report(report)
+    if report_rc != 0 {
+        return AggregateReport { sum: report_rc, min: -2, max: -2 }
+    }
+    return report
+}
+
+host fn main() -> i32 {
+    discard api.touch()
+    let rc = runtime.boot()
+    if rc != 0 {
+        return rc
+    }
+    discard cli.touch()
+    let dev_name = services.describe_default_device()
+    let report: AggregateReport = run_gpu_cpu_aggregate()
+    discard term.write(str.concat(str.concat("gpu_cpu_aggregate device=", dev_name), "\n"))
+    discard term.write(str.concat(str.concat("gpu_cpu_aggregate sum=", str.from_i32(report.sum)), "\n"))
+    discard term.write(str.concat(str.concat("gpu_cpu_aggregate min=", str.from_i32(report.min)), "\n"))
+    discard term.write(str.concat(str.concat("gpu_cpu_aggregate max=", str.from_i32(report.max)), "\n"))
+    let validation: i32 = validate_report(report)
+    if validation != 0 {
+        discard term.write(str.concat(str.concat("gpu_cpu_aggregate status=fail code=", str.from_i32(validation)), "\n"))
+        return validation
+    }
+    discard term.write("gpu_cpu_aggregate status=ok pipeline=gpu_then_cpu_simd_aggregate\n")
+    return 0
+}

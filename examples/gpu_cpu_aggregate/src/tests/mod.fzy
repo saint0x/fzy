@@ -1,0 +1,23 @@
+use model;
+
+test "det_expected_gpu_output" {
+    let expected = model.expected_output()
+    if expected[0] != 13 {
+        checkpoint()
+    }
+    if expected[7] != 16 {
+        checkpoint()
+    }
+}
+
+test "det_expected_cpu_report" {
+    if model.expected_sum() != 111 {
+        checkpoint()
+    }
+    if model.expected_min() != 11 {
+        checkpoint()
+    }
+    if model.expected_max() != 19 {
+        checkpoint()
+    }
+}

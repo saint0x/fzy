@@ -25,6 +25,10 @@ enum TokenKind {
     KwExt,
     KwUnsafe,
     KwAsync,
+    KwHost,
+    KwPure,
+    KwDevice,
+    KwKernel,
     KwAwait,
     KwRpc,
     KwUse,
@@ -328,6 +332,10 @@ impl Parser {
                 &TokenKind::KwFn
                     | &TokenKind::KwAsync
                     | &TokenKind::KwUnsafe
+                    | &TokenKind::KwHost
+                    | &TokenKind::KwPure
+                    | &TokenKind::KwDevice
+                    | &TokenKind::KwKernel
                     | &TokenKind::KwPub
                     | &TokenKind::KwPubext
                     | &TokenKind::KwExt
@@ -446,6 +454,7 @@ impl Parser {
             is_pub: false,
             is_pubext: false,
             is_extern: true,
+            execution_space: ast::ExecutionSpace::Host,
             abi: Some("rpc".to_string()),
             ffi_panic: None,
         }));
@@ -1084,23 +1093,73 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Option<ast::Item> {
-        let is_pubext = self.consume(&TokenKind::KwPubext);
-        let is_async = self.consume(&TokenKind::KwAsync);
-        let is_pub = if is_pubext {
-            true
-        } else {
-            self.consume(&TokenKind::KwPub)
-        };
-        let is_extern = if is_pubext {
-            true
-        } else {
-            self.consume(&TokenKind::KwExt)
-        };
-        let is_unsafe = if is_extern {
-            self.consume(&TokenKind::KwUnsafe)
-        } else {
-            self.consume(&TokenKind::KwUnsafe)
-        };
+        let mut is_pubext = false;
+        let mut is_async = false;
+        let mut is_pub = false;
+        let mut is_extern = false;
+        let mut is_unsafe = false;
+        let mut execution_space = ast::ExecutionSpace::Host;
+        let mut saw_execution_space = false;
+
+        loop {
+            let consumed = match self.peek_kind() {
+                TokenKind::KwPubext if !is_pubext && !is_pub && !is_extern => {
+                    is_pubext = true;
+                    is_pub = true;
+                    is_extern = true;
+                    let _ = self.advance();
+                    true
+                }
+                TokenKind::KwAsync if !is_async => {
+                    is_async = true;
+                    let _ = self.advance();
+                    true
+                }
+                TokenKind::KwPub if !is_pub && !is_pubext => {
+                    is_pub = true;
+                    let _ = self.advance();
+                    true
+                }
+                TokenKind::KwExt if !is_extern && !is_pubext => {
+                    is_extern = true;
+                    let _ = self.advance();
+                    true
+                }
+                TokenKind::KwUnsafe if !is_unsafe => {
+                    is_unsafe = true;
+                    let _ = self.advance();
+                    true
+                }
+                TokenKind::KwHost if !saw_execution_space => {
+                    execution_space = ast::ExecutionSpace::Host;
+                    saw_execution_space = true;
+                    let _ = self.advance();
+                    true
+                }
+                TokenKind::KwPure if !saw_execution_space => {
+                    execution_space = ast::ExecutionSpace::Pure;
+                    saw_execution_space = true;
+                    let _ = self.advance();
+                    true
+                }
+                TokenKind::KwDevice if !saw_execution_space => {
+                    execution_space = ast::ExecutionSpace::Device;
+                    saw_execution_space = true;
+                    let _ = self.advance();
+                    true
+                }
+                TokenKind::KwKernel if !saw_execution_space => {
+                    execution_space = ast::ExecutionSpace::Kernel;
+                    saw_execution_space = true;
+                    let _ = self.advance();
+                    true
+                }
+                _ => false,
+            };
+            if !consumed {
+                break;
+            }
+        }
         if is_unsafe && self.at(&TokenKind::LParen) {
             self.push_diag_here(
                 "inline unsafe metadata is removed; use `unsafe fn ...` and compiler-generated unsafe contracts/docs",
@@ -1196,6 +1255,7 @@ impl Parser {
             is_pub,
             is_pubext,
             is_extern,
+            execution_space,
             abi,
             ffi_panic: self.pending_ffi_panic.take(),
         }))
@@ -1326,24 +1386,34 @@ impl Parser {
             return Some(Stmt::Match { scrutinee, arms });
         }
 
-        if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_))) {
-            if self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Eq) {
-                let target = self.expect_ident("expected assignment target")?;
-                let _ = self.consume(&TokenKind::Eq);
-                let value = self.parse_expr(0)?;
-                let _ = self.consume(&TokenKind::Semi);
-                return Some(Stmt::Assign { target, value });
-            }
-            if let Some(op) = self.compound_assign_op() {
-                let target = self.expect_ident("expected assignment target")?;
-                let _ = self.advance();
-                let value = self.parse_expr(0)?;
-                let _ = self.consume(&TokenKind::Semi);
-                return Some(Stmt::CompoundAssign { target, op, value });
-            }
-        }
-
         let expr = self.parse_expr(0)?;
+        if self.consume(&TokenKind::Eq) {
+            let value = self.parse_expr(0)?;
+            let _ = self.consume(&TokenKind::Semi);
+            return Some(match expr {
+                Expr::Ident(target) => Stmt::Assign { target, value },
+                Expr::Index { base, index } => Stmt::Expr(Expr::Call {
+                    callee: "__index_assign".to_string(),
+                    args: vec![*base, *index, value],
+                }),
+                _ => {
+                    self.push_diag_here("expected assignment target");
+                    Stmt::Expr(value)
+                }
+            });
+        }
+        if let Some(op) = self.compound_assign_op() {
+            let _ = self.advance();
+            let value = self.parse_expr(0)?;
+            let _ = self.consume(&TokenKind::Semi);
+            return Some(match expr {
+                Expr::Ident(target) => Stmt::CompoundAssign { target, op, value },
+                _ => {
+                    self.push_diag_here("expected assignment target");
+                    Stmt::Expr(value)
+                }
+            });
+        }
         let _ = self.consume(&TokenKind::Semi);
         Some(Stmt::Expr(expr))
     }
@@ -2735,6 +2805,10 @@ impl Parser {
             TokenKind::KwExt => Some("ext".to_string()),
             TokenKind::KwUnsafe => Some("unsafe".to_string()),
             TokenKind::KwAsync => Some("async".to_string()),
+            TokenKind::KwHost => Some("host".to_string()),
+            TokenKind::KwPure => Some("pure".to_string()),
+            TokenKind::KwDevice => Some("device".to_string()),
+            TokenKind::KwKernel => Some("kernel".to_string()),
             TokenKind::KwAwait => Some("await".to_string()),
             TokenKind::KwRpc => Some("rpc".to_string()),
             TokenKind::KwUse => Some("use".to_string()),
@@ -2810,6 +2884,10 @@ impl Parser {
             TokenKind::KwExt,
             TokenKind::KwUnsafe,
             TokenKind::KwAsync,
+            TokenKind::KwHost,
+            TokenKind::KwPure,
+            TokenKind::KwDevice,
+            TokenKind::KwKernel,
             TokenKind::KwRpc,
             TokenKind::KwStruct,
             TokenKind::KwEnum,
@@ -2879,6 +2957,10 @@ fn core_stdlib_binding(name: &str) -> Option<CoreStdlibBinding> {
             name: "simd",
             module_name: Some("simd"),
         }),
+        "gpu" => Some(CoreStdlibBinding {
+            name: "gpu",
+            module_name: Some("gpu"),
+        }),
         "text" => Some(CoreStdlibBinding {
             name: "text",
             module_name: Some("text"),
@@ -2913,6 +2995,7 @@ fn core_stdlib_implied_capability(name: &str) -> Option<&'static str> {
         "log" => Some("log"),
         "security" => Some("rng"),
         "http" => Some("http"),
+        "gpu" => Some("gpu"),
         _ => None,
     }
 }
@@ -4010,6 +4093,10 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "ext" => TokenKind::KwExt,
         "unsafe" => TokenKind::KwUnsafe,
         "async" => TokenKind::KwAsync,
+        "host" => TokenKind::KwHost,
+        "pure" => TokenKind::KwPure,
+        "device" => TokenKind::KwDevice,
+        "kernel" => TokenKind::KwKernel,
         "await" => TokenKind::KwAwait,
         "rpc" => TokenKind::KwRpc,
         "use" => TokenKind::KwUse,
@@ -5810,6 +5897,55 @@ mod tests {
             _ => None,
         });
         assert!(newtype.is_some_and(|item| item.is_pub && item.transparent));
+    }
+
+    #[test]
+    fn parses_execution_space_function_qualifiers() {
+        let source = r#"
+            host fn run() -> i32 { return 0; }
+            pure fn square(x: i32) -> i32 { return x * x; }
+            device fn helper(x: i32) -> i32 { return x; }
+            kernel fn launch() -> void {}
+        "#;
+        let module = parse(source, "gpu_spaces").expect("parse should succeed");
+        let spaces = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ast::Item::Function(function) => {
+                    Some((function.name.as_str(), function.execution_space))
+                }
+                _ => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(spaces.get("run"), Some(&ast::ExecutionSpace::Host));
+        assert_eq!(spaces.get("square"), Some(&ast::ExecutionSpace::Pure));
+        assert_eq!(spaces.get("helper"), Some(&ast::ExecutionSpace::Device));
+        assert_eq!(spaces.get("launch"), Some(&ast::ExecutionSpace::Kernel));
+    }
+
+    #[test]
+    fn parses_index_assignment_as_internal_builtin() {
+        let source = r#"
+            fn main() -> i32 {
+                let values = [1, 2, 3];
+                values[1] = 9;
+                return values[1];
+            }
+        "#;
+        let module = parse(source, "index_assign").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Expr(ast::Expr::Call { callee, .. }) if callee == "__index_assign"
+        )));
     }
 
     #[test]

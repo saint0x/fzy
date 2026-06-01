@@ -1,3 +1,4 @@
+use super::gpu_kernel_metal::{metal_kernel_launch_descriptors, MetalKernelLaunchDescriptor};
 use super::*;
 use std::collections::BTreeMap;
 
@@ -69,6 +70,7 @@ pub(super) struct LlvmFuncCtx {
     pub(super) local_types: BTreeMap<String, ast::Type>,
     pub(super) struct_defs: HashMap<String, ast::Struct>,
     pub(super) enum_defs: HashMap<String, ast::Enum>,
+    pub(super) gpu_kernel_launch_descriptors: HashMap<String, MetalKernelLaunchDescriptor>,
     pub(super) current_namespace: String,
     pub(super) function_return_ty: String,
     pub(super) alloca_prologue: String,
@@ -85,6 +87,7 @@ impl LlvmFuncCtx {
         local_types: BTreeMap<String, ast::Type>,
         struct_defs: HashMap<String, ast::Struct>,
         enum_defs: HashMap<String, ast::Enum>,
+        gpu_kernel_launch_descriptors: HashMap<String, MetalKernelLaunchDescriptor>,
         function_return_ty: String,
         wrapped_indices: HashMap<String, HashSet<usize>>,
         extern_link_symbols: HashMap<String, String>,
@@ -109,6 +112,7 @@ impl LlvmFuncCtx {
             local_types,
             struct_defs,
             enum_defs,
+            gpu_kernel_launch_descriptors,
             current_namespace: native_current_namespace(current_function_name).to_string(),
             function_return_ty,
             alloca_prologue: String::new(),
@@ -236,6 +240,102 @@ fn llvm_emit_borrowed_str_ptr_arg(
         value: ptr,
         ty: llvm_pointer_int_type().to_string(),
     })
+}
+
+fn llvm_emit_array_argument_parts(
+    arg: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<Option<(LlvmValue, LlvmValue)>> {
+    match arg {
+        ast::Expr::Ident(name) => {
+            if let Some(binding) = ctx.array_slots.get(name).cloned() {
+                let ptr = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 0\n",
+                    binding.len, binding.element_ty, binding.storage
+                ));
+                return Ok(Some((
+                    LlvmValue {
+                        value: ptr,
+                        ty: "ptr".to_string(),
+                    },
+                    LlvmValue {
+                        value: binding.len.to_string(),
+                        ty: "i32".to_string(),
+                    },
+                )));
+            }
+            Ok(None)
+        }
+        ast::Expr::ArrayLiteral(items) => {
+            let storage = format!("%slot_upload_arr_{}", ctx.next_value);
+            ctx.next_value += 1;
+            let lowered_items = items
+                .iter()
+                .map(|item| llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids))
+                .collect::<Result<Vec<_>>>()?;
+            let element_ty = lowered_items
+                .first()
+                .map(|value| value.ty.clone())
+                .unwrap_or_else(|| "i32".to_string());
+            let len = items.len();
+            ctx.declare_alloca(&storage, &format!("[{len} x {element_ty}]"));
+            for (idx, item) in items.iter().enumerate() {
+                let item_value =
+                    llvm_emit_expr_as(item, ctx, string_literal_ids, task_ref_ids, &element_ty)?;
+                let element_ptr = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {element_ptr} = getelementptr inbounds [{len} x {element_ty}], ptr {storage}, i32 0, i64 {idx}\n  store {element_ty} {}, ptr {element_ptr}\n",
+                    item_value.value
+                ));
+            }
+            let ptr = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {ptr} = getelementptr inbounds [{len} x {element_ty}], ptr {storage}, i32 0, i64 0\n"
+            ));
+            Ok(Some((
+                LlvmValue {
+                    value: ptr,
+                    ty: "ptr".to_string(),
+                },
+                LlvmValue {
+                    value: len.to_string(),
+                    ty: "i32".to_string(),
+                },
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn llvm_vec_element_type(expr: &ast::Expr, ctx: &LlvmFuncCtx) -> Option<&'static str> {
+    match expr {
+        ast::Expr::Ident(name) => match ctx.local_types.get(name) {
+            Some(ast::Type::Vec(inner)) => match inner.as_ref() {
+                ast::Type::Float { bits: 32 } => Some("f32"),
+                ast::Type::Int {
+                    signed: true,
+                    bits: 32,
+                } => Some("i32"),
+                ast::Type::Int {
+                    signed: false,
+                    bits: 32,
+                } => Some("u32"),
+                _ => None,
+            },
+            _ => None,
+        },
+        ast::Expr::Group(inner) | ast::Expr::Discard(inner) => llvm_vec_element_type(inner, ctx),
+        ast::Expr::Call { callee, .. } => match callee.as_str() {
+            "gpu.download_f32" => Some("f32"),
+            "gpu.download_i32" => Some("i32"),
+            "gpu.download_u32" => Some("u32"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn llvm_emit_simd_ptr_alignment_check(
@@ -2930,6 +3030,31 @@ pub(super) fn llvm_emit_complex_expr(
             } else {
                 llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?.value
             };
+            if let Some(kind) = llvm_vec_element_type(base, ctx) {
+                let base_handle = llvm_emit_expr_as(
+                    base,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                    llvm_pointer_int_type(),
+                )?;
+                let (helper, ret_ty) = match kind {
+                    "f32" => (NATIVE_VEC_GET_F32_SYMBOL, "float"),
+                    "i32" => (NATIVE_VEC_GET_I32_SYMBOL, "i32"),
+                    "u32" => (NATIVE_VEC_GET_U32_SYMBOL, "i32"),
+                    _ => unreachable!("unsupported native vec element kind"),
+                };
+                let val = ctx.value();
+                let helper = native_mangle_symbol(helper);
+                ctx.code.push_str(&format!(
+                    "  {val} = call {ret_ty} @{helper}({} {}, i32 {index_value})\n",
+                    base_handle.ty, base_handle.value
+                ));
+                return Ok(LlvmValue {
+                    value: val,
+                    ty: ret_ty.to_string(),
+                });
+            }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_slots.get(name).cloned() {
                     return llvm_emit_array_index_from_binding(binding, index, &index_value, ctx);
@@ -3000,6 +3125,131 @@ pub(super) fn llvm_emit_complex_expr(
                     string_literal_ids,
                     task_ref_ids,
                 );
+            }
+            if matches!(
+                callee.as_str(),
+                "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32"
+            ) {
+                if args.len() != 2 {
+                    bail!("llvm backend lowering expected 2 source args for `{callee}`");
+                }
+                let device =
+                    llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, "i32")?;
+                let Some((host_ptr, host_len)) = llvm_emit_array_argument_parts(
+                    &args[1],
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?
+                else {
+                    bail!(
+                        "llvm backend lowering for `{callee}` currently requires a host array literal or local array binding until general slice ABI lowering lands"
+                    );
+                };
+                let symbol = native_mangle_symbol(
+                    native_runtime_import_for_callee(callee)
+                        .expect("gpu upload runtime import should exist")
+                        .symbol,
+                );
+                let host_ptr_value = if host_ptr.ty == "ptr" {
+                    let cast = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {cast} = ptrtoint ptr {} to {}\n",
+                        host_ptr.value,
+                        llvm_pointer_int_type()
+                    ));
+                    cast
+                } else {
+                    host_ptr.value.clone()
+                };
+                let val = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {val} = call i32 @{symbol}(i32 {}, {} {}, i32 {})\n",
+                    device.value,
+                    llvm_pointer_int_type(),
+                    host_ptr_value,
+                    host_len.value
+                ));
+                return Ok(LlvmValue {
+                    value: val,
+                    ty: "i32".to_string(),
+                });
+            }
+            if matches!(
+                callee.as_str(),
+                "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4"
+            ) {
+                if args.len() < 3 {
+                    bail!("llvm backend lowering expected kernel/grid/block args for `{callee}`");
+                }
+                let ast::Expr::Ident(kernel_name) = &args[0] else {
+                    bail!("llvm backend lowering for `{callee}` requires a direct kernel function name");
+                };
+                let descriptor = ctx
+                    .gpu_kernel_launch_descriptors
+                    .get(kernel_name)
+                    .ok_or_else(|| {
+                        anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`")
+                    })?
+                    .clone();
+                let symbol = native_mangle_symbol(
+                    native_runtime_import_for_callee(callee)
+                        .expect("gpu launch runtime import should exist")
+                        .symbol,
+                );
+                let kernel_id = string_literal_ids
+                    .get(&descriptor.kernel_name)
+                    .copied()
+                    .ok_or_else(|| {
+                        anyhow!("missing native string literal id for kernel `{kernel_name}`")
+                    })?;
+                let source_id = string_literal_ids
+                    .get(&descriptor.source)
+                    .copied()
+                    .ok_or_else(|| {
+                        anyhow!("missing native string literal id for Metal source `{kernel_name}`")
+                    })?;
+                let layout_id = string_literal_ids
+                    .get(&descriptor.param_layout)
+                    .copied()
+                    .ok_or_else(|| anyhow!("missing native string literal id for Metal launch layout `{kernel_name}`"))?;
+                let grid =
+                    llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, "i32")?;
+                let block =
+                    llvm_emit_expr_as(&args[2], ctx, string_literal_ids, task_ref_ids, "i32")?;
+                let mut lowered_args = Vec::new();
+                let layouts = descriptor
+                    .param_layout
+                    .split(',')
+                    .map(str::trim)
+                    .collect::<Vec<_>>();
+                for (index, arg) in args.iter().skip(3).enumerate() {
+                    let lowered = llvm_encode_gpu_launch_arg(
+                        arg,
+                        layouts.get(index).copied().unwrap_or("unknown"),
+                        ctx,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                    lowered_args.push(format!("{} {}", lowered.ty, lowered.value));
+                }
+                let val = ctx.value();
+                let mut rendered = vec![
+                    format!("i32 {kernel_id}"),
+                    format!("i32 {source_id}"),
+                    format!("i32 {layout_id}"),
+                    format!("i32 {}", grid.value),
+                    format!("i32 {}", block.value),
+                ];
+                rendered.extend(lowered_args);
+                ctx.code.push_str(&format!(
+                    "  {val} = call i32 @{symbol}({})\n",
+                    rendered.join(", ")
+                ));
+                return Ok(LlvmValue {
+                    value: val,
+                    ty: "i32".to_string(),
+                });
             }
             let signature = ctx.function_sigs.get(callee).cloned();
             let mut rendered_args = Vec::with_capacity(args.len());
@@ -3461,6 +3711,71 @@ pub(super) fn llvm_cast_value(
     })
 }
 
+fn llvm_encode_gpu_launch_arg(
+    arg: &ast::Expr,
+    layout: &str,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    match layout {
+        "i32" => {
+            let value = llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, "i32")?;
+            llvm_cast_value(ctx, value, llvm_pointer_int_type())
+        }
+        "u32" => {
+            let value = llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, "i32")?;
+            if llvm_pointer_int_type() == "i32" {
+                return Ok(LlvmValue {
+                    value: value.value,
+                    ty: "i32".to_string(),
+                });
+            }
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = zext i32 {} to {}\n",
+                value.value,
+                llvm_pointer_int_type()
+            ));
+            Ok(LlvmValue {
+                value: out,
+                ty: llvm_pointer_int_type().to_string(),
+            })
+        }
+        "f32" => {
+            let value = llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, "float")?;
+            let bits = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {bits} = bitcast float {} to i32\n",
+                value.value
+            ));
+            if llvm_pointer_int_type() == "i32" {
+                return Ok(LlvmValue {
+                    value: bits,
+                    ty: "i32".to_string(),
+                });
+            }
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = zext i32 {bits} to {}\n",
+                llvm_pointer_int_type()
+            ));
+            Ok(LlvmValue {
+                value: out,
+                ty: llvm_pointer_int_type().to_string(),
+            })
+        }
+        layout if layout.starts_with("slice_") => {
+            let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+            llvm_cast_value(ctx, value, llvm_pointer_int_type())
+        }
+        _ => {
+            let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+            llvm_cast_value(ctx, value, llvm_pointer_int_type())
+        }
+    }
+}
+
 pub(super) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Result<LlvmValue> {
     if !llvm_is_float_ty(&value.ty) {
         return Ok(value);
@@ -3502,6 +3817,7 @@ pub(super) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Res
 
 pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String> {
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
+    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir).unwrap_or_default();
     if fir.typed_functions.is_empty() {
         let ret = plan
             .forced_main_return
@@ -3533,6 +3849,78 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                     &mut out,
                     "declare void @{}({})",
                     import.symbol,
+                    llvm_pointer_int_type()
+                );
+            }
+            "gpu.device_memory_bytes" => {
+                let _ = writeln!(&mut out, "declare i64 @{}(i32)", import.symbol);
+            }
+            "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, {}, i32)",
+                    import.symbol,
+                    llvm_pointer_int_type()
+                );
+            }
+            "gpu.download_f32" | "gpu.download_i32" | "gpu.download_u32" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare {} @{}(i32)",
+                    llvm_pointer_int_type(),
+                    import.symbol
+                );
+            }
+            "gpu.slice" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare {} @{}(i32, i32, i32)",
+                    llvm_pointer_int_type(),
+                    import.symbol
+                );
+            }
+            "gpu.launch0" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32)",
+                    import.symbol
+                );
+            }
+            "gpu.launch1" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32, {})",
+                    import.symbol,
+                    llvm_pointer_int_type()
+                );
+            }
+            "gpu.launch2" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32, {}, {})",
+                    import.symbol,
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type()
+                );
+            }
+            "gpu.launch3" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32, {}, {}, {})",
+                    import.symbol,
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type()
+                );
+            }
+            "gpu.launch4" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32, {}, {}, {}, {})",
+                    import.symbol,
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type(),
                     llvm_pointer_int_type()
                 );
             }
@@ -3577,6 +3965,30 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         llvm_pointer_int_type(),
         NATIVE_STR_PTR_SYMBOL
     );
+    let _ = writeln!(
+        &mut out,
+        "declare i32 @{}({})",
+        NATIVE_VEC_LEN_SYMBOL,
+        llvm_pointer_int_type()
+    );
+    let _ = writeln!(
+        &mut out,
+        "declare i32 @{}({}, i32)",
+        NATIVE_VEC_GET_I32_SYMBOL,
+        llvm_pointer_int_type()
+    );
+    let _ = writeln!(
+        &mut out,
+        "declare i32 @{}({}, i32)",
+        NATIVE_VEC_GET_U32_SYMBOL,
+        llvm_pointer_int_type()
+    );
+    let _ = writeln!(
+        &mut out,
+        "declare float @{}({}, i32)",
+        NATIVE_VEC_GET_F32_SYMBOL,
+        llvm_pointer_int_type()
+    );
     let extern_imports = collect_extern_c_imports(fir);
     let mut extern_link_symbols = fir
         .typed_functions
@@ -3611,6 +4023,22 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
     extern_link_symbols.insert(
         NATIVE_STR_PTR.to_string(),
         NATIVE_STR_PTR_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(
+        NATIVE_VEC_LEN.to_string(),
+        NATIVE_VEC_LEN_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(
+        NATIVE_VEC_GET_I32.to_string(),
+        NATIVE_VEC_GET_I32_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(
+        NATIVE_VEC_GET_U32.to_string(),
+        NATIVE_VEC_GET_U32_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(
+        NATIVE_VEC_GET_F32.to_string(),
+        NATIVE_VEC_GET_F32_SYMBOL.to_string(),
     );
     let mut function_sigs = HashMap::<String, LlvmFunctionSig>::new();
     for function in &fir.typed_functions {
@@ -3696,6 +4124,42 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
             is_extern_c_import: false,
         },
     );
+    function_sigs.insert(
+        NATIVE_VEC_LEN.to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string()],
+            ret: Some("i32".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
+    function_sigs.insert(
+        NATIVE_VEC_GET_I32.to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string(), "i32".to_string()],
+            ret: Some("i32".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
+    function_sigs.insert(
+        NATIVE_VEC_GET_U32.to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string(), "i32".to_string()],
+            ret: Some("i32".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
+    function_sigs.insert(
+        NATIVE_VEC_GET_F32.to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string(), "i32".to_string()],
+            ret: Some("float".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
     for import in &extern_imports {
         let params = import
             .params
@@ -3728,6 +4192,12 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         out.push('\n');
     }
     for function in &fir.typed_functions {
+        if matches!(
+            function.execution_space,
+            ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
+        ) {
+            continue;
+        }
         if is_extern_c_import_decl(function) {
             continue;
         }
@@ -3749,6 +4219,7 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                 &plan.task_ref_ids,
                 &extern_link_symbols,
                 &function_sigs,
+                &gpu_kernel_launch_descriptors,
                 cfg,
             )
             .map_err(|error| {
@@ -3789,6 +4260,7 @@ pub(super) fn llvm_emit_function(
     task_ref_ids: &HashMap<String, i32>,
     extern_link_symbols: &HashMap<String, String>,
     function_sigs: &HashMap<String, LlvmFunctionSig>,
+    gpu_kernel_launch_descriptors: &HashMap<String, MetalKernelLaunchDescriptor>,
     cfg: &ControlFlowCfg,
 ) -> Result<String> {
     let params = function
@@ -3808,6 +4280,7 @@ pub(super) fn llvm_emit_function(
         function.local_types.clone(),
         struct_defs.clone(),
         enum_defs.clone(),
+        gpu_kernel_launch_descriptors.clone(),
         return_ty.clone(),
         wrapped_indices,
         extern_link_symbols.clone(),

@@ -158,10 +158,10 @@ fn sample() -> i32 {
     let root = path.dirname(probe)
     let entries = list_dir_entries(root)
     let mut score = dir_len(entries)
-    score += metadata(probe).exists
+    score = score + metadata(probe).exists
     let copy = path.join(root, "coreio-sample-copy.txt")
     discard write_text(probe, "sample")
-    score += copy_file(probe, copy)
+    score = score + copy_file(probe, copy)
     discard remove(copy)
     discard remove(probe)
     return score % 251

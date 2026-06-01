@@ -75,15 +75,15 @@ fn sample() -> i32 {
     let g = upper_ascii("tool_arg_name")
     let h = lower_ascii("TOOL_ARG_NAME")
     let mut acc = 0
-    acc += contains(b, "beta")
-    acc += starts_with(b, "alpha")
-    acc += ends_with(b, "gamma")
-    acc += len(a)
-    acc += len(c)
-    acc += len(d)
-    acc += len(e)
-    acc += f
-    acc += len(g)
-    acc += len(h)
+    acc = acc + contains(b, "beta")
+    acc = acc + starts_with(b, "alpha")
+    acc = acc + ends_with(b, "gamma")
+    acc = acc + len(a)
+    acc = acc + len(c)
+    acc = acc + len(d)
+    acc = acc + len(e)
+    acc = acc + f
+    acc = acc + len(g)
+    acc = acc + len(h)
     return acc
 }

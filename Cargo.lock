@@ -584,6 +584,7 @@ dependencies = [
  "formatter",
  "fzscenario",
  "hir",
+ "kernel_ir",
  "manifest",
  "parser",
  "rayon",
@@ -979,6 +980,16 @@ dependencies = [
  "futures-util",
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kernel_ir"
+version = "0.1.0"
+dependencies = [
+ "ast",
+ "diagnostics",
+ "hir",
+ "parser",
 ]
 
 [[package]]

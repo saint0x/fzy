@@ -11,6 +11,7 @@ fzy ships one production CLI, `fz`, for both compiler workflows and deterministi
 - Why fzy: `WHYFZY.md`
 - Syntax and command examples: `CODE.md`
 - Production workflow: `docs/production-workflow-v1.md`
+- GPU programming and validation: `docs/gpu-v1.md`
 - Safety and trust model: `docs/system-safety-trust-model-v1.md`
 - Unsafe authoring: `docs/unsafe-contract-authoring-v1.md`
 - Stability tiers: `docs/language-stability-v1.md`
@@ -143,6 +144,7 @@ Implemented and validated today:
 - direct-memory release gates:
   - `python3 scripts/direct_memory_architecture_gate.py`
   - `python3 scripts/direct_memory_perf_gate.py`
+- production GPU surface through `core.gpu`, with live Metal execution on Apple plus shared `spirv`/`nvptx` adapter contracts
 
 ## Production Claims
 

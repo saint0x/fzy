@@ -1,3 +1,4 @@
+use super::gpu_kernel_metal::MetalKernelLaunchDescriptor;
 use super::*;
 use anyhow::{anyhow, bail, Result};
 use std::collections::{BTreeMap, HashMap};
@@ -34,6 +35,7 @@ pub(super) struct ClifLoweringCtx<'a> {
     pub(super) struct_defs: &'a HashMap<String, ast::Struct>,
     pub(super) enum_defs: &'a HashMap<String, ast::Enum>,
     pub(super) mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
+    pub(super) gpu_kernel_launch_descriptors: &'a HashMap<String, MetalKernelLaunchDescriptor>,
     pub(super) current_return_ty: Option<ClifType>,
     pub(super) current_return_array: Option<ClifArrayAbi>,
     pub(super) current_return_ptr: Option<LocalBinding>,
@@ -172,6 +174,7 @@ pub(super) fn clif_emit_function_cfg(
     variant_tags: &HashMap<String, i32>,
     mutable_globals: &HashMap<String, cranelift_module::DataId>,
     local_types: &BTreeMap<String, ast::Type>,
+    gpu_kernel_launch_descriptors: &HashMap<String, MetalKernelLaunchDescriptor>,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
     current_return_ty: Option<ClifType>,
@@ -197,6 +200,7 @@ pub(super) fn clif_emit_function_cfg(
         struct_defs,
         enum_defs,
         mutable_globals,
+        gpu_kernel_launch_descriptors,
         current_return_ty,
         current_return_array,
         current_return_ptr,
@@ -1683,6 +1687,96 @@ fn clif_emit_array_argument_pointer(
             Ok(None)
         }
         _ => Ok(None),
+    }
+}
+
+fn clif_emit_array_argument_parts(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    arg: &ast::Expr,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<Option<(ClifValue, ClifValue)>> {
+    match arg {
+        ast::Expr::Ident(name) => {
+            if let Some(binding) = ctx.array_bindings.get(name) {
+                let ptr =
+                    builder
+                        .ins()
+                        .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0);
+                let len = builder.ins().iconst(types::I32, binding.len as i64);
+                return Ok(Some((
+                    ClifValue {
+                        value: ptr,
+                        ty: pointer_sized_clif_type(),
+                    },
+                    ClifValue {
+                        value: len,
+                        ty: types::I32,
+                    },
+                )));
+            }
+            if let Some(ast::Type::Array { len, .. }) = ctx.local_types.get(name) {
+                if let Some(binding) = locals.get(name).copied() {
+                    let ptr = builder.use_var(binding.var);
+                    let len = builder.ins().iconst(types::I32, *len as i64);
+                    return Ok(Some((
+                        ClifValue {
+                            value: ptr,
+                            ty: binding.ty,
+                        },
+                        ClifValue {
+                            value: len,
+                            ty: types::I32,
+                        },
+                    )));
+                }
+            }
+            Ok(None)
+        }
+        ast::Expr::ArrayLiteral(items) => {
+            let ptr = clif_emit_array_argument_pointer(builder, ctx, arg, locals, next_var)?;
+            let Some(ptr) = ptr else {
+                return Ok(None);
+            };
+            let len = builder.ins().iconst(types::I32, items.len() as i64);
+            Ok(Some((
+                ptr,
+                ClifValue {
+                    value: len,
+                    ty: types::I32,
+                },
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn clif_vec_element_type(expr: &ast::Expr, ctx: &ClifLoweringCtx<'_>) -> Option<&'static str> {
+    match expr {
+        ast::Expr::Ident(name) => match ctx.local_types.get(name) {
+            Some(ast::Type::Vec(inner)) => match inner.as_ref() {
+                ast::Type::Float { bits: 32 } => Some("f32"),
+                ast::Type::Int {
+                    signed: true,
+                    bits: 32,
+                } => Some("i32"),
+                ast::Type::Int {
+                    signed: false,
+                    bits: 32,
+                } => Some("u32"),
+                _ => None,
+            },
+            _ => None,
+        },
+        ast::Expr::Group(inner) | ast::Expr::Discard(inner) => clif_vec_element_type(inner, ctx),
+        ast::Expr::Call { callee, .. } => match callee.as_str() {
+            "gpu.download_f32" => Some("f32"),
+            "gpu.download_i32" => Some("i32"),
+            "gpu.download_u32" => Some("u32"),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -3435,6 +3529,31 @@ pub(super) fn clif_emit_expr(
                     let value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
                     cast_clif_value(builder, value, default_int_clif_type())?
                 };
+            if let Some(kind) = clif_vec_element_type(base, ctx) {
+                let helper_name = match kind {
+                    "f32" => NATIVE_VEC_GET_F32,
+                    "i32" => NATIVE_VEC_GET_I32,
+                    "u32" => NATIVE_VEC_GET_U32,
+                    _ => unreachable!("unsupported native vec element kind"),
+                };
+                let helper_id = ctx.function_ids.get(helper_name).copied().ok_or_else(|| {
+                    anyhow!("missing native helper signature metadata for `{helper_name}`")
+                })?;
+                let helper_sig = ctx.function_signatures.get(helper_name).ok_or_else(|| {
+                    anyhow!("missing native helper signature metadata for `{helper_name}`")
+                })?;
+                let base_handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
+                let base_handle = cast_clif_value(builder, base_handle, pointer_sized_clif_type())?;
+                let func_ref = ctx.module.declare_func_in_func(helper_id, builder.func);
+                let call = builder
+                    .ins()
+                    .call(func_ref, &[base_handle.value, index_value.value]);
+                let value = builder.inst_results(call)[0];
+                return Ok(ClifValue {
+                    value,
+                    ty: helper_sig.ret.unwrap_or(default_int_clif_type()),
+                });
+            }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_bindings.get(name) {
                     if binding.len == 0 {
@@ -3939,6 +4058,104 @@ pub(super) fn clif_emit_expr(
                 let signature = ctx.function_signatures.get(callee).ok_or_else(|| {
                     anyhow!("missing native function signature metadata for `{callee}`")
                 })?;
+                if matches!(
+                    callee.as_str(),
+                    "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32"
+                ) {
+                    if args.len() != 2 {
+                        bail!("native backend lowering expected 2 source args for `{callee}`");
+                    }
+                    let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
+                    let mut device = clif_emit_expr(builder, ctx, &args[0], locals, next_var)?;
+                    device = cast_clif_value(builder, device, types::I32)?;
+                    let Some((host_ptr, host_len)) =
+                        clif_emit_array_argument_parts(builder, ctx, &args[1], locals, next_var)?
+                    else {
+                        bail!(
+                            "native backend lowering for `{callee}` currently requires a host array literal or local array binding until general slice ABI lowering lands"
+                        );
+                    };
+                    let call = builder
+                        .ins()
+                        .call(func_ref, &[device.value, host_ptr.value, host_len.value]);
+                    let value = builder.inst_results(call)[0];
+                    return Ok(ClifValue {
+                        value,
+                        ty: types::I32,
+                    });
+                }
+                if matches!(
+                    callee.as_str(),
+                    "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4"
+                ) {
+                    if args.len() < 3 {
+                        bail!("native backend lowering expected kernel/grid/block args for `{callee}`");
+                    }
+                    let ast::Expr::Ident(kernel_name) = &args[0] else {
+                        bail!("native backend lowering for `{callee}` requires a direct kernel function name");
+                    };
+                    let descriptor = ctx
+                        .gpu_kernel_launch_descriptors
+                        .get(kernel_name)
+                        .ok_or_else(|| {
+                            anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`")
+                        })?;
+                    let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
+                    let kernel_id = ctx
+                        .string_literal_ids
+                        .get(&descriptor.kernel_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            anyhow!("missing native string literal id for kernel `{kernel_name}`")
+                        })?;
+                    let source_id = ctx
+                        .string_literal_ids
+                        .get(&descriptor.source)
+                        .copied()
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "missing native string literal id for Metal source `{kernel_name}`"
+                            )
+                        })?;
+                    let layout_id = ctx
+                        .string_literal_ids
+                        .get(&descriptor.param_layout)
+                        .copied()
+                        .ok_or_else(|| anyhow!("missing native string literal id for Metal launch layout `{kernel_name}`"))?;
+                    let mut grid = clif_emit_expr(builder, ctx, &args[1], locals, next_var)?;
+                    grid = cast_clif_value(builder, grid, types::I32)?;
+                    let mut block = clif_emit_expr(builder, ctx, &args[2], locals, next_var)?;
+                    block = cast_clif_value(builder, block, types::I32)?;
+                    let mut values = vec![
+                        builder.ins().iconst(types::I32, i64::from(kernel_id)),
+                        builder.ins().iconst(types::I32, i64::from(source_id)),
+                        builder.ins().iconst(types::I32, i64::from(layout_id)),
+                        grid.value,
+                        block.value,
+                    ];
+                    let layouts = descriptor
+                        .param_layout
+                        .split(',')
+                        .map(str::trim)
+                        .collect::<Vec<_>>();
+                    for (index, arg) in args.iter().skip(3).enumerate() {
+                        let lowered = clif_encode_gpu_launch_arg(
+                            builder,
+                            ctx,
+                            arg,
+                            layouts.get(index).copied().unwrap_or("unknown"),
+                            locals,
+                            next_var,
+                        )?;
+                        values.push(lowered.value);
+                    }
+                    let call = builder.ins().call(func_ref, &values);
+                    let value = builder.inst_results(call)[0];
+                    return Ok(ClifValue {
+                        value,
+                        ty: types::I32,
+                    });
+                }
                 if let Some(sret) = signature.sret {
                     let stack_slot = clif_create_stack_slot_for_array_abi(builder, sret);
                     let result_ptr =
@@ -4305,4 +4522,64 @@ pub(super) fn cast_clif_value(
         value.ty,
         target
     );
+}
+
+fn clif_encode_gpu_launch_arg(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    arg: &ast::Expr,
+    layout: &str,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<ClifValue> {
+    let ptr_ty = pointer_sized_clif_type();
+    match layout {
+        "i32" => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            let value = cast_clif_value(builder, lowered, types::I32)?;
+            Ok(ClifValue {
+                value: if ptr_ty == types::I64 {
+                    builder.ins().sextend(ptr_ty, value.value)
+                } else {
+                    value.value
+                },
+                ty: ptr_ty,
+            })
+        }
+        "u32" => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            let value = cast_clif_value(builder, lowered, types::I32)?;
+            Ok(ClifValue {
+                value: if ptr_ty == types::I64 {
+                    builder.ins().uextend(ptr_ty, value.value)
+                } else {
+                    value.value
+                },
+                ty: ptr_ty,
+            })
+        }
+        "f32" => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            let value = cast_clif_value(builder, lowered, types::F32)?;
+            let bits = builder
+                .ins()
+                .bitcast(types::I32, MemFlags::new(), value.value);
+            Ok(ClifValue {
+                value: if ptr_ty == types::I64 {
+                    builder.ins().uextend(ptr_ty, bits)
+                } else {
+                    bits
+                },
+                ty: ptr_ty,
+            })
+        }
+        layout if layout.starts_with("slice_") => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            cast_clif_value(builder, lowered, ptr_ty)
+        }
+        _ => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            cast_clif_value(builder, lowered, ptr_ty)
+        }
+    }
 }

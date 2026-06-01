@@ -1,0 +1,60 @@
+use core.gpu;
+use core.thread;
+
+mod api;
+mod cli;
+mod model;
+mod runtime;
+mod services;
+mod tests;
+
+kernel fn brighten(input: GpuSlice<f32>, delta: f32, output: GpuSlice<f32>, n: i32) -> void {
+    let i = gpu.global_id_x()
+    if i < n {
+        let value = input[i] + delta
+        if value > 1.0f32 {
+            output[i] = 1.0f32
+        } else {
+            output[i] = value
+        }
+    }
+}
+
+host fn run_brightness_pass() -> i32 {
+    let dev = gpu.default_device()
+    let input = model.sample_pixels()
+    let input_buf: GpuBuffer<f32> = gpu.upload_f32(dev, input)
+    defer gpu.free(input_buf)
+    let output_buf: GpuBuffer<f32> = gpu.alloc_f32(dev, model.pixel_count())
+    defer gpu.free(output_buf)
+    let event = gpu.launch4(
+        brighten,
+        model.grid_size(),
+        model.block_size(),
+        gpu.slice(input_buf, 0, model.pixel_count()),
+        model.delta(),
+        gpu.slice(output_buf, 0, model.pixel_count()),
+        model.pixel_count(),
+    )
+    gpu.wait(event)
+    let output: Vec<f32> = gpu.download_f32(output_buf)
+    return model.validate_pixels(output)
+}
+
+host fn main() -> i32 {
+    discard api.touch()
+    let rc = runtime.boot()
+    if rc != 0 {
+        return rc
+    }
+    discard cli.touch()
+    let dev_name = services.describe_default_device()
+    discard term.write(str.concat(str.concat("gpu_metal_image device=", dev_name), "\n"))
+    let run_rc = run_brightness_pass()
+    if run_rc == 0 {
+        discard term.write("gpu_metal_image kernel=brighten status=ok output=validated\n")
+        return 0
+    }
+    discard term.write(str.concat(str.concat("gpu_metal_image kernel=brighten status=fail code=", str.from_i32(run_rc)), "\n"))
+    return run_rc
+}

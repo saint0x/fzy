@@ -1,0 +1,35 @@
+fn sample_scores() -> [i32; 8] {
+    return [3, 1, 4, 1, 5, 9, 2, 6]
+}
+
+fn bias() -> i32 {
+    return 10
+}
+
+fn score_count() -> i32 {
+    return 8
+}
+
+fn grid_size() -> i32 {
+    return 1
+}
+
+fn block_size() -> i32 {
+    return 64
+}
+
+fn expected_output() -> [i32; 8] {
+    return [13, 11, 14, 11, 15, 19, 12, 16]
+}
+
+fn expected_sum() -> i32 {
+    return 111
+}
+
+fn expected_min() -> i32 {
+    return 11
+}
+
+fn expected_max() -> i32 {
+    return 19
+}

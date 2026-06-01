@@ -257,6 +257,57 @@ Semantics:
   - `str.from_i32(value)`
   - `str.from_bool(flag)`
 
+## GPU Surface
+
+- Production GPU authoring is centered on `use core.gpu;`.
+- Execution spaces are explicit:
+  - `host fn` for device discovery, allocation, upload/download, launch, and event waiting
+  - `device fn` for helper functions callable from kernels
+  - `kernel fn` for launchable GPU entry points
+- Public opaque handle types:
+  - `GpuDevice`
+  - `GpuBuffer<T>`
+  - `GpuSlice<T>`
+  - `GpuEvent`
+- Current host surface includes:
+  - `gpu.device_count()`
+  - `gpu.default_device()`
+  - `gpu.device_name(dev)`
+  - `gpu.device_memory_bytes(dev)`
+  - `gpu.alloc_f32/i32/u32(dev, len)`
+  - `gpu.free(buffer)`
+  - `gpu.upload_f32/i32/u32(dev, values)`
+  - `gpu.download_f32/i32/u32(buffer)`
+  - `gpu.slice(buffer, offset, len)`
+  - `gpu.launch0..4(kernel, grid, block, ...)`
+  - `gpu.wait(event)`
+  - `await gpu.wait_async(event)`
+- Current device/kernel surface includes:
+  - `gpu.global_id_x/y/z()`
+  - `gpu.thread_id_x/y/z()`
+  - `gpu.block_id_x/y/z()`
+  - `gpu.block_dim_x/y/z()`
+  - `gpu.grid_dim_x/y/z()`
+  - `gpu.barrier()`
+  - `slice[index]` indexing on `GpuSlice<f32/i32/u32>`
+- Verifier/runtime contract:
+  - kernels must return `void`
+  - host functions cannot call device-only intrinsics
+  - kernels cannot call host functions
+  - `GpuBuffer<T>` is host-owned and linear; free it or defer its cleanup
+  - `GpuSlice<T>` is a verifier-visible borrowed view; freeing or reusing the owner while slices are live is rejected
+  - aliased launch parameters are rejected unless the aliasing is readonly-safe under the shared launch ABI
+  - `gpu.barrier()` cannot appear in divergent control flow, including through helper calls
+  - unsupported kernel parameter shapes fail before backend lowering as stable launch-ABI diagnostics
+- Backend truth:
+  - live executable backend today is `metal` on Apple
+  - `spirv` and `nvptx` are first-class architecture adapters bound to the same shared kernel package and launch ABI, but are not yet executable
+- Build/run artifacts:
+  - GPU builds emit `.fz/gpu-kernel-package.json` and `.fz/gpu-kernel-package.md`
+  - recorded native trace artifacts include GPU lifecycle and kernel-launch evidence
+- Reference example:
+  - [examples/gpu_metal_image](/Users/deepsaint/Desktop/fozzylang/examples/gpu_metal_image/README.md)
+
 ## Terminal Intrinsic Namespace
 
 - Canonical current-process terminal namespace is `term.*`.

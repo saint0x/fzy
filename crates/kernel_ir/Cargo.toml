@@ -1,0 +1,12 @@
+[package]
+name = "kernel_ir"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ast = { path = "../ast" }
+hir = { path = "../hir" }
+diagnostics = { path = "../diagnostics" }
+
+[dev-dependencies]
+parser = { path = "../parser" }
