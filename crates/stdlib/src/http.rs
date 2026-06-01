@@ -1,4 +1,4 @@
-use crate::core::{require_capability, CapabilityError};
+use crate::core::{CapabilityError, require_capability};
 use core::{Capability, CapabilityToken};
 use serde_json::{Map, Value};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -302,6 +302,8 @@ pub struct HostNet {
     next_socket: u64,
     sockets: BTreeMap<SocketId, (HostSocket, SocketOwnership)>,
     poll_interests: BTreeMap<SocketId, PollInterest>,
+    poll_slots: Vec<(SocketId, PollInterest)>,
+    poll_scan_cursor: usize,
     poll_queue: VecDeque<PollerEvent>,
     contexts: BTreeMap<ContextId, RequestContext>,
     decisions: Vec<NetDecision>,
@@ -314,6 +316,8 @@ impl Default for HostNet {
             next_socket: 1,
             sockets: BTreeMap::new(),
             poll_interests: BTreeMap::new(),
+            poll_slots: Vec::new(),
+            poll_scan_cursor: 0,
             poll_queue: VecDeque::new(),
             contexts: BTreeMap::new(),
             decisions: Vec::new(),
@@ -345,36 +349,79 @@ impl HostNet {
     }
 
     fn scan_poll_interests(&mut self, max_queue_depth: usize) -> Result<(), NetError> {
-        let mut pending = Vec::new();
-        for (&socket, &interest) in &self.poll_interests {
-            let event = match (self.sockets.get(&socket).map(|(s, _)| s), interest) {
-                (Some(HostSocket::Listening(_, _)), PollInterest::Acceptable) => {
-                    PollerEvent::Acceptable(socket)
-                }
-                (Some(HostSocket::Stream(_)), PollInterest::Readable) => {
-                    PollerEvent::Readable(socket)
-                }
-                (Some(HostSocket::Udp(_)), PollInterest::Readable) => PollerEvent::Readable(socket),
-                #[cfg(unix)]
-                (Some(HostSocket::UnixDatagram(_)), PollInterest::Readable) => {
-                    PollerEvent::Readable(socket)
-                }
-                (Some(HostSocket::Stream(_)), PollInterest::Writable) => {
-                    PollerEvent::Writable(socket)
-                }
-                (Some(HostSocket::Udp(_)), PollInterest::Writable) => PollerEvent::Writable(socket),
-                #[cfg(unix)]
-                (Some(HostSocket::UnixDatagram(_)), PollInterest::Writable) => {
-                    PollerEvent::Writable(socket)
-                }
-                _ => continue,
-            };
-            pending.push(event);
+        if self.poll_slots.is_empty() {
+            return Ok(());
         }
-        for event in pending {
-            self.queue_event(event, max_queue_depth)?;
+        let mut scanned = 0usize;
+        while scanned < self.poll_slots.len() && self.poll_queue.len() < max_queue_depth {
+            let idx = self.poll_scan_cursor % self.poll_slots.len();
+            self.poll_scan_cursor = (idx + 1) % self.poll_slots.len();
+            scanned += 1;
+            let (socket, interest) = self.poll_slots[idx];
+            if let Some(event) = self.poll_event_for(socket, interest) {
+                self.queue_event(event, max_queue_depth)?;
+            }
         }
         Ok(())
+    }
+
+    fn poll_event_for(&self, socket: SocketId, interest: PollInterest) -> Option<PollerEvent> {
+        match (self.sockets.get(&socket).map(|(s, _)| s), interest) {
+            (Some(HostSocket::Listening(_, _)), PollInterest::Acceptable) => {
+                Some(PollerEvent::Acceptable(socket))
+            }
+            (Some(HostSocket::Stream(_)), PollInterest::Readable) => {
+                Some(PollerEvent::Readable(socket))
+            }
+            (Some(HostSocket::Udp(_)), PollInterest::Readable) => {
+                Some(PollerEvent::Readable(socket))
+            }
+            #[cfg(unix)]
+            (Some(HostSocket::UnixDatagram(_)), PollInterest::Readable) => {
+                Some(PollerEvent::Readable(socket))
+            }
+            (Some(HostSocket::Stream(_)), PollInterest::Writable) => {
+                Some(PollerEvent::Writable(socket))
+            }
+            (Some(HostSocket::Udp(_)), PollInterest::Writable) => {
+                Some(PollerEvent::Writable(socket))
+            }
+            #[cfg(unix)]
+            (Some(HostSocket::UnixDatagram(_)), PollInterest::Writable) => {
+                Some(PollerEvent::Writable(socket))
+            }
+            _ => None,
+        }
+    }
+
+    fn remember_poll_interest(&mut self, socket: SocketId, interest: PollInterest) {
+        if let Some(existing) = self
+            .poll_slots
+            .iter_mut()
+            .find(|(existing_socket, _)| *existing_socket == socket)
+        {
+            *existing = (socket, interest);
+        } else {
+            self.poll_slots.push((socket, interest));
+        }
+    }
+
+    fn forget_poll_interest(&mut self, socket: SocketId) {
+        if let Some(idx) = self
+            .poll_slots
+            .iter()
+            .position(|(existing_socket, _)| *existing_socket == socket)
+        {
+            self.poll_slots.swap_remove(idx);
+            if self.poll_scan_cursor > idx {
+                self.poll_scan_cursor = self.poll_scan_cursor.saturating_sub(1);
+            }
+            if self.poll_slots.is_empty() {
+                self.poll_scan_cursor = 0;
+            } else if self.poll_scan_cursor >= self.poll_slots.len() {
+                self.poll_scan_cursor %= self.poll_slots.len();
+            }
+        }
     }
 }
 
@@ -732,6 +779,8 @@ impl NetBackend for HostNet {
         let Some((host_socket, _)) = self.sockets.remove(&socket) else {
             return Err(NetError::NotFound);
         };
+        self.poll_interests.remove(&socket);
+        self.forget_poll_interest(socket);
         if let HostSocket::Stream(stream) = host_socket {
             let _ = stream.shutdown(Shutdown::Both);
         }
@@ -755,6 +804,7 @@ impl NetBackend for HostNet {
             return Err(NetError::InvalidSocketKind);
         }
         self.poll_interests.insert(socket, interest);
+        self.remember_poll_interest(socket, interest);
         Ok(())
     }
 
@@ -2309,11 +2359,11 @@ impl HttpRetryPolicy {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize_header_name, json_payload_encode, json_payload_new, json_payload_set_raw,
-        json_payload_set_str, parse_http_request, post_json_payload, write_json_payload,
-        DeterministicNet, HeaderLimits, HeaderMap, HttpRequestBuilder, HttpResponse,
+        DeterministicNet, HeaderLimits, HeaderMap, HostNet, HttpRequestBuilder, HttpResponse,
         HttpResponseBuilder, HttpRetryPolicy, HttpRouter, HttpServerLimits, NetBackend,
         NetDecision, NetError, PollInterest, PollerEvent, RequestContext, SocketId,
+        canonicalize_header_name, json_payload_encode, json_payload_new, json_payload_set_raw,
+        json_payload_set_str, parse_http_request, post_json_payload, write_json_payload,
     };
 
     struct TestRouter;
@@ -2362,6 +2412,28 @@ mod tests {
             backend.poll_next(8).expect("poll should work"),
             vec![PollerEvent::Acceptable(listener)]
         );
+    }
+
+    #[test]
+    fn host_poll_round_robins_registered_listeners() {
+        let mut backend = HostNet::default();
+        let first = backend.bind("127.0.0.1:0").expect("bind should work");
+        backend.listen(first, 8).expect("listen should work");
+        let second = backend.bind("127.0.0.1:0").expect("bind should work");
+        backend.listen(second, 8).expect("listen should work");
+
+        backend
+            .poll_register(first, PollInterest::Acceptable, 8)
+            .expect("first registration should work");
+        backend
+            .poll_register(second, PollInterest::Acceptable, 8)
+            .expect("second registration should work");
+
+        let first_events = backend.poll_next(1).expect("poll should work");
+        let second_events = backend.poll_next(1).expect("poll should work");
+        assert_eq!(first_events.len(), 1);
+        assert_eq!(second_events.len(), 1);
+        assert_ne!(first_events[0], second_events[0]);
     }
 
     #[test]
@@ -2438,10 +2510,12 @@ mod tests {
         )
         .expect("persistent serve should work");
         assert!(bytes > 0);
-        assert!(backend
-            .decisions()
-            .iter()
-            .any(|d| matches!(d, NetDecision::Close { socket } if *socket == connection)));
+        assert!(
+            backend
+                .decisions()
+                .iter()
+                .any(|d| matches!(d, NetDecision::Close { socket } if *socket == connection))
+        );
     }
 
     #[test]
@@ -2467,10 +2541,12 @@ mod tests {
         )
         .expect("connection serve should work");
         assert!(bytes > 0);
-        assert!(backend
-            .decisions()
-            .iter()
-            .any(|d| matches!(d, NetDecision::Close { socket } if *socket == connection)));
+        assert!(
+            backend
+                .decisions()
+                .iter()
+                .any(|d| matches!(d, NetDecision::Close { socket } if *socket == connection))
+        );
     }
 
     #[test]

@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use ast::Type;
 use core::CapabilitySet;
-pub use hir::count_module_owned_return_transfers;
 pub use hir::TypedFunction;
 pub use hir::UnsafeContractSite;
+pub use hir::count_module_owned_return_transfers;
 use hir::{FunctionCapabilityRequirement, TypedModule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -479,8 +479,28 @@ fn compute_def_use(blocks: &[BasicBlock]) -> Vec<DefUseBlock> {
 }
 
 fn compute_liveness(blocks: &[BasicBlock], def_use: &[DefUseBlock]) -> Vec<LivenessBlock> {
-    let mut live_in = vec![std::collections::BTreeSet::<String>::new(); blocks.len()];
-    let mut live_out = vec![std::collections::BTreeSet::<String>::new(); blocks.len()];
+    let block_len = blocks.len();
+    let mut symbol_index = std::collections::BTreeMap::<String, usize>::new();
+    let mut symbols = Vec::<String>::new();
+    let mut indexed_defs = Vec::with_capacity(def_use.len());
+    let mut indexed_uses = Vec::with_capacity(def_use.len());
+    for du in def_use {
+        let defs = du
+            .defs
+            .iter()
+            .map(|name| intern_liveness_symbol(name, &mut symbol_index, &mut symbols))
+            .collect::<Vec<_>>();
+        let uses = du
+            .uses
+            .iter()
+            .map(|name| intern_liveness_symbol(name, &mut symbol_index, &mut symbols))
+            .collect::<Vec<_>>();
+        indexed_defs.push(defs);
+        indexed_uses.push(uses);
+    }
+    let symbol_len = symbols.len();
+    let mut live_in = vec![vec![false; symbol_len]; block_len];
+    let mut live_out = vec![vec![false; symbol_len]; block_len];
     let block_index = blocks
         .iter()
         .enumerate()
@@ -491,20 +511,21 @@ fn compute_liveness(blocks: &[BasicBlock], def_use: &[DefUseBlock]) -> Vec<Liven
     while changed {
         changed = false;
         for (idx, block) in blocks.iter().enumerate().rev() {
-            let mut out_set = std::collections::BTreeSet::<String>::new();
+            let mut out_set = vec![false; symbol_len];
             for succ in &block.successors {
                 if let Some(succ_idx) = block_index.get(succ) {
-                    out_set.extend(live_in[*succ_idx].iter().cloned());
+                    for (symbol_idx, is_live) in live_in[*succ_idx].iter().enumerate() {
+                        out_set[symbol_idx] |= *is_live;
+                    }
                 }
             }
 
             let mut in_set = out_set.clone();
-            let du = &def_use[idx];
-            for def in &du.defs {
-                in_set.remove(def);
+            for def in &indexed_defs[idx] {
+                in_set[*def] = false;
             }
-            for used in &du.uses {
-                in_set.insert(used.clone());
+            for used in &indexed_uses[idx] {
+                in_set[*used] = true;
             }
 
             if out_set != live_out[idx] || in_set != live_in[idx] {
@@ -520,8 +541,30 @@ fn compute_liveness(blocks: &[BasicBlock], def_use: &[DefUseBlock]) -> Vec<Liven
         .enumerate()
         .map(|(idx, block)| LivenessBlock {
             block: block.id,
-            live_in: live_in[idx].iter().cloned().collect(),
-            live_out: live_out[idx].iter().cloned().collect(),
+            live_in: collect_live_symbols(&live_in[idx], &symbols),
+            live_out: collect_live_symbols(&live_out[idx], &symbols),
         })
+        .collect()
+}
+
+fn intern_liveness_symbol(
+    name: &str,
+    symbol_index: &mut std::collections::BTreeMap<String, usize>,
+    symbols: &mut Vec<String>,
+) -> usize {
+    if let Some(existing) = symbol_index.get(name) {
+        return *existing;
+    }
+    let idx = symbols.len();
+    let owned = name.to_string();
+    symbols.push(owned.clone());
+    symbol_index.insert(owned, idx);
+    idx
+}
+
+fn collect_live_symbols(bits: &[bool], symbols: &[String]) -> Vec<String> {
+    bits.iter()
+        .enumerate()
+        .filter_map(|(idx, is_live)| is_live.then(|| symbols[idx].clone()))
         .collect()
 }

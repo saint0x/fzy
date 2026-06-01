@@ -1,9 +1,9 @@
 pub mod service;
 
-use std::collections::BTreeMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,13 +233,13 @@ pub enum SpawnError {
 pub struct DeterministicExecutor {
     next_task_id: TaskId,
     queue: RunQueue,
-    tasks: BTreeMap<TaskId, TaskEntry>,
+    tasks: HashMap<TaskId, TaskEntry>,
     trace: Vec<TaskEvent>,
     coverage_flip: bool,
     trace_mode: TraceMode,
     config: ExecutorConfig,
-    join_edges: BTreeMap<TaskId, Vec<TaskId>>,
-    io_waiters: BTreeMap<String, Vec<TaskId>>,
+    join_edges: HashMap<TaskId, Vec<TaskId>>,
+    io_waiters: HashMap<String, Vec<TaskId>>,
     root_cause_hint: Option<TaskId>,
 }
 
@@ -261,9 +261,9 @@ struct QueueNode {
 struct RunQueue {
     head: Option<TaskId>,
     tail: Option<TaskId>,
-    nodes: BTreeMap<TaskId, QueueNode>,
+    nodes: HashMap<TaskId, QueueNode>,
     random_pool: Vec<TaskId>,
-    random_pos: BTreeMap<TaskId, usize>,
+    random_pos: HashMap<TaskId, usize>,
 }
 
 impl RunQueue {
@@ -325,21 +325,13 @@ impl RunQueue {
     fn pop_front(&mut self) -> Option<TaskId> {
         let id = self.head?;
         let removed = self.remove(id);
-        if removed {
-            Some(id)
-        } else {
-            None
-        }
+        if removed { Some(id) } else { None }
     }
 
     fn pop_back(&mut self) -> Option<TaskId> {
         let id = self.tail?;
         let removed = self.remove(id);
-        if removed {
-            Some(id)
-        } else {
-            None
-        }
+        if removed { Some(id) } else { None }
     }
 
     fn pop_random(&mut self, random_state: &mut u64) -> Option<TaskId> {
@@ -523,10 +515,10 @@ impl DeterministicExecutor {
             return;
         };
 
-        let started = Instant::now();
+        let started = self.config.task_timeout.map(|_| Instant::now());
         match catch_unwind(AssertUnwindSafe(task)) {
             Ok(()) => {
-                if let Some(timeout) = self.config.task_timeout {
+                if let (Some(timeout), Some(started)) = (self.config.task_timeout, started) {
                     if started.elapsed() > timeout {
                         if let Some(entry) = self.tasks.get_mut(&task_id) {
                             entry.state = TaskState::TimedOut;
@@ -791,7 +783,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 #[derive(Default)]
 pub struct TaskLocalStore {
-    values: BTreeMap<TaskId, BTreeMap<String, String>>,
+    values: HashMap<TaskId, HashMap<String, String>>,
 }
 
 impl TaskLocalStore {
@@ -822,8 +814,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        plan_async_checkpoints, CancellationToken, DeterministicExecutor, ExecutorConfig,
-        JoinOutcome, PanicReport, RuntimeConfig, Scheduler, TaskEvent, TaskLocalStore, TaskState,
+        CancellationToken, DeterministicExecutor, ExecutorConfig, JoinOutcome, PanicReport,
+        RuntimeConfig, Scheduler, TaskEvent, TaskLocalStore, TaskState, plan_async_checkpoints,
     };
 
     #[test]
@@ -924,10 +916,12 @@ mod tests {
             .spawn_bounded(Box::new(|| {}))
             .expect("first spawn");
         assert!(executor.spawn_bounded(Box::new(|| {})).is_err());
-        assert!(executor
-            .trace()
-            .iter()
-            .any(|event| matches!(event, TaskEvent::Backpressure { .. })));
+        assert!(
+            executor
+                .trace()
+                .iter()
+                .any(|event| matches!(event, TaskEvent::Backpressure { .. }))
+        );
     }
 
     #[test]

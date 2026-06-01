@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+const SMALL_MAP_LIMIT: usize = 8;
+const SMALL_SET_LIMIT: usize = 8;
+
 #[derive(Debug, Clone, Default)]
 pub struct DeterministicVec<T> {
     inner: Vec<T>,
@@ -60,12 +63,24 @@ impl<T> DeterministicVec<T> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DeterministicMap<K, V>
 where
     K: Ord,
 {
-    inner: BTreeMap<K, V>,
+    inner: DeterministicMapInner<K, V>,
+}
+
+#[derive(Debug, Clone)]
+enum DeterministicMapInner<K, V> {
+    Small(Vec<(K, V)>),
+    Tree(BTreeMap<K, V>),
+}
+
+impl<K, V> Default for DeterministicMapInner<K, V> {
+    fn default() -> Self {
+        Self::Small(Vec::new())
+    }
 }
 
 impl<K, V> DeterministicMap<K, V>
@@ -74,12 +89,26 @@ where
 {
     pub fn new() -> Self {
         Self {
-            inner: BTreeMap::new(),
+            inner: DeterministicMapInner::default(),
         }
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        self.inner.insert(key, value)
+        match &mut self.inner {
+            DeterministicMapInner::Small(values) => {
+                match values.binary_search_by(|(existing, _)| existing.cmp(&key)) {
+                    Ok(idx) => Some(std::mem::replace(&mut values[idx].1, value)),
+                    Err(idx) => {
+                        values.insert(idx, (key, value));
+                        if values.len() > SMALL_MAP_LIMIT {
+                            self.promote_map_to_tree();
+                        }
+                        None
+                    }
+                }
+            }
+            DeterministicMapInner::Tree(values) => values.insert(key, value),
+        }
     }
 
     pub fn get<Q>(&self, key: &Q) -> Option<&V>
@@ -87,7 +116,13 @@ where
         K: std::borrow::Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.inner.get(key)
+        match &self.inner {
+            DeterministicMapInner::Small(values) => values
+                .binary_search_by(|(existing, _)| existing.borrow().cmp(key))
+                .ok()
+                .map(|idx| &values[idx].1),
+            DeterministicMapInner::Tree(values) => values.get(key),
+        }
     }
 
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
@@ -95,7 +130,13 @@ where
         K: std::borrow::Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.inner.remove(key)
+        match &mut self.inner {
+            DeterministicMapInner::Small(values) => values
+                .binary_search_by(|(existing, _)| existing.borrow().cmp(key))
+                .ok()
+                .map(|idx| values.remove(idx).1),
+            DeterministicMapInner::Tree(values) => values.remove(key),
+        }
     }
 
     pub fn contains_key<Q>(&self, key: &Q) -> bool
@@ -103,11 +144,14 @@ where
         K: std::borrow::Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.inner.contains_key(key)
+        self.get(key).is_some()
     }
 
     pub fn len(&self) -> usize {
-        self.inner.len()
+        match &self.inner {
+            DeterministicMapInner::Small(values) => values.len(),
+            DeterministicMapInner::Tree(values) => values.len(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -115,32 +159,93 @@ where
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
-        self.inner.iter()
+        MapIter::new(&self.inner)
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &K> {
-        self.inner.keys()
+        self.iter().map(|(key, _)| key)
     }
 
     pub fn values(&self) -> impl Iterator<Item = &V> {
-        self.inner.values()
+        self.iter().map(|(_, value)| value)
     }
 
     pub fn get_or_insert_with(&mut self, key: K, value: impl FnOnce() -> V) -> &mut V {
-        self.inner.entry(key).or_insert_with(value)
+        let should_promote = matches!(
+            &self.inner,
+            DeterministicMapInner::Small(values)
+                if values.len() >= SMALL_MAP_LIMIT
+                    && values
+                        .binary_search_by(|(existing, _)| existing.cmp(&key))
+                        .is_err()
+        );
+        if should_promote {
+            self.promote_map_to_tree();
+        }
+        match &mut self.inner {
+            DeterministicMapInner::Small(values) => {
+                match values.binary_search_by(|(existing, _)| existing.cmp(&key)) {
+                    Ok(idx) => &mut values[idx].1,
+                    Err(idx) => {
+                        values.insert(idx, (key, value()));
+                        &mut values[idx].1
+                    }
+                }
+            }
+            DeterministicMapInner::Tree(values) => values.entry(key).or_insert_with(value),
+        }
     }
 
     pub fn retain(&mut self, mut predicate: impl FnMut(&K, &mut V) -> bool) {
-        self.inner.retain(|key, value| predicate(key, value));
+        match &mut self.inner {
+            DeterministicMapInner::Small(values) => {
+                values.retain_mut(|(key, value)| predicate(key, value))
+            }
+            DeterministicMapInner::Tree(values) => {
+                values.retain(|key, value| predicate(key, value))
+            }
+        }
+    }
+
+    fn promote_map_to_tree(&mut self) {
+        let DeterministicMapInner::Small(values) = &mut self.inner else {
+            return;
+        };
+        let mut tree = BTreeMap::new();
+        for (key, value) in std::mem::take(values) {
+            tree.insert(key, value);
+        }
+        self.inner = DeterministicMapInner::Tree(tree);
     }
 }
 
-#[derive(Debug, Clone, Default)]
+impl<K, V> Default for DeterministicMap<K, V>
+where
+    K: Ord,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct DeterministicSet<T>
 where
     T: Ord,
 {
-    inner: BTreeSet<T>,
+    inner: DeterministicSetInner<T>,
+}
+
+#[derive(Debug, Clone)]
+enum DeterministicSetInner<T> {
+    Small(Vec<T>),
+    Tree(BTreeSet<T>),
+}
+
+impl<T> Default for DeterministicSetInner<T> {
+    fn default() -> Self {
+        Self::Small(Vec::new())
+    }
 }
 
 impl<T> DeterministicSet<T>
@@ -149,12 +254,24 @@ where
 {
     pub fn new() -> Self {
         Self {
-            inner: BTreeSet::new(),
+            inner: DeterministicSetInner::default(),
         }
     }
 
     pub fn insert(&mut self, value: T) -> bool {
-        self.inner.insert(value)
+        match &mut self.inner {
+            DeterministicSetInner::Small(values) => match values.binary_search(&value) {
+                Ok(_) => false,
+                Err(idx) => {
+                    values.insert(idx, value);
+                    if values.len() > SMALL_SET_LIMIT {
+                        self.promote_set_to_tree();
+                    }
+                    true
+                }
+            },
+            DeterministicSetInner::Tree(values) => values.insert(value),
+        }
     }
 
     pub fn contains<Q>(&self, value: &Q) -> bool
@@ -162,7 +279,12 @@ where
         T: std::borrow::Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.inner.contains(value)
+        match &self.inner {
+            DeterministicSetInner::Small(values) => values
+                .binary_search_by(|existing| existing.borrow().cmp(value))
+                .is_ok(),
+            DeterministicSetInner::Tree(values) => values.contains(value),
+        }
     }
 
     pub fn remove<Q>(&mut self, value: &Q) -> bool
@@ -170,11 +292,24 @@ where
         T: std::borrow::Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.inner.remove(value)
+        match &mut self.inner {
+            DeterministicSetInner::Small(values) => values
+                .binary_search_by(|existing| existing.borrow().cmp(value))
+                .ok()
+                .map(|idx| {
+                    values.remove(idx);
+                    true
+                })
+                .unwrap_or(false),
+            DeterministicSetInner::Tree(values) => values.remove(value),
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.inner.len()
+        match &self.inner {
+            DeterministicSetInner::Small(values) => values.len(),
+            DeterministicSetInner::Tree(values) => values.len(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -182,18 +317,105 @@ where
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.inner.iter()
+        SetIter::new(&self.inner)
     }
 
     pub fn filter_clone(&self, mut predicate: impl FnMut(&T) -> bool) -> Vec<T>
     where
         T: Clone,
     {
-        self.inner
-            .iter()
+        self.iter()
             .filter(|value| predicate(value))
             .cloned()
             .collect()
+    }
+
+    fn promote_set_to_tree(&mut self) {
+        let DeterministicSetInner::Small(values) = &mut self.inner else {
+            return;
+        };
+        let mut tree = BTreeSet::new();
+        for value in std::mem::take(values) {
+            tree.insert(value);
+        }
+        self.inner = DeterministicSetInner::Tree(tree);
+    }
+}
+
+impl<T> Default for DeterministicSet<T>
+where
+    T: Ord,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> DeterministicMapInner<K, V> {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Small(values) => values.is_empty(),
+            Self::Tree(values) => values.is_empty(),
+        }
+    }
+}
+
+impl<T> DeterministicSetInner<T> {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Small(values) => values.is_empty(),
+            Self::Tree(values) => values.is_empty(),
+        }
+    }
+}
+
+enum MapIter<'a, K, V> {
+    Small(std::slice::Iter<'a, (K, V)>),
+    Tree(std::collections::btree_map::Iter<'a, K, V>),
+}
+
+impl<'a, K, V> MapIter<'a, K, V> {
+    fn new(inner: &'a DeterministicMapInner<K, V>) -> Self {
+        match inner {
+            DeterministicMapInner::Small(values) => Self::Small(values.iter()),
+            DeterministicMapInner::Tree(values) => Self::Tree(values.iter()),
+        }
+    }
+}
+
+impl<'a, K, V> Iterator for MapIter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Small(values) => values.next().map(|(key, value)| (key, value)),
+            Self::Tree(values) => values.next(),
+        }
+    }
+}
+
+enum SetIter<'a, T> {
+    Small(std::slice::Iter<'a, T>),
+    Tree(std::collections::btree_set::Iter<'a, T>),
+}
+
+impl<'a, T> SetIter<'a, T> {
+    fn new(inner: &'a DeterministicSetInner<T>) -> Self {
+        match inner {
+            DeterministicSetInner::Small(values) => Self::Small(values.iter()),
+            DeterministicSetInner::Tree(values) => Self::Tree(values.iter()),
+        }
+    }
+}
+
+impl<'a, T> Iterator for SetIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Small(values) => values.next(),
+            Self::Tree(values) => values.next(),
+        }
     }
 }
 
@@ -255,5 +477,24 @@ mod tests {
         set.insert(1);
         set.insert(2);
         assert_eq!(set.filter_clone(|v| *v >= 2), vec![2, 3]);
+    }
+
+    #[test]
+    fn small_map_and_set_promote_without_losing_order() {
+        let mut map = DeterministicMap::new();
+        for idx in (0..10).rev() {
+            map.insert(idx, idx * 10);
+        }
+        let keys: Vec<i32> = map.keys().copied().collect();
+        assert_eq!(keys, (0..10).collect::<Vec<_>>());
+        assert_eq!(map.get(&4), Some(&40));
+
+        let mut set = DeterministicSet::new();
+        for idx in (0..10).rev() {
+            assert!(set.insert(idx));
+        }
+        let values: Vec<i32> = set.iter().copied().collect();
+        assert_eq!(values, (0..10).collect::<Vec<_>>());
+        assert!(set.contains(&7));
     }
 }

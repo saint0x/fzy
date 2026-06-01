@@ -18,10 +18,20 @@ impl fmt::Display for TextError {
 impl std::error::Error for TextError {}
 
 pub fn split(value: &str, delim: &str) -> Vec<String> {
+    split_view(value, delim)
+        .into_iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub fn split_view<'a>(value: &'a str, delim: &str) -> Vec<&'a str> {
     if delim.is_empty() {
-        return value.chars().map(|ch| ch.to_string()).collect();
+        return value
+            .char_indices()
+            .map(|(idx, ch)| &value[idx..idx + ch.len_utf8()])
+            .collect();
     }
-    value.split(delim).map(ToString::to_string).collect()
+    value.split(delim).collect()
 }
 
 pub fn join(parts: &[impl AsRef<str>], delim: &str) -> String {
@@ -33,7 +43,11 @@ pub fn join(parts: &[impl AsRef<str>], delim: &str) -> String {
 }
 
 pub fn trim(value: &str) -> String {
-    value.trim().to_string()
+    trim_view(value).to_string()
+}
+
+pub fn trim_view(value: &str) -> &str {
+    value.trim()
 }
 
 pub fn replace(value: &str, from: &str, to: &str) -> String {
@@ -57,13 +71,21 @@ pub fn slice_at_utf8_boundaries(
     start: usize,
     end: usize,
 ) -> Result<String, TextError> {
+    Ok(slice_view_at_utf8_boundaries(value, start, end)?.to_string())
+}
+
+pub fn slice_view_at_utf8_boundaries(
+    value: &str,
+    start: usize,
+    end: usize,
+) -> Result<&str, TextError> {
     if start > end || end > value.len() {
         return Err(TextError::InvalidUtf8Boundary);
     }
     if !value.is_char_boundary(start) || !value.is_char_boundary(end) {
         return Err(TextError::InvalidUtf8Boundary);
     }
-    Ok(value[start..end].to_string())
+    Ok(&value[start..end])
 }
 
 pub fn safe_interpolate(template: &str, values: &[impl AsRef<str>]) -> Result<String, TextError> {
@@ -93,8 +115,10 @@ mod tests {
     #[test]
     fn text_primitives_work() {
         assert_eq!(split("a,b,c", ","), vec!["a", "b", "c"]);
+        assert_eq!(split_view("a,b,c", ","), vec!["a", "b", "c"]);
         assert_eq!(join(&["a", "b", "c"], ","), "a,b,c");
         assert_eq!(trim("  hi  "), "hi");
+        assert_eq!(trim_view("  hi  "), "hi");
         assert_eq!(replace("abc", "b", "x"), "axc");
         assert!(contains("abc", "b"));
         assert!(starts_with("abc", "a"));
@@ -105,6 +129,10 @@ mod tests {
     fn utf8_boundary_checks_are_explicit() {
         let value = "h\u{00e9}llo";
         assert!(slice_at_utf8_boundaries(value, 0, 3).is_ok());
+        assert_eq!(
+            slice_view_at_utf8_boundaries(value, 0, 3).expect("boundary slice"),
+            "hé"
+        );
         assert_eq!(
             slice_at_utf8_boundaries(value, 0, 2),
             Err(TextError::InvalidUtf8Boundary)
