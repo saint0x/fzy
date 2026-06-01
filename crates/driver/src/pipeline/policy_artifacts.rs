@@ -15,181 +15,98 @@ pub(super) fn write_safety_artifacts(
         .with_context(|| format!("failed creating safety artifact dir: {}", out_dir.display()))?;
 
     let memory_json = build_memory_report_json(fir);
-    std::fs::write(
-        out_dir.join("memory-report.json"),
-        serde_json::to_vec_pretty(&memory_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("memory-report.json").display()
-        )
-    })?;
-    std::fs::write(
-        out_dir.join("memory-report.md"),
-        render_memory_report_markdown(&memory_json),
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("memory-report.md").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("memory-report.json"),
+        &serde_json::to_vec_pretty(&memory_json)?,
+    )?;
+    write_artifact_if_changed(
+        &out_dir.join("memory-report.md"),
+        render_memory_report_markdown(&memory_json).as_bytes(),
+    )?;
 
     let unsafe_json = build_unsafe_report_json(fir);
-    std::fs::write(
-        out_dir.join("unsafe-report.json"),
-        serde_json::to_vec_pretty(&unsafe_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("unsafe-report.json").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("unsafe-report.json"),
+        &serde_json::to_vec_pretty(&unsafe_json)?,
+    )?;
 
     let async_json = build_async_safety_json(fir);
-    std::fs::write(
-        out_dir.join("async-safety.json"),
-        serde_json::to_vec_pretty(&async_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("async-safety.json").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("async-safety.json"),
+        &serde_json::to_vec_pretty(&async_json)?,
+    )?;
 
     let rpc_json = build_rpc_safety_json(&parsed.module, fir);
-    std::fs::write(
-        out_dir.join("rpc-safety.json"),
-        serde_json::to_vec_pretty(&rpc_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("rpc-safety.json").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("rpc-safety.json"),
+        &serde_json::to_vec_pretty(&rpc_json)?,
+    )?;
 
     let ffi_json = build_ffi_report_json(fir);
-    std::fs::write(
-        out_dir.join("ffi-report.json"),
-        serde_json::to_vec_pretty(&ffi_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("ffi-report.json").display()
-        )
-    })?;
-    std::fs::write(
-        out_dir.join("ffi-report.md"),
-        render_ffi_report_markdown(&ffi_json),
-    )
-    .with_context(|| format!("failed writing {}", out_dir.join("ffi-report.md").display()))?;
+    write_artifact_if_changed(
+        &out_dir.join("ffi-report.json"),
+        &serde_json::to_vec_pretty(&ffi_json)?,
+    )?;
+    write_artifact_if_changed(
+        &out_dir.join("ffi-report.md"),
+        render_ffi_report_markdown(&ffi_json).as_bytes(),
+    )?;
 
     let runtime_contracts_json = build_native_runtime_contracts_json();
-    std::fs::write(
-        out_dir.join("native-runtime-contracts.json"),
-        serde_json::to_vec_pretty(&runtime_contracts_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("native-runtime-contracts.json").display()
-        )
-    })?;
-    std::fs::write(
-        out_dir.join("native-runtime-contracts.md"),
-        render_native_runtime_contracts_markdown(&runtime_contracts_json),
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("native-runtime-contracts.md").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("native-runtime-contracts.json"),
+        &serde_json::to_vec_pretty(&runtime_contracts_json)?,
+    )?;
+    write_artifact_if_changed(
+        &out_dir.join("native-runtime-contracts.md"),
+        render_native_runtime_contracts_markdown(&runtime_contracts_json).as_bytes(),
+    )?;
 
     let handle_contracts_json = build_handle_contracts_json();
-    std::fs::write(
-        out_dir.join("handle-contracts.json"),
-        serde_json::to_vec_pretty(&handle_contracts_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("handle-contracts.json").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("handle-contracts.json"),
+        &serde_json::to_vec_pretty(&handle_contracts_json)?,
+    )?;
 
     let language_policy_json = build_language_policy_json(manifest);
-    std::fs::write(
-        out_dir.join("language-policy.json"),
-        serde_json::to_vec_pretty(&language_policy_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("language-policy.json").display()
-        )
-    })?;
-    std::fs::write(
-        out_dir.join("language-policy.md"),
-        render_language_policy_markdown(&language_policy_json),
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("language-policy.md").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("language-policy.json"),
+        &serde_json::to_vec_pretty(&language_policy_json)?,
+    )?;
+    write_artifact_if_changed(
+        &out_dir.join("language-policy.md"),
+        render_language_policy_markdown(&language_policy_json).as_bytes(),
+    )?;
 
     let release_policy_json = build_release_policy_json();
-    std::fs::write(
-        out_dir.join("release-policy.json"),
-        serde_json::to_vec_pretty(&release_policy_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("release-policy.json").display()
-        )
-    })?;
-    std::fs::write(
-        out_dir.join("release-policy.md"),
-        render_release_policy_markdown(&release_policy_json),
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("release-policy.md").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("release-policy.json"),
+        &serde_json::to_vec_pretty(&release_policy_json)?,
+    )?;
+    write_artifact_if_changed(
+        &out_dir.join("release-policy.md"),
+        render_release_policy_markdown(&release_policy_json).as_bytes(),
+    )?;
 
     let stdlib_policy_json = build_stdlib_capability_policy_json();
-    std::fs::write(
-        out_dir.join("stdlib-capability-policy.json"),
-        serde_json::to_vec_pretty(&stdlib_policy_json)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("stdlib-capability-policy.json").display()
-        )
-    })?;
-    std::fs::write(
-        out_dir.join("stdlib-capability-policy.md"),
-        render_stdlib_capability_policy_markdown(&stdlib_policy_json),
-    )
-    .with_context(|| {
-        format!(
-            "failed writing {}",
-            out_dir.join("stdlib-capability-policy.md").display()
-        )
-    })?;
+    write_artifact_if_changed(
+        &out_dir.join("stdlib-capability-policy.json"),
+        &serde_json::to_vec_pretty(&stdlib_policy_json)?,
+    )?;
+    write_artifact_if_changed(
+        &out_dir.join("stdlib-capability-policy.md"),
+        render_stdlib_capability_policy_markdown(&stdlib_policy_json).as_bytes(),
+    )?;
 
     Ok(())
+}
+
+fn write_artifact_if_changed(path: &Path, bytes: &[u8]) -> Result<()> {
+    if std::fs::read(path).ok().as_deref() == Some(bytes) {
+        return Ok(());
+    }
+    std::fs::write(path, bytes)
+        .with_context(|| format!("failed writing {}", path.display()))
 }
 
 pub(super) fn compatibility_versions_json() -> serde_json::Value {

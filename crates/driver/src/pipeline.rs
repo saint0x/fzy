@@ -5472,6 +5472,7 @@ struct LoadedModule {
 #[derive(Debug, Clone)]
 struct DiscoveredModule {
     source: String,
+    ast: ast::Module,
     module_decls: Vec<String>,
 }
 
@@ -5533,7 +5534,8 @@ fn discover_module_graph_recursive(
         canonical,
         DiscoveredModule {
             source,
-            module_decls: ast.modules,
+            module_decls: ast.modules.clone(),
+            ast,
         },
     );
     Ok(())
@@ -5550,12 +5552,7 @@ fn parse_and_qualify_module(
             module_path.display()
         )
     })?;
-    let module_name = module_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| anyhow!("invalid module filename for {}", module_path.display()))?;
-    let mut ast = parser::parse(&discovered_module.source, module_name)
-        .map_err(|diagnostics| anyhow!(render_parse_failure(module_path, &diagnostics)))?;
+    let mut ast = discovered_module.ast.clone();
     let namespace = module_namespace(root_source, module_path)?;
     expand_wildcard_imports(&mut ast, &namespace, root_source, discovered)?;
     qualify_module_symbols(&mut ast, &namespace);

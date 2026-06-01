@@ -1,4 +1,29 @@
 use super::*;
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    bytes: u64,
+    modified_ns: u128,
+}
+
+#[derive(Debug, Clone)]
+struct ManifestCacheEntry {
+    stamp: FileStamp,
+    manifest: manifest::Manifest,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleSetCacheEntry {
+    root: PathBuf,
+    stamps: Vec<(PathBuf, FileStamp)>,
+    module_set: ResolvedModuleSet,
+}
+
+static MANIFEST_CACHE: OnceLock<RwLock<HashMap<PathBuf, ManifestCacheEntry>>> = OnceLock::new();
+static MODULE_SET_CACHE: OnceLock<RwLock<HashMap<PathBuf, ModuleSetCacheEntry>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedSource {
@@ -40,9 +65,12 @@ pub(super) fn resolve_source(path: &Path) -> Result<ResolvedSource> {
         );
     }
     let manifest_path = path.join("fozzy.toml");
-    let manifest_text = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+    let manifest = match load_cached_project_manifest(path) {
+        Ok(manifest) => manifest,
+        Err(error) if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|err| err.kind() == std::io::ErrorKind::NotFound) =>
+        {
             let suggestions = discover_nested_project_roots(path);
             let guidance = if suggestions.is_empty() {
                 format!(
@@ -64,15 +92,8 @@ pub(super) fn resolve_source(path: &Path) -> Result<ResolvedSource> {
             };
             bail!(guidance);
         }
-        Err(err) => {
-            return Err(err)
-                .with_context(|| format!("failed reading manifest: {}", manifest_path.display()));
-        }
+        Err(error) => return Err(error),
     };
-    let manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
-    manifest
-        .validate()
-        .map_err(|error| anyhow!("invalid fozzy.toml: {error}"))?;
     let relative = manifest
         .target
         .lib
@@ -90,6 +111,36 @@ pub(super) fn resolve_source(path: &Path) -> Result<ResolvedSource> {
         project_root: path.to_path_buf(),
         manifest: Some(manifest),
     })
+}
+
+fn load_cached_project_manifest(path: &Path) -> Result<manifest::Manifest> {
+    let manifest_path = path.join("fozzy.toml");
+    let stamp = file_stamp(&manifest_path)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    let cache = MANIFEST_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Ok(guard) = cache.read() {
+        if let Some(entry) = guard.get(&manifest_path) {
+            if entry.stamp == stamp {
+                return Ok(entry.manifest.clone());
+            }
+        }
+    }
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed reading manifest: {}", manifest_path.display()))?;
+    let manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
+    manifest
+        .validate()
+        .map_err(|error| anyhow!("invalid fozzy.toml: {error}"))?;
+    if let Ok(mut guard) = cache.write() {
+        guard.insert(
+            manifest_path,
+            ManifestCacheEntry {
+                stamp,
+                manifest: manifest.clone(),
+            },
+        );
+    }
+    Ok(manifest)
 }
 
 pub(super) fn discover_nested_project_roots(path: &Path) -> Vec<PathBuf> {
@@ -166,16 +217,7 @@ pub(super) fn discover_project_roots(path: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn is_valid_project_root(path: &Path) -> bool {
-    let manifest_path = path.join("fozzy.toml");
-    let text = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => text,
-        Err(_) => return false,
-    };
-    let manifest = match manifest::load(&text) {
-        Ok(manifest) => manifest,
-        Err(_) => return false,
-    };
-    manifest.validate().is_ok()
+    load_cached_project_manifest(path).is_ok()
 }
 
 pub(super) fn default_header_path(resolved: &ResolvedSource) -> PathBuf {
@@ -198,6 +240,12 @@ pub(super) fn default_header_path(resolved: &ResolvedSource) -> PathBuf {
 }
 
 pub(super) fn load_resolved_module_set(path: &Path) -> Result<ResolvedModuleSet> {
+    let cache_key = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf());
+    if let Some(cached) = cached_module_set(&cache_key)? {
+        return Ok(cached);
+    }
     if path.is_dir() && !path.join("fozzy.toml").exists() {
         let module_paths = collect_all_fzy_files(path)?;
         if module_paths.is_empty() {
@@ -230,14 +278,16 @@ pub(super) fn load_resolved_module_set(path: &Path) -> Result<ResolvedModuleSet>
                 ast,
             });
         }
-        return Ok(ResolvedModuleSet {
+        let module_set = ResolvedModuleSet {
             resolved: ResolvedSource {
                 source_path: module_paths[0].clone(),
                 project_root: path.to_path_buf(),
                 manifest: None,
             },
             modules,
-        });
+        };
+        store_module_set_cache(&cache_key, &module_set, &module_paths)?;
+        return Ok(module_set);
     }
     let resolved = resolve_source(path)?;
     let parsed = parse_program(&resolved.source_path)?;
@@ -274,7 +324,14 @@ pub(super) fn load_resolved_module_set(path: &Path) -> Result<ResolvedModuleSet>
             ast,
         });
     }
-    Ok(ResolvedModuleSet { resolved, modules })
+    let module_set = ResolvedModuleSet { resolved, modules };
+    let module_paths = module_set
+        .modules
+        .iter()
+        .map(|module| module.path.clone())
+        .collect::<Vec<_>>();
+    store_module_set_cache(&cache_key, &module_set, &module_paths)?;
+    Ok(module_set)
 }
 
 fn collect_all_fzy_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -297,4 +354,147 @@ fn collect_all_fzy_files(root: &Path) -> Result<Vec<PathBuf>> {
     files.sort();
     files.dedup();
     Ok(files)
+}
+
+fn cached_module_set(cache_key: &Path) -> Result<Option<ResolvedModuleSet>> {
+    let cache = MODULE_SET_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    let guard = match cache.read() {
+        Ok(guard) => guard,
+        Err(_) => return Ok(None),
+    };
+    let Some(entry) = guard.get(cache_key) else {
+        return Ok(None);
+    };
+    let current_stamps = collect_path_stamps(&entry.root, &entry.module_set.modules)?;
+    if current_stamps == entry.stamps {
+        return Ok(Some(entry.module_set.clone()));
+    }
+    Ok(None)
+}
+
+fn store_module_set_cache(
+    cache_key: &Path,
+    module_set: &ResolvedModuleSet,
+    module_paths: &[PathBuf],
+) -> Result<()> {
+    let root = module_set.resolved.project_root.clone();
+    let stamps = collect_stamps_for_paths(module_paths)?;
+    let cache = MODULE_SET_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Ok(mut guard) = cache.write() {
+        guard.insert(
+            cache_key.to_path_buf(),
+            ModuleSetCacheEntry {
+                root,
+                stamps,
+                module_set: module_set.clone(),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn collect_path_stamps(
+    _root: &Path,
+    modules: &[ResolvedModuleSource],
+) -> Result<Vec<(PathBuf, FileStamp)>> {
+    collect_stamps_for_paths(&modules.iter().map(|module| module.path.clone()).collect::<Vec<_>>())
+}
+
+fn collect_stamps_for_paths(paths: &[PathBuf]) -> Result<Vec<(PathBuf, FileStamp)>> {
+    paths.iter()
+        .map(|path| {
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let stamp = file_stamp(&canonical)
+                .ok_or_else(|| anyhow!("failed reading file metadata: {}", canonical.display()))?;
+            Ok((canonical, stamp))
+        })
+        .collect()
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let modified_ns = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(FileStamp {
+        bytes: meta.len(),
+        modified_ns,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn resolve_source_refreshes_manifest_cache_after_change() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzylang-source-manifest-cache-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("main source should be written");
+        std::fs::write(root.join("src/alt_main.fzy"), "fn main() -> i32 {\n    return 1\n}\n")
+            .expect("alternate source should be written");
+
+        let first = resolve_source(&root).expect("initial source resolution should succeed");
+        assert_eq!(first.source_path, root.join("src/main.fzy"));
+
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/alt_main.fzy\"\n",
+        )
+        .expect("manifest should be updated");
+
+        let second = resolve_source(&root).expect("updated source resolution should succeed");
+        assert_eq!(second.source_path, root.join("src/alt_main.fzy"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_resolved_module_set_refreshes_cached_modules_after_change() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzylang-source-module-set-cache-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("module dir should be created");
+        let module_path = root.join("main.fzy");
+        std::fs::write(&module_path, "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("initial module should be written");
+
+        let first = load_resolved_module_set(&root).expect("first module load should succeed");
+        assert_eq!(first.modules.len(), 1);
+        assert!(first.modules[0].source.contains("return 0"));
+
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(
+            &module_path,
+            "fn main() -> i32 {\n    return 42\n}\n\nfn helper() -> i32 {\n    return 1\n}\n",
+        )
+        .expect("module source should mutate");
+
+        let second = load_resolved_module_set(&root).expect("second module load should succeed");
+        assert_eq!(second.modules.len(), 1);
+        assert!(second.modules[0].source.contains("return 42"));
+        assert_ne!(first.modules[0].source, second.modules[0].source);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

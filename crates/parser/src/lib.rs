@@ -312,12 +312,12 @@ impl Parser {
         if self.pending_ffi_panic.is_some()
             && !matches!(
                 self.peek_kind(),
-                TokenKind::KwFn
-                    | TokenKind::KwAsync
-                    | TokenKind::KwUnsafe
-                    | TokenKind::KwPub
-                    | TokenKind::KwPubext
-                    | TokenKind::KwExt
+                &TokenKind::KwFn
+                    | &TokenKind::KwAsync
+                    | &TokenKind::KwUnsafe
+                    | &TokenKind::KwPub
+                    | &TokenKind::KwPubext
+                    | &TokenKind::KwExt
             )
         {
             self.push_diag_here("`#[ffi_panic(...)]` applies only to functions");
@@ -381,7 +381,7 @@ impl Parser {
         let mut params = Vec::new();
         let mut positional = 0usize;
         while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-            let (param_name, ty) = if matches!(self.peek_kind(), TokenKind::Ident(_))
+            let (param_name, ty) = if matches!(self.peek_kind(), &TokenKind::Ident(_))
                 && matches!(self.peek_n(1).map(|tok| &tok.kind), Some(TokenKind::Colon))
             {
                 let Some(param_name) = self.expect_ident("expected rpc parameter name") else {
@@ -2150,12 +2150,12 @@ impl Parser {
     fn expr_starts_here(&self) -> bool {
         !matches!(
             self.peek_kind(),
-            TokenKind::Semi
-                | TokenKind::KwElse
-                | TokenKind::RBrace
-                | TokenKind::RParen
-                | TokenKind::Comma
-                | TokenKind::Eof
+            &TokenKind::Semi
+                | &TokenKind::KwElse
+                | &TokenKind::RBrace
+                | &TokenKind::RParen
+                | &TokenKind::Comma
+                | &TokenKind::Eof
         )
     }
 
@@ -2657,10 +2657,8 @@ impl Parser {
         self.peek().is_some_and(|tok| tok.kind == *kind)
     }
 
-    fn peek_kind(&self) -> TokenKind {
-        self.peek()
-            .map(|token| token.kind.clone())
-            .unwrap_or(TokenKind::Eof)
+    fn peek_kind(&self) -> &TokenKind {
+        self.peek().map(|token| &token.kind).unwrap_or(&TokenKind::Eof)
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -3224,66 +3222,59 @@ impl<'a> Lexer<'a> {
         }
 
         let mut is_float = false;
-        if self.peek_char().is_some_and(|(_, c)| c == '.') {
-            let mut iter = self.chars.clone();
-            let _ = iter.next();
-            if iter.next().is_some_and(|(_, c)| c.is_ascii_digit()) {
-                is_float = true;
-                self.advance_char();
-                while let Some((_, next)) = self.peek_char() {
-                    if next.is_ascii_digit() {
-                        self.advance_char();
-                    } else {
-                        break;
-                    }
+        if self.peek_char().is_some_and(|(_, c)| c == '.')
+            && self.peek_nth_char(1).is_some_and(|c| c.is_ascii_digit())
+        {
+            is_float = true;
+            self.advance_char();
+            while let Some((_, next)) = self.peek_char() {
+                if next.is_ascii_digit() {
+                    self.advance_char();
+                } else {
+                    break;
                 }
             }
         }
 
-        if self.peek_char().is_some_and(|(_, c)| c == 'e' || c == 'E') {
-            let mut iter = self.chars.clone();
-            let _ = iter.next();
-            if iter
-                .next()
-                .is_some_and(|(_, c)| c.is_ascii_digit() || c == '+' || c == '-')
-            {
-                is_float = true;
+        if self.peek_char().is_some_and(|(_, c)| c == 'e' || c == 'E')
+            && self
+                .peek_nth_char(1)
+                .is_some_and(|c| c.is_ascii_digit() || c == '+' || c == '-')
+        {
+            is_float = true;
+            self.advance_char();
+            if self.peek_char().is_some_and(|(_, c)| c == '+' || c == '-') {
                 self.advance_char();
-                if self.peek_char().is_some_and(|(_, c)| c == '+' || c == '-') {
+            }
+            let mut saw_digit = false;
+            while let Some((_, next)) = self.peek_char() {
+                if next.is_ascii_digit() {
+                    saw_digit = true;
                     self.advance_char();
+                } else {
+                    break;
                 }
-                let mut saw_digit = false;
-                while let Some((_, next)) = self.peek_char() {
-                    if next.is_ascii_digit() {
-                        saw_digit = true;
-                        self.advance_char();
-                    } else {
-                        break;
-                    }
-                }
-                if !saw_digit {
-                    self.diagnostics.push(
-                        Diagnostic::new(
-                            Severity::Error,
-                            "malformed float exponent",
-                            Some("expected digits after exponent marker".to_string()),
-                        )
-                        .with_span(
-                            self.line,
-                            self.col.saturating_sub(1),
-                            self.line,
-                            self.col,
-                        ),
-                    );
-                }
+            }
+            if !saw_digit {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "malformed float exponent",
+                        Some("expected digits after exponent marker".to_string()),
+                    )
+                    .with_span(
+                        self.line,
+                        self.col.saturating_sub(1),
+                        self.line,
+                        self.col,
+                    ),
+                );
             }
         }
 
         let mut bits = None;
         if self.peek_char().is_some_and(|(_, c)| c == 'f') {
-            let mut iter = self.chars.clone();
-            let _ = iter.next();
-            let tail = [iter.next().map(|(_, c)| c), iter.next().map(|(_, c)| c)];
+            let tail = [self.peek_nth_char(1), self.peek_nth_char(2)];
             match tail {
                 [Some('3'), Some('2')] => {
                     bits = Some(32);
@@ -3355,7 +3346,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn try_lex_char_literal(&mut self) -> Option<(char, usize)> {
-        let mut iter = self.chars.clone();
+        let start_idx = self.peek_char()?.0;
+        let mut iter = self.source[start_idx..].char_indices().peekable();
         let _ = iter.next();
         let (_, first) = iter.next()?;
         if first == '\\' {
@@ -3394,10 +3386,18 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn peek_next(&self, expected: char) -> bool {
-        let mut iter = self.chars.clone();
-        let _ = iter.next();
-        iter.next().is_some_and(|(_, c)| c == expected)
+    fn peek_next(&mut self, expected: char) -> bool {
+        self.peek_next_char().is_some_and(|c| c == expected)
+    }
+
+    fn peek_next_char(&mut self) -> Option<char> {
+        let start_idx = self.peek_char()?.0;
+        self.source[start_idx..].chars().nth(1)
+    }
+
+    fn peek_nth_char(&mut self, n: usize) -> Option<char> {
+        let start_idx = self.peek_char()?.0;
+        self.source[start_idx..].chars().nth(n)
     }
 
     fn advance_char(&mut self) {

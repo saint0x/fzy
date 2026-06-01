@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use diagnostics::Severity;
@@ -198,6 +199,47 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     assert!(handle_contracts.contains("\"name\": \"JsonHandle\""));
     assert!(handle_contracts.contains("\"linear\": true"));
     assert!(handle_contracts.contains("\"linear\": false"));
+}
+
+#[test]
+fn compile_file_skips_rewriting_unchanged_safety_artifacts() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-safety-artifact-cache-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"artifact_cache\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"artifact_cache\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.time;\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let first = compile_file(&root, BuildProfile::Dev).expect("first build should succeed");
+    assert_eq!(first.status, "ok");
+    let report_path = root.join(".fz/release-policy.json");
+    let initial_mtime = std::fs::metadata(&report_path)
+        .expect("release policy artifact should exist")
+        .modified()
+        .expect("release policy mtime should exist");
+
+    std::thread::sleep(Duration::from_millis(20));
+    let second = compile_file(&root, BuildProfile::Dev).expect("second build should succeed");
+    assert_eq!(second.status, "ok");
+    let refreshed_mtime = std::fs::metadata(&report_path)
+        .expect("release policy artifact should still exist")
+        .modified()
+        .expect("release policy mtime should still exist");
+    assert_eq!(initial_mtime, refreshed_mtime);
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

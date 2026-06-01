@@ -250,12 +250,13 @@ fn lower_function(function: &TypedFunction) -> FunctionIr {
     };
     lower_stmts_into_block(&function.body, &mut entry, &mut blocks);
     blocks.insert(0, entry);
+    let def_use = compute_def_use(&blocks);
 
     FunctionIr {
         name: function.name.clone(),
         return_type: to_value_type(&function.return_type),
-        def_use: compute_def_use(&blocks),
-        liveness: compute_liveness(&blocks),
+        def_use: def_use.clone(),
+        liveness: compute_liveness(&blocks, &def_use),
         blocks,
     }
 }
@@ -477,8 +478,7 @@ fn compute_def_use(blocks: &[BasicBlock]) -> Vec<DefUseBlock> {
     out
 }
 
-fn compute_liveness(blocks: &[BasicBlock]) -> Vec<LivenessBlock> {
-    let def_use = compute_def_use(blocks);
+fn compute_liveness(blocks: &[BasicBlock], def_use: &[DefUseBlock]) -> Vec<LivenessBlock> {
     let mut live_in = vec![std::collections::BTreeSet::<String>::new(); blocks.len()];
     let mut live_out = vec![std::collections::BTreeSet::<String>::new(); blocks.len()];
     let block_index = blocks
