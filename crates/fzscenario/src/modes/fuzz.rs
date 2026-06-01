@@ -12,11 +12,15 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::finalize::{
+    write_event_artifacts, write_memory_artifacts_if_enabled, write_profile_trace_if_requested,
+    write_reporter_artifacts, write_summary_report,
+};
 use crate::{
     Config, ExitStatus, Finding, FindingKind, MemoryOptions, MemoryState, ProfileCaptureLevel,
     RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
     TraceEvent, TraceFile, should_emit_profile_artifacts, trace_replay_contract, wall_time_iso_utc,
-    write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
+    write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -300,20 +304,8 @@ pub fn fuzz(
                 summary.findings = crate::collapse_findings(summary.findings.clone());
             }
 
-            std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-
-            if matches!(opt.reporter, Reporter::Junit) {
-                std::fs::write(
-                    artifacts_dir.join("junit.xml"),
-                    crate::render_junit_xml(&summary),
-                )?;
-            }
-            if matches!(opt.reporter, Reporter::Html) {
-                std::fs::write(
-                    artifacts_dir.join("report.html"),
-                    crate::render_html(&summary),
-                )?;
-            }
+            write_summary_report(&summary, &report_path, &artifacts_dir)?;
+            write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
 
             let trace_out = crash_trace_output_path(
                 opt.record_trace_to.as_deref(),
@@ -336,18 +328,15 @@ pub fn fuzz(
             let emit_heavy = should_emit_heavy_artifacts(exec.status, true)
                 || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
             if emit_heavy {
-                std::fs::write(
-                    artifacts_dir.join("events.json"),
-                    serde_json::to_vec(&exec.events)?,
-                )?;
-                crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
+                write_event_artifacts(&exec.events, &artifacts_dir)?;
             }
-            if should_emit_profile_artifacts(opt.profile_capture, exec.status, true) {
-                let mut profile_trace = budget_trace;
-                profile_trace.summary = summary.clone();
-                write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-            }
-            crate::write_run_manifest(&summary, &artifacts_dir)?;
+            let mut profile_trace = budget_trace;
+            write_profile_trace_if_requested(
+                &mut profile_trace,
+                &summary,
+                &artifacts_dir,
+                should_emit_profile_artifacts(opt.profile_capture, exec.status, true),
+            )?;
 
             if opt.minimize || opt.shrink {
                 let minimized =
@@ -421,13 +410,15 @@ pub fn fuzz(
         }
     }
 
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-    if let Some(mem) = memory_report.as_ref()
-        && mem.options.artifacts
-    {
-        write_memory_artifacts(mem, &artifacts_dir)?;
-    }
-    profile_trace.summary = {
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
+    write_memory_artifacts_if_enabled(
+        memory_report.as_ref(),
+        &artifacts_dir,
+        memory_report
+            .as_ref()
+            .is_some_and(|mem| mem.options.artifacts),
+    )?;
+    let profile_artifacts_summary = {
         let mut s = summary.clone();
         s.status = profile_status;
         s
@@ -435,12 +426,13 @@ pub fn fuzz(
     let explicit_capture = opt.record_trace_to.is_some() || crash_trace_path.is_some();
     let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
-    if emit_heavy {
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    }
-    if !emit_heavy && should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture) {
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    }
+    write_profile_trace_if_requested(
+        &mut profile_trace,
+        &profile_artifacts_summary,
+        &artifacts_dir,
+        emit_heavy
+            || should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture),
+    )?;
     let coverage_stats = FuzzCoverageStats {
         target: target_string(target),
         executed,
@@ -477,8 +469,6 @@ pub fn fuzz(
         let written = write_trace_with_policy(&trace, record_path, opt.record_collision)?;
         summary.identity.trace_path = Some(written.to_string_lossy().to_string());
     }
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
-
     Ok(crate::RunResult { summary })
 }
 
@@ -541,17 +531,11 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
 
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if should_emit_heavy_artifacts(exec.status, true) {
-        std::fs::write(
-            artifacts_dir.join("events.json"),
-            serde_json::to_vec(&exec.events)?,
-        )?;
-        crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
-        profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+        write_event_artifacts(&exec.events, &artifacts_dir)?;
+        write_profile_trace_if_requested(&mut profile_trace, &summary, &artifacts_dir, true)?;
     }
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(crate::RunResult { summary })
 }
 

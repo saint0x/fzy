@@ -291,16 +291,16 @@ static int fz_clone_list_items(int32_t list_handle, char*** out_items, int* out_
   if (list_handle <= 0) {
     return 0;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(list_handle);
   if (list == NULL || list->count <= 0) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return 0;
   }
   int count = list->count;
   char** items = (char**)calloc((size_t)count, sizeof(char*));
   if (items == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return -1;
   }
   for (int i = 0; i < count; i++) {
@@ -311,11 +311,11 @@ static int fz_clone_list_items(int32_t list_handle, char*** out_items, int* out_
         free(items[j]);
       }
       free(items);
-      pthread_mutex_unlock(&fz_collections_lock);
+      pthread_mutex_unlock(&fz_list_lock);
       return -1;
     }
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   *out_items = items;
   *out_count = count;
   return 0;
@@ -330,16 +330,16 @@ static int fz_clone_map_entries_as_env(int32_t map_handle, char*** out_items, in
   if (map_handle <= 0) {
     return 0;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   fz_map_state* map = fz_map_get(map_handle);
   if (map == NULL || map->count <= 0) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return 0;
   }
   int count = map->count;
   char** entries = (char**)calloc((size_t)count, sizeof(char*));
   if (entries == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return -1;
   }
   for (int i = 0; i < count; i++) {
@@ -352,12 +352,12 @@ static int fz_clone_map_entries_as_env(int32_t map_handle, char*** out_items, in
         free(entries[j]);
       }
       free(entries);
-      pthread_mutex_unlock(&fz_collections_lock);
+      pthread_mutex_unlock(&fz_map_lock);
       return -1;
     }
     snprintf(entries[i], n, "%s=%s", key, value);
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   *out_items = entries;
   *out_count = count;
   return 0;

@@ -373,10 +373,10 @@ static int fz_http_header_upsert(char** header_buf, int* header_count, const cha
 }
 
 int32_t fz_native_json_from_list(int32_t list_handle) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(list_handle);
   if (list == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return fz_intern_slice("[]", 2);
   }
   size_t total = 3;
@@ -386,7 +386,7 @@ int32_t fz_native_json_from_list(int32_t list_handle) {
   }
   char* out = (char*)malloc(total);
   if (out == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return 0;
   }
   size_t used = 0;
@@ -403,15 +403,15 @@ int32_t fz_native_json_from_list(int32_t list_handle) {
   }
   out[used++] = ']';
   out[used] = '\0';
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return fz_intern_owned(out);
 }
 
 int32_t fz_native_json_from_map(int32_t map_handle) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   fz_map_state* map = fz_map_get(map_handle);
   if (map == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return fz_intern_slice("{}", 2);
   }
   size_t total = 3;
@@ -425,7 +425,7 @@ int32_t fz_native_json_from_map(int32_t map_handle) {
   }
   char* out = (char*)malloc(total);
   if (out == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return 0;
   }
   size_t used = 0;
@@ -459,7 +459,7 @@ int32_t fz_native_json_from_map(int32_t map_handle) {
   }
   out[used++] = '}';
   out[used] = '\0';
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   return fz_intern_owned(out);
 }
 
@@ -471,7 +471,7 @@ int32_t fz_native_json_to_list(int32_t json_id) {
   if (fz_parse_json_string_array(raw, &items, &count) != 0) {
     return -1;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   int32_t handle = fz_list_alloc();
   fz_list_state* list = fz_list_get(handle);
   if (list != NULL) {
@@ -479,7 +479,7 @@ int32_t fz_native_json_to_list(int32_t json_id) {
       (void)fz_list_push_cstr(list, items[i] == NULL ? "" : items[i]);
     }
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   fz_free_string_list(items, count);
   return handle;
 }
@@ -492,7 +492,7 @@ int32_t fz_native_json_to_map(int32_t json_id) {
   if (fz_parse_json_env_object(raw, &pairs, &count) != 0) {
     return -1;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   int32_t handle = fz_map_alloc();
   fz_map_state* map = fz_map_get(handle);
   if (map != NULL) {
@@ -507,7 +507,7 @@ int32_t fz_native_json_to_map(int32_t json_id) {
       }
     }
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   fz_free_string_list(pairs, count);
   return handle;
 }
@@ -522,10 +522,10 @@ int32_t fz_native_json_keys(int32_t json_value_handle) {
   if (p == NULL || *p != '{') {
     return -1;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   int32_t handle = fz_list_alloc();
   fz_list_state* list = fz_list_get(handle);
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   if (list == NULL) {
     return -1;
   }
@@ -539,12 +539,12 @@ int32_t fz_native_json_keys(int32_t json_value_handle) {
       free(key);
       return -1;
     }
-    pthread_mutex_lock(&fz_collections_lock);
+    pthread_mutex_lock(&fz_list_lock);
     list = fz_list_get(handle);
     if (list != NULL) {
       (void)fz_list_push_cstr(list, key == NULL ? "" : key);
     }
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     free(key);
     p = fz_json_ws(p);
     if (*p != ':') {

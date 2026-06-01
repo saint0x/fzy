@@ -4,8 +4,9 @@ use uuid::Uuid;
 
 use crate::engine::ScenarioRun;
 use crate::{
-    ExitStatus, FozzyResult, MemorySummary, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
-    RunSummary, TestCounts, TraceFile, trace_replay_contract, wall_time_iso_utc,
+    ExitStatus, FozzyResult, MemoryRunReport, MemorySummary, RecordCollisionPolicy, Reporter,
+    RunIdentity, RunMode, RunSummary, TestCounts, TraceEvent, TraceFile, trace_replay_contract,
+    wall_time_iso_utc,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -159,6 +160,41 @@ pub(crate) fn write_reporter_artifacts(
             artifacts_dir.join("report.html"),
             crate::render_html(summary),
         )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_event_artifacts(
+    events: &[TraceEvent],
+    artifacts_dir: &Path,
+) -> FozzyResult<()> {
+    std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(events)?)?;
+    crate::write_timeline(events, &artifacts_dir.join("timeline.json"))?;
+    Ok(())
+}
+
+pub(crate) fn write_memory_artifacts_if_enabled(
+    memory: Option<&MemoryRunReport>,
+    artifacts_dir: &Path,
+    enabled: bool,
+) -> FozzyResult<()> {
+    if enabled
+        && let Some(memory) = memory
+    {
+        crate::write_memory_artifacts(memory, artifacts_dir)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_profile_trace_if_requested(
+    trace: &mut TraceFile,
+    summary: &RunSummary,
+    artifacts_dir: &Path,
+    enabled: bool,
+) -> FozzyResult<()> {
+    if enabled {
+        trace.summary = summary.clone();
+        crate::write_profile_artifacts_from_trace(trace, artifacts_dir)?;
     }
     Ok(())
 }

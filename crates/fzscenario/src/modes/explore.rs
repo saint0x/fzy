@@ -10,15 +10,16 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::finalize::{
-    build_run_summary, write_reporter_artifacts, write_single_scenario_trace, write_summary_report,
+    build_run_summary, write_event_artifacts, write_memory_artifacts_if_enabled,
+    write_profile_trace_if_requested, write_reporter_artifacts, write_single_scenario_trace,
+    write_summary_report,
 };
 use crate::{
     Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind, FsBackend,
     HttpBackend, MemoryRunReport, MemoryState, ProcBackend, ProfileCaptureLevel,
     RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
     ScenarioV1Distributed, ScenarioV1Steps, TraceEvent, TraceFile, should_emit_profile_artifacts,
-    trace_replay_contract, wall_time_iso_utc, write_memory_artifacts,
-    write_profile_artifacts_from_trace, write_trace_with_policy,
+    trace_replay_contract, wall_time_iso_utc, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -238,20 +239,8 @@ fn explore_distributed_scenario(
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
 
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-
-    if matches!(opt.reporter, Reporter::Junit) {
-        std::fs::write(
-            artifacts_dir.join("junit.xml"),
-            crate::render_junit_xml(&summary),
-        )?;
-    }
-    if matches!(opt.reporter, Reporter::Html) {
-        std::fs::write(
-            artifacts_dir.join("report.html"),
-            crate::render_html(&summary),
-        )?;
-    }
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
+    write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
 
     let should_record = opt.record_trace_to.is_some() || status != ExitStatus::Pass;
     if should_record {
@@ -274,22 +263,21 @@ fn explore_distributed_scenario(
     let emit_heavy = should_emit_heavy_artifacts(status, should_record)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
     if emit_heavy {
-        std::fs::write(
-            artifacts_dir.join("events.json"),
-            serde_json::to_vec(&events)?,
+        write_event_artifacts(&events, &artifacts_dir)?;
+        write_memory_artifacts_if_enabled(
+            memory_report.as_ref(),
+            &artifacts_dir,
+            memory_report
+                .as_ref()
+                .is_some_and(|mem| mem.options.artifacts),
         )?;
-        crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
-        if let Some(mem) = memory_report.as_ref()
-            && mem.options.artifacts
-        {
-            write_memory_artifacts(mem, &artifacts_dir)?;
-        }
     }
-    if should_emit_profile_artifacts(opt.profile_capture, status, should_record) {
-        profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    }
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_profile_trace_if_requested(
+        &mut profile_trace,
+        &summary,
+        &artifacts_dir,
+        should_emit_profile_artifacts(opt.profile_capture, status, should_record),
+    )?;
 
     Ok(crate::RunResult { summary })
 }
@@ -363,16 +351,8 @@ fn explore_steps_scenario(
     let emit_profile =
         should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
     if emit_heavy {
-        std::fs::write(
-            artifacts_dir.join("events.json"),
-            serde_json::to_vec(&run.events)?,
-        )?;
-        crate::write_timeline(&run.events, &artifacts_dir.join("timeline.json"))?;
-        if let Some(mem) = run.memory.as_ref()
-            && opt.memory.artifacts
-        {
-            write_memory_artifacts(mem, &artifacts_dir)?;
-        }
+        write_event_artifacts(&run.events, &artifacts_dir)?;
+        write_memory_artifacts_if_enabled(run.memory.as_ref(), &artifacts_dir, opt.memory.artifacts)?;
     }
 
     let should_record = opt.record_trace_to.is_some() || run.status != ExitStatus::Pass;
@@ -387,10 +367,7 @@ fn explore_steps_scenario(
     }
 
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
-    if emit_profile {
-        profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    }
+    write_profile_trace_if_requested(&mut profile_trace, &summary, &artifacts_dir, emit_profile)?;
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
 
     Ok(crate::RunResult { summary })
@@ -464,22 +441,18 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
 
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if should_emit_heavy_artifacts(status, true) {
-        std::fs::write(
-            artifacts_dir.join("events.json"),
-            serde_json::to_vec(&events)?,
+        write_event_artifacts(&events, &artifacts_dir)?;
+        write_memory_artifacts_if_enabled(
+            memory_report.as_ref(),
+            &artifacts_dir,
+            memory_report
+                .as_ref()
+                .is_some_and(|mem| mem.options.artifacts),
         )?;
-        crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
-        if let Some(mem) = memory_report.as_ref()
-            && mem.options.artifacts
-        {
-            write_memory_artifacts(mem, &artifacts_dir)?;
-        }
     }
-    profile_trace.summary = summary.clone();
-    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_profile_trace_if_requested(&mut profile_trace, &summary, &artifacts_dir, true)?;
 
     Ok(crate::RunResult { summary })
 }

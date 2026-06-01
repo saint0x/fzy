@@ -651,7 +651,7 @@ int32_t fz_native_storage_kv_open(int32_t path_id) {
   if (path == NULL || path[0] == '\0') {
     return -1;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_storage_kv_lock);
   for (int i = 0; i < FZ_MAX_STORAGE_KV; i++) {
     if (!fz_storage_kv[i].in_use) {
       continue;
@@ -666,10 +666,10 @@ int32_t fz_native_storage_kv_open(int32_t path_id) {
       kv->path_id = fz_storage_kv[i].path_id;
       kv->map_handle = fz_storage_kv[i].map_handle;
     }
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_storage_kv_lock);
     return kv == NULL ? -1 : kv_handle;
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_storage_kv_lock);
   int32_t map_handle = fz_runtime_map_new();
   int32_t file_json_id = fz_native_fs_read_file(path_id);
   const char* raw = fz_lookup_string(file_json_id);
@@ -679,51 +679,51 @@ int32_t fz_native_storage_kv_open(int32_t path_id) {
       map_handle = parsed_handle;
     }
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_storage_kv_lock);
   int32_t kv_handle = fz_storage_kv_alloc();
   fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
   if (kv != NULL) {
     kv->path_id = path_id;
     kv->map_handle = map_handle;
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_storage_kv_lock);
   return kv == NULL ? -1 : kv_handle;
 }
 
 int32_t fz_native_storage_kv_close(int32_t kv_handle) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_storage_kv_lock);
   fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
   if (kv == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_storage_kv_lock);
     return -1;
   }
   memset(kv, 0, sizeof(*kv));
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_storage_kv_lock);
   return 0;
 }
 
 int32_t fz_native_storage_kv_get(int32_t kv_handle, int32_t key_id) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_storage_kv_lock);
   fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
   if (kv == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_storage_kv_lock);
     return fz_intern_slice("", 0);
   }
   int32_t map_handle = kv->map_handle;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_storage_kv_lock);
   return fz_runtime_map_get(map_handle, key_id);
 }
 
 int32_t fz_native_storage_kv_put(int32_t kv_handle, int32_t key_id, int32_t value_id) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_storage_kv_lock);
   fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
   if (kv == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_storage_kv_lock);
     return -1;
   }
   int32_t path_id = kv->path_id;
   int32_t map_handle = kv->map_handle;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_storage_kv_lock);
   int rc = fz_runtime_map_set(map_handle, key_id, value_id);
   if (rc != 0) {
     return -1;
@@ -1057,7 +1057,7 @@ int32_t fz_native_fs_listdir(int32_t path_id) {
     fz_set_last_error(errno, 3, "fs.listdir failed");
     return -1;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   int32_t list_handle = fz_list_alloc();
   fz_list_state* list = fz_list_get(list_handle);
   if (list != NULL) {
@@ -1070,7 +1070,7 @@ int32_t fz_native_fs_listdir(int32_t path_id) {
       qsort(list->items, (size_t)list->count, sizeof(char*), fz_compare_cstr_ptrs);
     }
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   closedir(dir);
   return list_handle;
 }
@@ -1922,7 +1922,7 @@ int32_t fz_native_net_headers(int32_t conn_fd) {
     pthread_mutex_unlock(&fz_conn_lock);
     return -1;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   int32_t list_handle = fz_list_alloc();
   fz_list_state* list = fz_list_get(list_handle);
   if (list != NULL) {
@@ -1937,7 +1937,7 @@ int32_t fz_native_net_headers(int32_t conn_fd) {
       free(kv);
     }
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   pthread_mutex_unlock(&fz_conn_lock);
   return list_handle;
 }

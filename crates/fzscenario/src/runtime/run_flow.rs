@@ -11,13 +11,14 @@ use crate::engine::{
     run_scenario_inner, run_scenario_replay_inner,
 };
 use crate::finalize::{
-    build_run_summary, build_shrink_preview_trace, write_reporter_artifacts, write_summary_report,
+    build_run_summary, build_shrink_preview_trace, write_event_artifacts,
+    write_profile_trace_if_requested, write_reporter_artifacts, write_summary_report,
 };
 use crate::{
     Config, ExitStatus, Finding, FindingKind, FozzyError, FozzyResult, HeapBudgetPolicy,
     MemoryRunReport, RunMode, ScenarioPath, ScenarioV1Steps, TraceFile, TracePath,
     heap_budget_findings_from_trace, trace_replay_contract, wall_time_iso_utc,
-    write_memory_artifacts, write_memory_delta_artifact, write_profile_artifacts_from_trace,
+    write_memory_artifacts, write_memory_delta_artifact,
 };
 
 #[derive(Debug, Clone)]
@@ -114,11 +115,7 @@ pub fn run_scenario(
         }
     }
     if emit_heavy {
-        std::fs::write(
-            artifacts_dir.join("events.json"),
-            serde_json::to_vec(&events)?,
-        )?;
-        crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
+        write_event_artifacts(&events, &artifacts_dir)?;
         if let Some(mem) = memory.as_ref()
             && opt.memory.artifacts
         {
@@ -145,11 +142,8 @@ pub fn run_scenario(
     let mut summary = report_summary;
     summary.identity.trace_path = trace_path.map(|p| p.to_string_lossy().to_string());
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
-    if emit_profile {
-        if let Some(trace) = trace.as_mut() {
-            trace.summary = summary.clone();
-            write_profile_artifacts_from_trace(trace, &artifacts_dir)?;
-        }
+    if let Some(trace) = trace.as_mut() {
+        write_profile_trace_if_requested(trace, &summary, &artifacts_dir, emit_profile)?;
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
 
@@ -304,22 +298,15 @@ pub fn replay_loaded_trace(
 
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if emit_heavy {
-        std::fs::write(
-            artifacts_dir.join("events.json"),
-            serde_json::to_vec(&events)?,
-        )?;
-        crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
+        write_event_artifacts(&events, &artifacts_dir)?;
         if let Some(mem) = memory.as_ref()
             && mem.options.artifacts
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
     }
-    if emit_profile {
-        if let Some(trace) = profile_trace.as_mut() {
-            trace.summary = summary.clone();
-            write_profile_artifacts_from_trace(trace, &artifacts_dir)?;
-        }
+    if let Some(trace) = profile_trace.as_mut() {
+        write_profile_trace_if_requested(trace, &summary, &artifacts_dir, emit_profile)?;
     }
     Ok(RunResult { summary })
 }

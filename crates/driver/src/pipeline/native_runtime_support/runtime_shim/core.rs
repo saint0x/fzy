@@ -20,10 +20,14 @@ pub(super) fn runtime_shim_section_core() -> &'static str {
 #define FZ_MAX_JSON_VALUES 16384
 #define FZ_MAX_STORAGE_KV 1024
 #define FZ_MAX_NET_POLL_WATCHES 256
+#define FZ_STRING_INDEX_CAPACITY 65536
 
 static char* fz_dynamic_strings[FZ_MAX_DYNAMIC_STRINGS];
 static int fz_dynamic_string_count = 0;
-static pthread_mutex_t fz_string_lock = PTHREAD_MUTEX_INITIALIZER;
+static int32_t fz_string_index_ids[FZ_STRING_INDEX_CAPACITY];
+static uint32_t fz_string_index_hashes[FZ_STRING_INDEX_CAPACITY];
+static pthread_rwlock_t fz_string_lock = PTHREAD_RWLOCK_INITIALIZER;
+static pthread_once_t fz_string_index_once = PTHREAD_ONCE_INIT;
 
 static int fz_listener_fd = -1;
 static pthread_mutex_t fz_listener_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -150,7 +154,11 @@ static fz_aggregate_state fz_aggregates[FZ_MAX_AGGREGATES];
 static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
 static fz_json_value_state fz_json_values[FZ_MAX_JSON_VALUES];
 static fz_storage_kv_state fz_storage_kv[FZ_MAX_STORAGE_KV];
-static pthread_mutex_t fz_collections_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t fz_list_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t fz_array_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t fz_map_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t fz_aggregate_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t fz_storage_kv_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_time_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_json_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_conn_request_counter = 0;
@@ -288,31 +296,106 @@ static int fz_parse_json_env_object(const char* raw, char*** out_items, int* out
 static void fz_free_string_list(char** items, int count);
 static int fz_json_parse_value_slice(const char* raw, const char** out_start, const char** out_end);
 static fz_spawn_state* fz_spawn_state_by_handle_locked(int32_t handle);
+static const char* fz_lookup_string_unlocked(int32_t id);
+static uint32_t fz_string_hash_bytes(const char* data, size_t len);
+static int32_t fz_find_string_slice_unlocked(const char* value, size_t len, uint32_t hash);
+static int32_t fz_find_string_cstr_unlocked(const char* value, uint32_t hash);
+static void fz_string_index_insert_unlocked(int32_t id, const char* value, uint32_t hash);
+static void fz_string_index_bootstrap(void);
 int32_t fz_native_net_request_id(int32_t conn_fd);
 int32_t fz_native_net_write(int32_t conn_fd, int32_t status_code, int32_t body_id);
 
 
-static const char* fz_lookup_string(int32_t id) {
-  const char* value = "";
-  pthread_mutex_lock(&fz_string_lock);
+static const char* fz_lookup_string_unlocked(int32_t id) {
   if (id <= 0) {
-    pthread_mutex_unlock(&fz_string_lock);
     return "";
   }
   if (id <= fz_string_literal_count) {
     const char* literal = fz_string_literals[id - 1];
-    value = literal == NULL ? "" : literal;
-    pthread_mutex_unlock(&fz_string_lock);
-    return value;
+    return literal == NULL ? "" : literal;
   }
   int dynamic_index = id - fz_string_literal_count - 1;
   if (dynamic_index < 0 || dynamic_index >= fz_dynamic_string_count) {
-    pthread_mutex_unlock(&fz_string_lock);
     return "";
   }
-  value = fz_dynamic_strings[dynamic_index];
-  pthread_mutex_unlock(&fz_string_lock);
+  const char* value = fz_dynamic_strings[dynamic_index];
   return value == NULL ? "" : value;
+}
+
+static uint32_t fz_string_hash_bytes(const char* data, size_t len) {
+  uint32_t hash = 2166136261u;
+  if (data == NULL) {
+    return hash;
+  }
+  for (size_t i = 0; i < len; i++) {
+    hash ^= (uint8_t)data[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+static int32_t fz_find_string_slice_unlocked(const char* value, size_t len, uint32_t hash) {
+  if (value == NULL) {
+    return 0;
+  }
+  size_t slot = (size_t)hash & (FZ_STRING_INDEX_CAPACITY - 1);
+  for (size_t probe = 0; probe < FZ_STRING_INDEX_CAPACITY; probe++) {
+    int32_t id = fz_string_index_ids[slot];
+    if (id == 0) {
+      return 0;
+    }
+    if (fz_string_index_hashes[slot] == hash) {
+      const char* existing = fz_lookup_string_unlocked(id);
+      if (existing != NULL && strncmp(existing, value, len) == 0 && existing[len] == '\0') {
+        return id;
+      }
+    }
+    slot = (slot + 1) & (FZ_STRING_INDEX_CAPACITY - 1);
+  }
+  return 0;
+}
+
+static int32_t fz_find_string_cstr_unlocked(const char* value, uint32_t hash) {
+  if (value == NULL) {
+    return 0;
+  }
+  return fz_find_string_slice_unlocked(value, strlen(value), hash);
+}
+
+static void fz_string_index_insert_unlocked(int32_t id, const char* value, uint32_t hash) {
+  if (id <= 0 || value == NULL) {
+    return;
+  }
+  size_t slot = (size_t)hash & (FZ_STRING_INDEX_CAPACITY - 1);
+  for (size_t probe = 0; probe < FZ_STRING_INDEX_CAPACITY; probe++) {
+    if (fz_string_index_ids[slot] == 0) {
+      fz_string_index_ids[slot] = id;
+      fz_string_index_hashes[slot] = hash;
+      return;
+    }
+    slot = (slot + 1) & (FZ_STRING_INDEX_CAPACITY - 1);
+  }
+}
+
+static void fz_string_index_bootstrap(void) {
+  pthread_rwlock_wrlock(&fz_string_lock);
+  for (int i = 0; i < fz_string_literal_count; i++) {
+    const char* literal = fz_string_literals[i];
+    if (literal == NULL) {
+      literal = "";
+    }
+    fz_string_index_insert_unlocked(i + 1, literal, fz_string_hash_bytes(literal, strlen(literal)));
+  }
+  pthread_rwlock_unlock(&fz_string_lock);
+}
+
+static const char* fz_lookup_string(int32_t id) {
+  const char* value = "";
+  (void)pthread_once(&fz_string_index_once, fz_string_index_bootstrap);
+  pthread_rwlock_rdlock(&fz_string_lock);
+  value = fz_lookup_string_unlocked(id);
+  pthread_rwlock_unlock(&fz_string_lock);
+  return value;
 }
 
 const uint8_t* fz_native_str_ptr(int32_t value_id) {
@@ -323,36 +406,41 @@ static int32_t fz_intern_owned(char* owned) {
   if (owned == NULL) {
     return 0;
   }
-  pthread_mutex_lock(&fz_string_lock);
-  for (int i = 0; i < fz_string_literal_count; i++) {
-    const char* literal = fz_string_literals[i];
-    if (literal != NULL && strcmp(literal, owned) == 0) {
-      pthread_mutex_unlock(&fz_string_lock);
-      free(owned);
-      return i + 1;
-    }
-  }
-  for (int i = 0; i < fz_dynamic_string_count; i++) {
-    const char* existing = fz_dynamic_strings[i];
-    if (existing != NULL && strcmp(existing, owned) == 0) {
-      pthread_mutex_unlock(&fz_string_lock);
-      free(owned);
-      return fz_string_literal_count + i + 1;
-    }
+  (void)pthread_once(&fz_string_index_once, fz_string_index_bootstrap);
+  uint32_t hash = fz_string_hash_bytes(owned, strlen(owned));
+  pthread_rwlock_wrlock(&fz_string_lock);
+  int32_t existing_id = fz_find_string_cstr_unlocked(owned, hash);
+  if (existing_id != 0) {
+    pthread_rwlock_unlock(&fz_string_lock);
+    free(owned);
+    return existing_id;
   }
   if (fz_dynamic_string_count >= FZ_MAX_DYNAMIC_STRINGS) {
-    pthread_mutex_unlock(&fz_string_lock);
+    pthread_rwlock_unlock(&fz_string_lock);
     free(owned);
     return 0;
   }
   int index = fz_dynamic_string_count;
   fz_dynamic_strings[index] = owned;
   fz_dynamic_string_count++;
-  pthread_mutex_unlock(&fz_string_lock);
-  return fz_string_literal_count + index + 1;
+  int32_t id = fz_string_literal_count + index + 1;
+  fz_string_index_insert_unlocked(id, owned, hash);
+  pthread_rwlock_unlock(&fz_string_lock);
+  return id;
 }
 
 static int32_t fz_intern_slice(const char* data, size_t len) {
+  if (data == NULL) {
+    return 0;
+  }
+  (void)pthread_once(&fz_string_index_once, fz_string_index_bootstrap);
+  uint32_t hash = fz_string_hash_bytes(data, len);
+  pthread_rwlock_rdlock(&fz_string_lock);
+  int32_t existing_id = fz_find_string_slice_unlocked(data, len, hash);
+  pthread_rwlock_unlock(&fz_string_lock);
+  if (existing_id != 0) {
+    return existing_id;
+  }
   char* owned = (char*)malloc(len + 1);
   if (owned == NULL) {
     return 0;
@@ -457,46 +545,46 @@ uint64_t fz_native_agg_new(int32_t tag, int32_t count) {
   if (count < 0 || count > FZ_MAX_AGGREGATE_ITEMS) {
     return 0;
   }
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_aggregate_lock);
   int32_t handle = fz_aggregate_alloc();
   if (handle > 0) {
     fz_aggregate_state* aggregate = &fz_aggregates[handle - 1];
     aggregate->tag = tag;
     aggregate->count = count;
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_aggregate_lock);
   return handle > 0 ? (uint64_t)handle : 0;
 }
 
 int32_t fz_native_agg_set_i64(uint64_t handle, int32_t index, uint64_t value) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_aggregate_lock);
   fz_aggregate_state* aggregate = fz_aggregate_get(handle);
   if (aggregate == NULL || index < 0 || index >= aggregate->count) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_aggregate_lock);
     return -1;
   }
   aggregate->items[index] = value;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_aggregate_lock);
   return 0;
 }
 
 uint64_t fz_native_agg_get_i64(uint64_t handle, int32_t index) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_aggregate_lock);
   fz_aggregate_state* aggregate = fz_aggregate_get(handle);
   if (aggregate == NULL || index < 0 || index >= aggregate->count) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_aggregate_lock);
     return 0;
   }
   uint64_t value = aggregate->items[index];
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_aggregate_lock);
   return value;
 }
 
 int32_t fz_native_agg_tag(uint64_t handle) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_aggregate_lock);
   fz_aggregate_state* aggregate = fz_aggregate_get(handle);
   int32_t tag = aggregate == NULL ? 0 : aggregate->tag;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_aggregate_lock);
   return tag;
 }
 
@@ -2884,26 +2972,26 @@ static int32_t fz_native_json_object_from_pairs(const int32_t* ids, int pair_cou
 }
 
 static int32_t fz_runtime_list_new(void) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   int32_t handle = fz_list_alloc();
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return handle;
 }
 
 static int32_t fz_runtime_list_push(int32_t handle, int32_t value_id) {
   const char* value = fz_lookup_string(value_id);
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(handle);
   int ok = list != NULL && fz_list_push_cstr(list, value) == 0 ? 0 : -1;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return ok;
 }
 
 static int32_t fz_runtime_list_pop(int32_t handle) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(handle);
   if (list == NULL || list->count <= 0) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return fz_intern_slice("", 0);
   }
   char* item = list->items[list->count - 1];
@@ -2911,56 +2999,56 @@ static int32_t fz_runtime_list_pop(int32_t handle) {
   list->count--;
   int32_t id = fz_intern_slice(item == NULL ? "" : item, item == NULL ? 0 : strlen(item));
   free(item);
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return id;
 }
 
 static int32_t fz_runtime_list_len(int32_t handle) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(handle);
   int32_t len = list == NULL ? -1 : list->count;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return len;
 }
 
 static int32_t fz_runtime_list_get(int32_t handle, int32_t index) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(handle);
   if (list == NULL || index < 0 || index >= list->count) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return fz_intern_slice("", 0);
   }
   const char* item = list->items[index] == NULL ? "" : list->items[index];
   int32_t id = fz_intern_slice(item, strlen(item));
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return id;
 }
 
 static int32_t fz_runtime_list_set(int32_t handle, int32_t index, int32_t value_id) {
   const char* value = fz_lookup_string(value_id);
   if (value == NULL) value = "";
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(handle);
   if (list == NULL || index < 0 || index >= list->count) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return -1;
   }
   char* dup = strdup(value);
   if (dup == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return -1;
   }
   free(list->items[index]);
   list->items[index] = dup;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return 0;
 }
 
 static int32_t fz_runtime_list_clear(int32_t handle) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(handle);
   if (list == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return -1;
   }
   for (int i = 0; i < list->count; i++) {
@@ -2968,17 +3056,17 @@ static int32_t fz_runtime_list_clear(int32_t handle) {
     list->items[i] = NULL;
   }
   list->count = 0;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return 0;
 }
 
 static int32_t fz_runtime_list_join(int32_t handle, int32_t sep_id) {
   const char* sep = fz_lookup_string(sep_id);
   if (sep == NULL) sep = "";
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_list_lock);
   fz_list_state* list = fz_list_get(handle);
   if (list == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return fz_intern_slice("", 0);
   }
   size_t sep_len = strlen(sep);
@@ -2989,7 +3077,7 @@ static int32_t fz_runtime_list_join(int32_t handle, int32_t sep_id) {
   }
   char* out = (char*)malloc(total);
   if (out == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_list_lock);
     return 0;
   }
   size_t used = 0;
@@ -3006,14 +3094,14 @@ static int32_t fz_runtime_list_join(int32_t handle, int32_t sep_id) {
     }
   }
   out[used] = '\0';
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
   return fz_intern_owned(out);
 }
 
 static int32_t fz_runtime_map_new(void) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   int32_t handle = fz_map_alloc();
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   return handle;
 }
 
@@ -3024,26 +3112,26 @@ static int32_t fz_runtime_map_set(int32_t handle, int32_t key_id, int32_t value_
     return -1;
   }
   if (value == NULL) value = "";
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   fz_map_state* map = fz_map_get(handle);
   if (map == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return -1;
   }
   int idx = fz_map_find_index(map, key);
   if (idx >= 0) {
     char* dup = strdup(value);
     if (dup == NULL) {
-      pthread_mutex_unlock(&fz_collections_lock);
+      pthread_mutex_unlock(&fz_map_lock);
       return -1;
     }
     free(map->values[idx]);
     map->values[idx] = dup;
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return 0;
   }
   if (map->count >= FZ_MAX_MAP_ENTRIES) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return -1;
   }
   map->keys[map->count] = strdup(key);
@@ -3053,49 +3141,49 @@ static int32_t fz_runtime_map_set(int32_t handle, int32_t key_id, int32_t value_
     free(map->values[map->count]);
     map->keys[map->count] = NULL;
     map->values[map->count] = NULL;
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return -1;
   }
   map->count++;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   return 0;
 }
 
 static int32_t fz_runtime_map_get(int32_t handle, int32_t key_id) {
   const char* key = fz_lookup_string(key_id);
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   fz_map_state* map = fz_map_get(handle);
   if (map == NULL || key == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return fz_intern_slice("", 0);
   }
   int idx = fz_map_find_index(map, key);
   const char* value = (idx >= 0 && map->values[idx] != NULL) ? map->values[idx] : "";
   int32_t out = fz_intern_slice(value, strlen(value));
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   return out;
 }
 
 static int32_t fz_runtime_map_has(int32_t handle, int32_t key_id) {
   const char* key = fz_lookup_string(key_id);
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   fz_map_state* map = fz_map_get(handle);
   int ok = (map != NULL && key != NULL && fz_map_find_index(map, key) >= 0) ? 1 : 0;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   return ok;
 }
 
 static int32_t fz_runtime_map_delete(int32_t handle, int32_t key_id) {
   const char* key = fz_lookup_string(key_id);
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   fz_map_state* map = fz_map_get(handle);
   if (map == NULL || key == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return -1;
   }
   int idx = fz_map_find_index(map, key);
   if (idx < 0) {
-    pthread_mutex_unlock(&fz_collections_lock);
+    pthread_mutex_unlock(&fz_map_lock);
     return 0;
   }
   free(map->keys[idx]);
@@ -3107,35 +3195,38 @@ static int32_t fz_runtime_map_delete(int32_t handle, int32_t key_id) {
   map->count--;
   map->keys[map->count] = NULL;
   map->values[map->count] = NULL;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   return 1;
 }
 
 static int32_t fz_runtime_map_keys(int32_t handle) {
-  pthread_mutex_lock(&fz_collections_lock);
-  fz_map_state* map = fz_map_get(handle);
-  if (map == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
-    return -1;
-  }
+  pthread_mutex_lock(&fz_list_lock);
   int32_t list_handle = fz_list_alloc();
   fz_list_state* list = fz_list_get(list_handle);
+  pthread_mutex_unlock(&fz_list_lock);
   if (list == NULL) {
-    pthread_mutex_unlock(&fz_collections_lock);
     return -1;
   }
+  pthread_mutex_lock(&fz_map_lock);
+  fz_map_state* map = fz_map_get(handle);
+  if (map == NULL) {
+    pthread_mutex_unlock(&fz_map_lock);
+    return -1;
+  }
+  pthread_mutex_lock(&fz_list_lock);
   for (int i = 0; i < map->count; i++) {
     (void)fz_list_push_cstr(list, map->keys[i] == NULL ? "" : map->keys[i]);
   }
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_list_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   return list_handle;
 }
 
 static int32_t fz_runtime_map_len(int32_t handle) {
-  pthread_mutex_lock(&fz_collections_lock);
+  pthread_mutex_lock(&fz_map_lock);
   fz_map_state* map = fz_map_get(handle);
   int32_t len = map == NULL ? -1 : map->count;
-  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_map_lock);
   return len;
 }
 
