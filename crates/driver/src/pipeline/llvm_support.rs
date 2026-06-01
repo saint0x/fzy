@@ -131,9 +131,14 @@ impl LlvmFuncCtx {
 
     pub(super) fn declare_alloca(&mut self, slot: &str, ty: &str) {
         if self.declared_allocas.insert(slot.to_string()) {
-            self.alloca_prologue
-                .push_str(&format!("  {slot} = alloca {ty}\n"));
+            let _ = writeln!(&mut self.alloca_prologue, "  {slot} = alloca {ty}");
         }
+    }
+
+    pub(super) fn emit(&mut self, args: std::fmt::Arguments<'_>) {
+        self.code
+            .write_fmt(args)
+            .expect("llvm function buffer writes should not fail");
     }
 }
 
@@ -3508,8 +3513,9 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         ));
     }
 
-    let mut out = format!("; ModuleID = '{}'\n", fir.name);
-    out.push_str("declare void @llvm.trap()\n");
+    let mut out = String::new();
+    let _ = writeln!(&mut out, "; ModuleID = '{}'", fir.name);
+    let _ = writeln!(&mut out, "declare void @llvm.trap()");
     let used_imports = collect_used_native_runtime_imports(fir);
     for import in &used_imports {
         match import.callee {
@@ -3766,8 +3772,7 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                 ));
             }
         };
-        out.push_str(&lowered);
-        out.push('\n');
+        let _ = writeln!(&mut out, "{lowered}");
     }
     Ok(out)
 }
@@ -3808,16 +3813,18 @@ pub(super) fn llvm_emit_function(
         extern_link_symbols.clone(),
         function_sigs.clone(),
     );
-    let mut out = format!(
-        "define {return_ty} @{}({params}) {{\nentry:\n",
+    let mut out = String::new();
+    let _ = writeln!(
+        &mut out,
+        "define {return_ty} @{}({params}) {{",
         native_link_symbol_for_function(function),
     );
+    let _ = writeln!(&mut out, "entry:");
     for (index, param) in function.params.iter().enumerate() {
         let slot = format!("%slot_{}", param.name);
         let param_ty = llvm_ir_type_for_ast_type(&param.ty);
         ctx.declare_alloca(&slot, &param_ty);
-        ctx.code
-            .push_str(&format!("  store {param_ty} %arg{index}, ptr {slot}\n"));
+        ctx.emit(format_args!("  store {param_ty} %arg{index}, ptr {slot}\n"));
         ctx.slots.insert(param.name.clone(), slot.clone());
         ctx.slot_tys.insert(param.name.clone(), param_ty);
         if let Some(binding) = llvm_array_binding_from_type(&slot, &param.ty) {
@@ -3834,7 +3841,7 @@ pub(super) fn llvm_emit_function(
         .get(&cfg.entry)
         .ok_or_else(|| anyhow!("missing llvm label for cfg entry block {}", cfg.entry))?;
     if cfg.entry != 0 {
-        ctx.code.push_str(&format!("  br label %{entry}\n"));
+        ctx.emit(format_args!("  br label %{entry}\n"));
     }
     for (block_id, block) in cfg.blocks.iter().enumerate() {
         ctx.direct_values.clear();
@@ -3842,7 +3849,7 @@ pub(super) fn llvm_emit_function(
             .get(&block_id)
             .ok_or_else(|| anyhow!("missing llvm label for cfg block {}", block_id))?;
         if !(block_id == cfg.entry && cfg.entry == 0) {
-            ctx.code.push_str(&format!("{label}:\n"));
+            ctx.emit(format_args!("{label}:\n"));
         }
         let linear_terminated =
             llvm_emit_linear_stmts(&block.stmts, &mut ctx, string_literal_ids, task_ref_ids)?;
@@ -3853,8 +3860,7 @@ pub(super) fn llvm_emit_function(
             ControlFlowTerminator::Return(Some(expr)) => {
                 let value = llvm_emit_expr(expr, &mut ctx, string_literal_ids, task_ref_ids)?;
                 let value = llvm_cast_value(&mut ctx, value, &return_ty)?;
-                ctx.code
-                    .push_str(&format!("  ret {} {}\n", value.ty, value.value));
+                ctx.emit(format_args!("  ret {} {}\n", value.ty, value.value));
             }
             ControlFlowTerminator::Return(None) => {
                 let fallback = forced_return.unwrap_or(0);
@@ -3862,15 +3868,14 @@ pub(super) fn llvm_emit_function(
                     ctx.code.push_str("  ret void\n");
                 } else {
                     let fallback = llvm_zero_literal(&return_ty, fallback);
-                    ctx.code
-                        .push_str(&format!("  ret {return_ty} {fallback}\n"));
+                    ctx.emit(format_args!("  ret {return_ty} {fallback}\n"));
                 }
             }
             ControlFlowTerminator::Jump { target, .. } => {
                 let target_label = labels
                     .get(target)
                     .ok_or_else(|| anyhow!("missing llvm label for cfg jump target {target}"))?;
-                ctx.code.push_str(&format!("  br label %{target_label}\n"));
+                ctx.emit(format_args!("  br label %{target_label}\n"));
             }
             ControlFlowTerminator::Branch {
                 condition,
@@ -3889,7 +3894,7 @@ pub(super) fn llvm_emit_function(
                 let else_label = labels.get(else_target).ok_or_else(|| {
                     anyhow!("missing llvm label for cfg branch target {}", else_target)
                 })?;
-                ctx.code.push_str(&format!(
+                ctx.emit(format_args!(
                     "  br i1 {pred}, label %{then_label}, label %{else_label}\n"
                 ));
             }
@@ -3912,7 +3917,7 @@ pub(super) fn llvm_emit_function(
                 };
                 if aggregate_switch && value.ty == "i64" {
                     let tag_value = ctx.value();
-                    ctx.code.push_str(&format!(
+                    ctx.emit(format_args!(
                         "  {tag_value} = call i32 @{}(i64 {})\n",
                         NATIVE_AGG_TAG_SYMBOL, value.value
                     ));
@@ -3927,7 +3932,7 @@ pub(super) fn llvm_emit_function(
                         default_target
                     )
                 })?;
-                ctx.code.push_str(&format!(
+                ctx.emit(format_args!(
                     "  switch {} {}, label %{default_label} [\n",
                     value.ty, value.value
                 ));
@@ -3935,21 +3940,21 @@ pub(super) fn llvm_emit_function(
                     let target_label = labels.get(target).ok_or_else(|| {
                         anyhow!("missing llvm label for cfg switch target {}", target)
                     })?;
-                    ctx.code.push_str(&format!(
+                    ctx.emit(format_args!(
                         "    {} {case_value}, label %{target_label}\n",
                         value.ty
                     ));
                 }
-                ctx.code.push_str("  ]\n");
+                ctx.emit(format_args!("  ]\n"));
             }
             ControlFlowTerminator::Unreachable => {
-                ctx.code.push_str("  unreachable\n");
+                ctx.emit(format_args!("  unreachable\n"));
             }
         }
     }
     out.push_str(&ctx.alloca_prologue);
     out.push_str(&ctx.code);
-    out.push_str("}\n");
+    let _ = writeln!(&mut out, "}}");
     Ok(out)
 }
 

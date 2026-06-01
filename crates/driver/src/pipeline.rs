@@ -13,7 +13,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Once, OnceLock, RwLock};
-use std::time::UNIX_EPOCH;
+use std::time::{Instant, UNIX_EPOCH};
 
 use ast::AstVisitor;
 
@@ -171,6 +171,36 @@ pub struct Output {
     pub diagnostics: usize,
     pub diagnostic_details: Vec<diagnostics::Diagnostic>,
     pub backend_ir: Option<String>,
+    pub validation_tier: ValidationTier,
+    pub telemetry: ValidationTelemetry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationTier {
+    Check,
+    Verify,
+}
+
+impl ValidationTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Check => "check",
+            Self::Verify => "verify",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ValidationTelemetry {
+    pub total_ms: u64,
+    pub parse_ms: u64,
+    pub lower_ms: u64,
+    pub verify_ms: u64,
+    pub backend_ms: u64,
+    pub contract_ms: u64,
+    pub parse_cache_hit: bool,
+    pub lower_cache_hit: bool,
+    pub input_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -488,65 +518,79 @@ pub fn verify_file_with_root_source(
     validate_file_with_root_source(path, root_source_override, ValidationTier::Verify)
 }
 
-#[derive(Clone, Copy)]
-enum ValidationTier {
-    Check,
-    Verify,
-}
-
 fn validate_file_with_root_source(
     path: &Path,
     root_source_override: Option<&str>,
     tier: ValidationTier,
 ) -> Result<Output> {
+    let started = Instant::now();
     let resolved = resolve_source_path(path)?;
     let module_name = resolved
         .source_path
         .file_stem()
         .and_then(|v| v.to_str())
         .ok_or_else(|| anyhow!("invalid module filename"))?;
-    let parsed = match parse_program_shared_with_root_source(
-        &resolved.source_path,
-        root_source_override,
-    ) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            let mut diagnostics = collect_parse_diagnostics_with_root_source(
-                &resolved.source_path,
-                root_source_override,
-            )
-            .unwrap_or_else(|_| {
-                vec![diagnostics::Diagnostic::new(
-                    diagnostics::Severity::Error,
-                    error.to_string(),
-                    None,
-                )]
-            });
-            for diagnostic in &mut diagnostics {
-                if diagnostic.path.is_none() {
-                    diagnostic.path = Some(resolved.source_path.display().to_string());
+    let parse_started = Instant::now();
+    let (parsed, parse_cache_hit) =
+        match parse_program_shared_with_root_source_telemetry(&resolved.source_path, root_source_override) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let mut diagnostics = collect_parse_diagnostics_with_root_source(
+                    &resolved.source_path,
+                    root_source_override,
+                )
+                .unwrap_or_else(|_| {
+                    vec![diagnostics::Diagnostic::new(
+                        diagnostics::Severity::Error,
+                        error.to_string(),
+                        None,
+                    )]
+                });
+                for diagnostic in &mut diagnostics {
+                    if diagnostic.path.is_none() {
+                        diagnostic.path = Some(resolved.source_path.display().to_string());
+                    }
                 }
+                enrich_diagnostics_context(&mut diagnostics);
+                diagnostics::assign_stable_codes(
+                    &mut diagnostics,
+                    diagnostics::DiagnosticDomain::Driver,
+                );
+                return Ok(Output {
+                    module: module_name.to_string(),
+                    nodes: 0,
+                    diagnostics: diagnostics.len(),
+                    diagnostic_details: diagnostics,
+                    backend_ir: None,
+                    validation_tier: tier,
+                    telemetry: ValidationTelemetry {
+                        total_ms: started.elapsed().as_millis() as u64,
+                        parse_ms: parse_started.elapsed().as_millis() as u64,
+                        input_bytes: root_source_override
+                            .map(str::len)
+                            .unwrap_or_else(|| std::fs::metadata(&resolved.source_path).map(|m| m.len() as usize).unwrap_or(0)),
+                        ..ValidationTelemetry::default()
+                    },
+                });
             }
-            enrich_diagnostics_context(&mut diagnostics);
-            diagnostics::assign_stable_codes(
-                &mut diagnostics,
-                diagnostics::DiagnosticDomain::Driver,
-            );
-            return Ok(Output {
-                module: module_name.to_string(),
-                nodes: 0,
-                diagnostics: diagnostics.len(),
-                diagnostic_details: diagnostics,
-                backend_ir: None,
-            });
-        }
-    };
+        };
+    let parse_ms = parse_started.elapsed().as_millis() as u64;
     let mut diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
-    let lowered = lower_fir_cached_shared(&parsed);
+    let lower_started = Instant::now();
+    let (lowered, lower_cache_hit) = lower_fir_cached_shared_telemetry(&parsed);
+    let lower_ms = lower_started.elapsed().as_millis() as u64;
+    let verify_ms;
+    let mut backend_ms = 0u64;
+    let mut contract_ms = 0u64;
     match tier {
-        ValidationTier::Check => diagnostics.extend(verifier::verify(&lowered.fir).diagnostics),
+        ValidationTier::Check => {
+            let verify_started = Instant::now();
+            diagnostics.extend(verifier::verify(&lowered.fir).diagnostics);
+            verify_ms = verify_started.elapsed().as_millis() as u64;
+        }
         ValidationTier::Verify => {
+            let backend_started = Instant::now();
             diagnostics.extend(native_lowerability_diagnostics(&parsed.module));
             let backend = resolve_native_backend(BuildProfile::Verify, None)?;
             diagnostics.extend(backend_capability_diagnostics(
@@ -554,6 +598,8 @@ fn validate_file_with_root_source(
                 &backend,
                 false,
             ));
+            backend_ms = backend_started.elapsed().as_millis() as u64;
+            let verify_started = Instant::now();
             let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
             let report = verifier::verify_with_policy(
                 &lowered.fir,
@@ -566,12 +612,15 @@ fn validate_file_with_root_source(
                 },
             );
             diagnostics.extend(report.diagnostics);
+            verify_ms = verify_started.elapsed().as_millis() as u64;
+            let contract_started = Instant::now();
             diagnostics.extend(compile_time_contract_diagnostics(
                 &parsed.module,
                 &lowered.fir,
                 true,
                 BuildProfile::Strict,
             ));
+            contract_ms = contract_started.elapsed().as_millis() as u64;
         }
     }
     for diagnostic in &mut diagnostics {
@@ -588,6 +637,18 @@ fn validate_file_with_root_source(
         diagnostics: diagnostics.len(),
         diagnostic_details: diagnostics,
         backend_ir: None,
+        validation_tier: tier,
+        telemetry: ValidationTelemetry {
+            total_ms: started.elapsed().as_millis() as u64,
+            parse_ms,
+            lower_ms,
+            verify_ms,
+            backend_ms,
+            contract_ms,
+            parse_cache_hit,
+            lower_cache_hit,
+            input_bytes: parsed.combined_source.len(),
+        },
     })
 }
 
@@ -633,6 +694,8 @@ pub fn emit_ir(path: &Path, backend: Option<&str>) -> Result<Output> {
                 diagnostics: diagnostics.len(),
                 diagnostic_details: diagnostics,
                 backend_ir: None,
+                validation_tier: ValidationTier::Verify,
+                telemetry: ValidationTelemetry::default(),
             });
         }
     };
@@ -668,6 +731,8 @@ pub fn emit_ir(path: &Path, backend: Option<&str>) -> Result<Output> {
         diagnostics: diagnostics.len(),
         diagnostic_details: diagnostics,
         backend_ir: Some(backend_ir),
+        validation_tier: ValidationTier::Verify,
+        telemetry: ValidationTelemetry::default(),
     })
 }
 
@@ -684,15 +749,16 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
     Ok((*parse_program_shared_with_root_source(source_path, None)?).clone())
 }
 
+pub(crate) fn parse_program_with_metadata(source_path: &Path) -> Result<(ParsedProgram, bool)> {
+    let (parsed, cache_hit) = parse_program_shared_with_root_source_telemetry(source_path, None)?;
+    Ok(((*parsed).clone(), cache_hit))
+}
+
 pub fn parse_program_with_root_source(
     source_path: &Path,
     root_source_override: Option<&str>,
 ) -> Result<ParsedProgram> {
-    Ok((*parse_program_shared_with_root_source(
-        source_path,
-        root_source_override,
-    )?)
-    .clone())
+    Ok((*parse_program_shared_with_root_source(source_path, root_source_override)?).clone())
 }
 
 fn parse_program_shared(source_path: &Path) -> Result<Arc<ParsedProgram>> {
@@ -703,19 +769,31 @@ fn parse_program_shared_with_root_source(
     source_path: &Path,
     root_source_override: Option<&str>,
 ) -> Result<Arc<ParsedProgram>> {
+    Ok(parse_program_shared_with_root_source_telemetry(
+        source_path,
+        root_source_override,
+    )?
+    .0)
+}
+
+fn parse_program_shared_with_root_source_telemetry(
+    source_path: &Path,
+    root_source_override: Option<&str>,
+) -> Result<(Arc<ParsedProgram>, bool)> {
     let canonical = source_path
         .canonicalize()
         .with_context(|| format!("failed resolving source file: {}", source_path.display()))?;
     if let Some(source_override) = root_source_override {
         return parse_program_uncached_with_root_source(&canonical, Some(source_override))
-            .map(Arc::new);
+            .map(Arc::new)
+            .map(|parsed| (parsed, false));
     }
     if let Some(cached) = cached_parsed_program(&canonical) {
-        return Ok(cached);
+        return Ok((cached, true));
     }
     let parsed = Arc::new(parse_program_uncached_with_root_source(&canonical, None)?);
     store_parsed_program_cache(&canonical, Arc::clone(&parsed));
-    Ok(parsed)
+    Ok((parsed, false))
 }
 
 pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirModule) {
@@ -723,15 +801,32 @@ pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirMo
     ((*lowered.typed).clone(), (*lowered.fir).clone())
 }
 
+pub(crate) fn lower_fir_cached_with_metadata(
+    parsed: &ParsedProgram,
+) -> ((hir::TypedModule, fir::FirModule), bool) {
+    let (lowered, cache_hit) = lower_fir_cached_shared_telemetry(parsed);
+    (
+        ((*lowered.typed).clone(), (*lowered.fir).clone()),
+        cache_hit,
+    )
+}
+
 fn lower_fir_cached_shared(parsed: &ParsedProgram) -> SharedLoweredProgram {
+    lower_fir_cached_shared_telemetry(parsed).0
+}
+
+fn lower_fir_cached_shared_telemetry(parsed: &ParsedProgram) -> (SharedLoweredProgram, bool) {
     let module_hash = sha256_hex(parsed.combined_source.as_bytes());
     let cache = LOWER_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
     if let Ok(guard) = cache.read() {
         if let Some(cached) = guard.get(&module_hash) {
-            return SharedLoweredProgram {
-                typed: Arc::clone(&cached.typed),
-                fir: Arc::clone(&cached.fir),
-            };
+            return (
+                SharedLoweredProgram {
+                    typed: Arc::clone(&cached.typed),
+                    fir: Arc::clone(&cached.fir),
+                },
+                true,
+            );
         }
     }
     let typed = Arc::new(hir::lower(&parsed.module));
@@ -745,10 +840,13 @@ fn lower_fir_cached_shared(parsed: &ParsedProgram) -> SharedLoweredProgram {
             },
         );
     }
-    SharedLoweredProgram {
-        typed,
-        fir: fir_module,
-    }
+    (
+        SharedLoweredProgram {
+            typed,
+            fir: fir_module,
+        },
+        false,
+    )
 }
 
 // Safety policy and artifact emission helpers live in `pipeline/policy_artifacts.rs`
@@ -5474,10 +5572,7 @@ fn store_parsed_program_cache(canonical: &Path, parsed: Arc<ParsedProgram>) {
     if let Ok(mut guard) = cache.write() {
         guard.insert(
             canonical.to_path_buf(),
-            ParsedProgramCacheEntry {
-                parsed,
-                stamps,
-            },
+            ParsedProgramCacheEntry { parsed, stamps },
         );
     }
 }
@@ -12227,10 +12322,9 @@ fn normalize_rel_path(path: &str) -> String {
 fn hash_stamped_files(root: &Path, files: &[ModuleStamp]) -> Result<String> {
     let mut hasher = Sha256::new();
     for stamp in files {
-        let rel = stamp
-            .path
-            .strip_prefix(root)
-            .with_context(|| format!("failed deriving relative path for {}", stamp.path.display()))?;
+        let rel = stamp.path.strip_prefix(root).with_context(|| {
+            format!("failed deriving relative path for {}", stamp.path.display())
+        })?;
         let rel = normalize_rel_path(&rel.display().to_string());
         hasher.update(rel.as_bytes());
         let bytes = std::fs::read(&stamp.path).with_context(|| {
@@ -12251,11 +12345,7 @@ fn collect_file_stamps(root: &Path) -> Result<Vec<ModuleStamp>> {
     Ok(files)
 }
 
-fn collect_files_recursive(
-    root: &Path,
-    current: &Path,
-    out: &mut Vec<ModuleStamp>,
-) -> Result<()> {
+fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<ModuleStamp>) -> Result<()> {
     let mut entries = std::fs::read_dir(current)
         .with_context(|| format!("failed reading dependency directory: {}", current.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()

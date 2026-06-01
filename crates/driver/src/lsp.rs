@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::cell::RefCell;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
@@ -47,7 +49,20 @@ struct SymbolOccurrence {
 struct WorkspaceState {
     root: Option<PathBuf>,
     docs: BTreeMap<String, Document>,
+    semantics_cache: RefCell<Option<CachedWorkspaceSemantics>>,
     shutting_down: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DocCacheKey {
+    path: PathBuf,
+    version: i64,
+}
+
+#[derive(Debug, Clone)]
+struct CachedWorkspaceSemantics {
+    docs: Vec<DocCacheKey>,
+    semantics: Arc<WorkspaceSemantics>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +148,33 @@ fn build_workspace_semantics(ws: &WorkspaceState) -> Result<WorkspaceSemantics> 
         files.push(build_semantic_file(&doc.path, &doc.text));
     }
     Ok(WorkspaceSemantics { files })
+}
+
+fn workspace_semantics(ws: &WorkspaceState) -> Result<Arc<WorkspaceSemantics>> {
+    if ws.docs.is_empty() {
+        return build_workspace_semantics(ws).map(Arc::new);
+    }
+    let mut docs = ws
+        .docs
+        .values()
+        .filter(|doc| is_supported_lsp_path(&doc.path))
+        .map(|doc| DocCacheKey {
+            path: doc.path.clone(),
+            version: doc.version,
+        })
+        .collect::<Vec<_>>();
+    docs.sort();
+    if let Some(cached) = ws.semantics_cache.borrow().as_ref() {
+        if cached.docs == docs {
+            return Ok(Arc::clone(&cached.semantics));
+        }
+    }
+    let semantics = Arc::new(build_workspace_semantics(ws)?);
+    *ws.semantics_cache.borrow_mut() = Some(CachedWorkspaceSemantics {
+        docs,
+        semantics: Arc::clone(&semantics),
+    });
+    Ok(semantics)
 }
 
 fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
@@ -1435,6 +1477,7 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
                         text: text.to_string(),
                     },
                 );
+                *ws.semantics_cache.borrow_mut() = None;
                 publish_diagnostics(ws, uri, writer)?;
             }
         }
@@ -1464,6 +1507,7 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
                 .unwrap_or_default();
             apply_incremental_changes(&mut doc.text, &changes)?;
             doc.version = version;
+            *ws.semantics_cache.borrow_mut() = None;
             publish_diagnostics(ws, uri, writer)?;
         }
         "textDocument/didClose" => {
@@ -1473,6 +1517,7 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
                 .and_then(Value::as_str)
             {
                 ws.docs.remove(uri);
+                *ws.semantics_cache.borrow_mut() = None;
                 publish_empty_diagnostics(uri, writer)?;
             }
         }
@@ -1597,7 +1642,7 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
 
 fn lsp_hover_at_position(ws: &WorkspaceState, params: &Value) -> Result<Value> {
     let (uri, line, character) = request_position(params)?;
-    let semantics = build_workspace_semantics(ws)?;
+    let semantics = workspace_semantics(ws)?;
     let Some((id, range)) = symbol_target_at_position(&semantics, &uri, line, character) else {
         return Ok(Value::Null);
     };
@@ -1622,7 +1667,7 @@ fn lsp_hover_at_position(ws: &WorkspaceState, params: &Value) -> Result<Value> {
 
 fn lsp_definition_at_position(ws: &WorkspaceState, params: &Value) -> Result<Value> {
     let (uri, line, character) = request_position(params)?;
-    let semantics = build_workspace_semantics(ws)?;
+    let semantics = workspace_semantics(ws)?;
     let Some((id, _)) = symbol_target_at_position(&semantics, &uri, line, character) else {
         return Ok(json!([]));
     };
@@ -1645,7 +1690,7 @@ fn lsp_completion(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         .and_then(|p| p.get("line"))
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
-    let semantics = build_workspace_semantics(ws)?;
+    let semantics = workspace_semantics(ws)?;
     let Some(file_idx) = file_index_for_uri(&semantics, uri) else {
         return Ok(json!({"isIncomplete": false, "items": []}));
     };
@@ -1704,7 +1749,7 @@ fn lsp_signature_help(ws: &WorkspaceState, params: &Value) -> Result<Value> {
     let Some((callee, arg_index)) = call_context_at_position(&doc.text, line, character) else {
         return Ok(Value::Null);
     };
-    let semantics = build_workspace_semantics(ws)?;
+    let semantics = workspace_semantics(ws)?;
     for file in &semantics.files {
         for decl in &file.decls {
             if decl.name != callee || decl.kind != "function" {
@@ -1759,7 +1804,7 @@ fn lsp_document_symbol(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         .and_then(|td| td.get("uri"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("documentSymbol missing uri"))?;
-    let semantics = build_workspace_semantics(ws)?;
+    let semantics = workspace_semantics(ws)?;
     let Some(file_idx) = file_index_for_uri(&semantics, uri) else {
         return Ok(json!([]));
     };
@@ -1787,7 +1832,7 @@ fn lsp_workspace_symbol(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let semantics = build_workspace_semantics(ws)?;
+    let semantics = workspace_semantics(ws)?;
     let mut out = Vec::new();
     for file in &semantics.files {
         for decl in &file.decls {
@@ -1871,8 +1916,8 @@ fn lsp_inlay_hints(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         .and_then(|td| td.get("uri"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("inlayHint missing uri"))?;
-    let doc = workspace_doc(ws, uri)?;
-    let semantics = build_workspace_semantics(ws)?;
+    let doc_text = workspace_doc(ws, uri)?.text.clone();
+    let semantics = workspace_semantics(ws)?;
     let file_idx = file_index_for_uri(&semantics, uri);
     let mut function_params = BTreeMap::<String, Vec<String>>::new();
     for file in &semantics.files {
@@ -1893,7 +1938,7 @@ fn lsp_inlay_hints(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         }
     }
     let mut hints = Vec::new();
-    for (callee, arg_index, line, col) in call_arg_positions(&doc.text) {
+    for (callee, arg_index, line, col) in call_arg_positions(&doc_text) {
         let Some(params) = function_params.get(&callee) else {
             continue;
         };
@@ -1929,7 +1974,7 @@ fn lsp_inlay_hints(ws: &WorkspaceState, params: &Value) -> Result<Value> {
 
 fn lsp_references(ws: &WorkspaceState, params: &Value) -> Result<Value> {
     let (uri, line, character) = request_position(params)?;
-    let semantics = build_workspace_semantics(ws)?;
+    let semantics = workspace_semantics(ws)?;
     let Some((id, _)) = symbol_target_at_position(&semantics, &uri, line, character) else {
         return Ok(json!([]));
     };
@@ -1945,7 +1990,7 @@ fn lsp_rename(ws: &WorkspaceState, params: &Value) -> Result<Value> {
     if new_name.trim().is_empty() {
         bail!("rename newName cannot be empty");
     }
-    let semantics = build_workspace_semantics(ws)?;
+    let semantics = workspace_semantics(ws)?;
     let Some((id, _)) = symbol_target_at_position(&semantics, &uri, line, character) else {
         return Ok(Value::Null);
     };

@@ -18,8 +18,8 @@ use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
     check_file, compile_file_with_backend, compile_library_with_backend, emit_ir,
-    lower_fir_cached, parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile,
-    LibraryArtifact, Output,
+    lower_fir_cached_with_metadata, parse_program, parse_program_with_metadata, refresh_lockfile,
+    verify_file, BuildArtifact, BuildProfile, LibraryArtifact, Output,
 };
 
 mod interop;
@@ -528,6 +528,12 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                                 true,
                             ),
                         ),
+                        ("parse_ms", plan.telemetry.parse_ms.to_string()),
+                        ("lower_ms", plan.telemetry.lower_ms.to_string()),
+                        ("verify_ms", plan.telemetry.verify_ms.to_string()),
+                        ("execute_ms", plan.telemetry.execute_ms.to_string()),
+                        ("artifact_write_ms", plan.telemetry.artifact_write_ms.to_string()),
+                        ("total_ms", plan.telemetry.total_ms.to_string()),
                         (
                             "unsafe_docs",
                             unsafe_docs.clone().unwrap_or_else(|| "<none>".to_string()),
@@ -568,6 +574,17 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                             "threadFindings": plan.thread_findings,
                             "runtimeEvents": plan.runtime_event_count,
                             "causalLinks": plan.causal_link_count,
+                        },
+                        "telemetry": {
+                            "parseMs": plan.telemetry.parse_ms,
+                            "lowerMs": plan.telemetry.lower_ms,
+                            "verifyMs": plan.telemetry.verify_ms,
+                            "executeMs": plan.telemetry.execute_ms,
+                            "artifactWriteMs": plan.telemetry.artifact_write_ms,
+                            "totalMs": plan.telemetry.total_ms,
+                            "parseCacheHit": plan.telemetry.parse_cache_hit,
+                            "lowerCacheHit": plan.telemetry.lower_cache_hit,
+                            "inputBytes": plan.telemetry.input_bytes,
                         },
                         "artifacts": plan.artifacts.as_ref().map(|artifacts| {
                             serde_json::json!({
@@ -891,6 +908,15 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 ("scheduler", test_plan.scheduler.clone()),
                 ("executed_tasks", test_plan.executed_tasks.to_string()),
                 ("order", format!("{:?}", test_plan.execution_order)),
+                ("parse_ms", test_plan.telemetry.parse_ms.to_string()),
+                ("lower_ms", test_plan.telemetry.lower_ms.to_string()),
+                ("verify_ms", test_plan.telemetry.verify_ms.to_string()),
+                ("execute_ms", test_plan.telemetry.execute_ms.to_string()),
+                (
+                    "artifact_write_ms",
+                    test_plan.telemetry.artifact_write_ms.to_string(),
+                ),
+                ("total_ms", test_plan.telemetry.total_ms.to_string()),
                 (
                     "policy",
                     policy_summary_text(
@@ -951,6 +977,17 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "selectedTestNames": test_plan.selected_test_names,
                     "deterministicTestNames": test_plan.deterministic_test_names,
                     "coverageRatio": test_plan.coverage_ratio,
+                    "telemetry": {
+                        "parseMs": test_plan.telemetry.parse_ms,
+                        "lowerMs": test_plan.telemetry.lower_ms,
+                        "verifyMs": test_plan.telemetry.verify_ms,
+                        "executeMs": test_plan.telemetry.execute_ms,
+                        "artifactWriteMs": test_plan.telemetry.artifact_write_ms,
+                        "totalMs": test_plan.telemetry.total_ms,
+                        "parseCacheHit": test_plan.telemetry.parse_cache_hit,
+                        "lowerCacheHit": test_plan.telemetry.lower_cache_hit,
+                        "inputBytes": test_plan.telemetry.input_bytes,
+                    },
                     "artifacts": test_plan.artifacts.as_ref().map(|artifacts| {
                         serde_json::json!({
                             "trace": artifacts.trace_path.display().to_string(),
@@ -1187,7 +1224,9 @@ fn infer_success_exit_code(command: &Command, output: &str, format: Format) -> O
             let errors = extract_json_usize(output, "\"errors\":")
                 .or_else(|| extract_text_usize(output, "errors"))
                 .unwrap_or(0);
-            if errors > 0 || output_contains_ok_false(output) || output_contains_status_error(output, format)
+            if errors > 0
+                || output_contains_ok_false(output)
+                || output_contains_status_error(output, format)
             {
                 Some(1)
             } else {
@@ -2179,6 +2218,10 @@ fn render_output(format: Format, output: Output) -> String {
         .iter()
         .filter(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Warning))
         .count();
+    let unsafe_enforcement = match output.validation_tier {
+        crate::pipeline::ValidationTier::Check => "structural",
+        crate::pipeline::ValidationTier::Verify => "strict",
+    };
     match format {
         Format::Text => {
             let mut rendered = render_text_fields(&[
@@ -2189,8 +2232,22 @@ fn render_output(format: Format, output: Output) -> String {
                 ("warnings", warnings.to_string()),
                 (
                     "policy",
-                    policy_summary_text("verify", Some("compiler"), None, true),
+                    policy_summary_text(
+                        output.validation_tier.as_str(),
+                        Some(unsafe_enforcement),
+                        None,
+                        true,
+                    ),
                 ),
+                ("parse_ms", output.telemetry.parse_ms.to_string()),
+                ("lower_ms", output.telemetry.lower_ms.to_string()),
+                ("verify_ms", output.telemetry.verify_ms.to_string()),
+                ("backend_ms", output.telemetry.backend_ms.to_string()),
+                ("contract_ms", output.telemetry.contract_ms.to_string()),
+                ("total_ms", output.telemetry.total_ms.to_string()),
+                ("parse_cache_hit", output.telemetry.parse_cache_hit.to_string()),
+                ("lower_cache_hit", output.telemetry.lower_cache_hit.to_string()),
+                ("input_bytes", output.telemetry.input_bytes.to_string()),
             ]);
             let details = render_diagnostics_text(&output.diagnostic_details);
             if !details.is_empty() {
@@ -2211,11 +2268,22 @@ fn render_output(format: Format, output: Output) -> String {
             "errors": errors,
             "warnings": warnings,
             "policy": {
-                "profile": "verify",
-                "unsafeEnforcement": "strict",
+                "profile": output.validation_tier.as_str(),
+                "unsafeEnforcement": unsafe_enforcement,
                 "memorySafetyMode": "production",
                 "backend": "compiler",
                 "lockfileState": "present-or-created",
+            },
+            "telemetry": {
+                "parseMs": output.telemetry.parse_ms,
+                "lowerMs": output.telemetry.lower_ms,
+                "verifyMs": output.telemetry.verify_ms,
+                "backendMs": output.telemetry.backend_ms,
+                "contractMs": output.telemetry.contract_ms,
+                "totalMs": output.telemetry.total_ms,
+                "parseCacheHit": output.telemetry.parse_cache_hit,
+                "lowerCacheHit": output.telemetry.lower_cache_hit,
+                "inputBytes": output.telemetry.input_bytes,
             },
             "items": output.diagnostic_details,
             "backendIr": output.backend_ir,
@@ -2718,7 +2786,13 @@ fn unsafe_docs_cache_path(docs_path: &Path) -> PathBuf {
 fn unsafe_docs_fingerprint(path: &Path) -> Result<String> {
     let module_set = load_resolved_module_set(path)?;
     let mut hasher = Sha256::new();
-    hasher.update(module_set.resolved.project_root.to_string_lossy().as_bytes());
+    hasher.update(
+        module_set
+            .resolved
+            .project_root
+            .to_string_lossy()
+            .as_bytes(),
+    );
     hasher.update(module_set.resolved.source_path.to_string_lossy().as_bytes());
     if let Some(manifest) = module_set.resolved.manifest.as_ref() {
         hasher.update(manifest.package.name.as_bytes());
@@ -7023,6 +7097,20 @@ struct NonScenarioTestPlan {
     causal_link_count: usize,
     coverage_ratio: f64,
     artifacts: Option<NonScenarioTraceArtifacts>,
+    telemetry: NonScenarioPlanTelemetry,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct NonScenarioPlanTelemetry {
+    parse_ms: u64,
+    lower_ms: u64,
+    verify_ms: u64,
+    execute_ms: u64,
+    artifact_write_ms: u64,
+    total_ms: u64,
+    parse_cache_hit: bool,
+    lower_cache_hit: bool,
+    input_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -7135,8 +7223,11 @@ fn run_non_scenario_test_plan(
     path: &Path,
     request: NonScenarioPlanRequest<'_>,
 ) -> Result<NonScenarioTestPlan> {
+    let started = Instant::now();
     let resolved = resolve_source(path)?;
-    let parsed = parse_program(&resolved.source_path)?;
+    let parse_started = Instant::now();
+    let (parsed, parse_cache_hit) = parse_program_with_metadata(&resolved.source_path)?;
+    let parse_ms = parse_started.elapsed().as_millis() as u64;
     let mut discovered_test_names = Vec::new();
     let mut deterministic_test_names = Vec::new();
     for item in &parsed.module.items {
@@ -7191,7 +7282,9 @@ fn run_non_scenario_test_plan(
         bail!("--record requires --det");
     }
 
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let lower_started = Instant::now();
+    let ((_typed, fir), lower_cache_hit) = lower_fir_cached_with_metadata(&parsed);
+    let lower_ms = lower_started.elapsed().as_millis() as u64;
     let strict_unsafe_contracts = request.strict_verify
         || resolved.manifest.as_ref().is_some_and(|manifest| {
             if request.safe_profile {
@@ -7211,6 +7304,7 @@ fn run_non_scenario_test_plan(
         })
         .unwrap_or_default();
     let production_memory_safety = true;
+    let verify_started = Instant::now();
     let verify_report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
@@ -7221,6 +7315,7 @@ fn run_non_scenario_test_plan(
             allow_unsafe_in,
         },
     );
+    let verify_ms = verify_started.elapsed().as_millis() as u64;
     let mut verify_diagnostics = verify_report.diagnostics;
     for diagnostic in &mut verify_diagnostics {
         if diagnostic.path.is_none() {
@@ -7281,6 +7376,7 @@ fn run_non_scenario_test_plan(
     let mut events = Vec::new();
     let mut runtime_events = Vec::new();
     let mut causal_links = Vec::new();
+    let execute_started = Instant::now();
     if mode == ExecMode::Det {
         let trace_mode = if request.strict_verify || request.rich_artifacts {
             runtime::TraceMode::Full
@@ -7307,6 +7403,7 @@ fn run_non_scenario_test_plan(
         runtime_events = derived_runtime_events;
         causal_links = derived_causal_links;
     }
+    let execute_ms = execute_started.elapsed().as_millis() as u64;
     let async_execution = if mode == ExecMode::Det {
         plan_async_checkpoints(
             &execution_order,
@@ -7344,6 +7441,7 @@ fn run_non_scenario_test_plan(
         &call_sequence,
     );
     thread_findings.extend(unsafe_trace_findings(&fir));
+    let artifacts_started = Instant::now();
     let artifacts = if mode == ExecMode::Det {
         let detail = if strict_unsafe_contracts || request.rich_artifacts {
             ArtifactDetail::Rich
@@ -7377,6 +7475,7 @@ fn run_non_scenario_test_plan(
     } else {
         None
     };
+    let artifact_write_ms = artifacts_started.elapsed().as_millis() as u64;
 
     Ok(NonScenarioTestPlan {
         module: fir.name,
@@ -7409,6 +7508,17 @@ fn run_non_scenario_test_plan(
             (selected_tests as f64) / (discovered_tests as f64)
         },
         artifacts,
+        telemetry: NonScenarioPlanTelemetry {
+            parse_ms,
+            lower_ms,
+            verify_ms,
+            execute_ms,
+            artifact_write_ms,
+            total_ms: started.elapsed().as_millis() as u64,
+            parse_cache_hit,
+            lower_cache_hit,
+            input_bytes: parsed.combined_source.len(),
+        },
     })
 }
 
@@ -10736,7 +10846,12 @@ fn scenario_explore(target: &Path, format: Format) -> Result<String> {
     render_scenario_run_result(format, run, true)
 }
 
-fn scenario_replay_like(command: &str, target: &Path, strict: bool, format: Format) -> Result<String> {
+fn scenario_replay_like(
+    command: &str,
+    target: &Path,
+    strict: bool,
+    format: Format,
+) -> Result<String> {
     let config = scenario_config()?;
     let replay_target = resolve_replay_target(target)?;
     match command {
@@ -13295,7 +13410,8 @@ mod tests {
             .expect("cache mtime");
 
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let second = generate_c_headers(&root, None).expect("cached header generation should succeed");
+        let second =
+            generate_c_headers(&root, None).expect("cached header generation should succeed");
         assert_eq!(second.exports, 1);
         assert_eq!(
             std::fs::metadata(&second.path)
@@ -13342,7 +13458,8 @@ mod tests {
         std::fs::create_dir_all(docs.parent().expect("docs parent")).expect("docs dir");
         std::fs::write(&docs, "# unsafe docs\n").expect("write docs");
         std::fs::write(docs.with_extension("json"), b"{}").expect("write docs json");
-        std::fs::write(docs.with_extension("html"), b"<p>unsafe docs</p>").expect("write docs html");
+        std::fs::write(docs.with_extension("html"), b"<p>unsafe docs</p>")
+            .expect("write docs html");
         write_unsafe_docs_cache_stamp(&root, &docs).expect("write cache stamp");
         let stamp = unsafe_docs_cache_path(&docs);
         assert!(stamp.exists(), "unsafe docs stamp should be written");
