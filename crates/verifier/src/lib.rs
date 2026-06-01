@@ -1,5 +1,5 @@
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
-use fir::{count_module_owned_return_transfers, FirModule, TypedFunction};
+use fir::{FirModule, VerifierFunction};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Default)]
@@ -156,7 +156,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     let repr_c_names = collect_repr_c_names(module);
-    for function in &module.typed_functions {
+    for function in module.verifier_functions() {
         if extern_c_import_requires_unsafe(function) {
             report.diagnostics.push(Diagnostic::new(
                 Severity::Error,
@@ -518,7 +518,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             Some("continue preferring owned values when possible and add regression coverage for borrowed control-flow paths".to_string()),
         ));
     }
-    let returned_owned_sites = count_module_owned_return_transfers(&module.typed_functions);
+    let returned_owned_sites = module.returned_owned_sites();
     if module.alloc_sites > module.free_sites + returned_owned_sites {
         let severity = if memory_safety_enforced {
             Severity::Error
@@ -810,7 +810,7 @@ fn module_needs_explicit_capabilities(module: &FirModule) -> bool {
         || module.repr_c_layout_items > 0
 }
 
-fn extern_c_import_requires_unsafe(function: &TypedFunction) -> bool {
+fn extern_c_import_requires_unsafe(function: VerifierFunction<'_>) -> bool {
     is_extern_c_import(function)
         && !function.is_unsafe
         && (function.return_type.is_pointer_like()
@@ -820,11 +820,11 @@ fn extern_c_import_requires_unsafe(function: &TypedFunction) -> bool {
                 .any(|param| param.ty.is_pointer_like()))
 }
 
-fn extern_c_import_pointer_param_missing_contract(function: &TypedFunction) -> Option<&str> {
+fn extern_c_import_pointer_param_missing_contract(function: VerifierFunction<'_>) -> Option<&str> {
     if !is_extern_c_import(function) {
         return None;
     }
-    for param in &function.params {
+    for param in function.params {
         if !matches!(param.ty, ast::Type::Ptr { .. }) {
             continue;
         }
@@ -840,7 +840,9 @@ fn extern_c_import_pointer_param_missing_contract(function: &TypedFunction) -> O
     None
 }
 
-fn callback_param_missing_adjacent_context_anchor(function: &TypedFunction) -> Option<&str> {
+fn callback_param_missing_adjacent_context_anchor(
+    function: VerifierFunction<'_>,
+) -> Option<&str> {
     if !is_extern_c_import(function) {
         return None;
     }
@@ -896,7 +898,7 @@ fn collect_repr_c_names(module: &FirModule) -> BTreeSet<String> {
 }
 
 fn extern_c_import_unstable_ffi_type(
-    function: &TypedFunction,
+    function: VerifierFunction<'_>,
     repr_c_names: &BTreeSet<String>,
 ) -> Option<String> {
     if !is_extern_c_import(function) {
@@ -908,7 +910,7 @@ fn extern_c_import_unstable_ffi_type(
             function.name, function.return_type
         ));
     }
-    for param in &function.params {
+    for param in function.params {
         if !ffi_stable_type(&param.ty, repr_c_names) {
             return Some(format!(
                 "extern C import `{}` parameter `{}` uses unstable type `{}`",
@@ -919,15 +921,15 @@ fn extern_c_import_unstable_ffi_type(
     None
 }
 
-fn is_extern_c_import(function: &TypedFunction) -> bool {
-    function.is_extern && function.abi.as_deref() == Some("c") && function.body.is_empty()
+fn is_extern_c_import(function: VerifierFunction<'_>) -> bool {
+    function.is_extern && function.abi.as_deref() == Some("c") && !function.has_body
 }
 
-fn is_rpc_import(function: &TypedFunction) -> bool {
-    function.is_extern && function.abi.as_deref() == Some("rpc") && function.body.is_empty()
+fn is_rpc_import(function: VerifierFunction<'_>) -> bool {
+    function.is_extern && function.abi.as_deref() == Some("rpc") && !function.has_body
 }
 
-fn rpc_param_payload_violation(function: &TypedFunction) -> Option<(&str, &ast::Type)> {
+fn rpc_param_payload_violation(function: VerifierFunction<'_>) -> Option<(&str, &ast::Type)> {
     if !is_rpc_import(function) {
         return None;
     }
@@ -938,7 +940,7 @@ fn rpc_param_payload_violation(function: &TypedFunction) -> Option<(&str, &ast::
         .map(|param| (param.name.as_str(), &param.ty))
 }
 
-fn rpc_return_payload_violation(function: &TypedFunction) -> Option<&ast::Type> {
+fn rpc_return_payload_violation(function: VerifierFunction<'_>) -> Option<&ast::Type> {
     if !is_rpc_import(function) {
         return None;
     }
@@ -976,7 +978,7 @@ fn pointer_base_name(name: &str) -> String {
     name.to_string()
 }
 
-fn has_len_pair(function: &TypedFunction, pointer_param_name: &str) -> bool {
+fn has_len_pair(function: VerifierFunction<'_>, pointer_param_name: &str) -> bool {
     let base = pointer_base_name(pointer_param_name);
     let expected = format!("{base}_len");
     function.params.iter().any(|candidate| {

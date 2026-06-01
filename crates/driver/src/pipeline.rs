@@ -5615,16 +5615,20 @@ fn module_stamp(path: &Path) -> Option<ModuleStamp> {
 
 fn cached_parsed_program(canonical: &Path) -> Option<Arc<ParsedProgram>> {
     let cache = PARSED_PROGRAM_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
-    let guard = cache.read().ok()?;
-    let entry = guard.get(canonical)?;
-    if entry.stamps.iter().all(|stamp| {
-        module_stamp(&stamp.path).is_some_and(|current| {
-            current.bytes == stamp.bytes && current.modified_ns == stamp.modified_ns
-        })
-    }) {
+    let entry = {
+        let guard = cache.read().ok()?;
+        guard.get(canonical).cloned()?
+    };
+    if entry.stamps.par_iter().all(module_stamp_matches) {
         return Some(Arc::clone(&entry.parsed));
     }
     None
+}
+
+fn module_stamp_matches(stamp: &ModuleStamp) -> bool {
+    module_stamp(&stamp.path).is_some_and(|current| {
+        current.bytes == stamp.bytes && current.modified_ns == stamp.modified_ns
+    })
 }
 
 fn store_parsed_program_cache(canonical: &Path, parsed: Arc<ParsedProgram>) {
@@ -12517,6 +12521,67 @@ fn hex_encode(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
+fn native_artifact_cache_marker(
+    build_dir: &Path,
+    artifact_stem: &str,
+    kind: &str,
+    backend: &str,
+) -> PathBuf {
+    build_dir.join(format!("{artifact_stem}.{kind}.{backend}.cachekey"))
+}
+
+fn read_native_artifact_cache_key(marker: &Path) -> Option<String> {
+    std::fs::read_to_string(marker)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn write_native_artifact_cache_key(marker: &Path, key: &str) -> Result<()> {
+    std::fs::write(marker, key)
+        .with_context(|| format!("failed writing native artifact cache marker: {}", marker.display()))
+}
+
+fn native_artifact_cache_hit(marker: &Path, key: &str, outputs: &[&Path]) -> bool {
+    outputs.iter().all(|output| output.exists())
+        && read_native_artifact_cache_key(marker).as_deref() == Some(key)
+}
+
+fn native_artifact_cache_key(
+    kind: &str,
+    backend: &str,
+    artifact_stem: &str,
+    profile: BuildProfile,
+    fir: &fir::FirModule,
+    manifest: Option<&manifest::Manifest>,
+    runtime_shim_path: &Path,
+    extra: &[&[u8]],
+) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(kind.as_bytes());
+    hasher.update(backend.as_bytes());
+    hasher.update(artifact_stem.as_bytes());
+    hasher.update(format!("{profile:?}").as_bytes());
+    hasher.update(format!("{fir:?}").as_bytes());
+    let manifest_bytes = match manifest {
+        Some(manifest) => serde_json::to_vec(manifest)
+            .map_err(|error| anyhow!("failed serializing manifest for native cache key: {error}"))?,
+        None => Vec::new(),
+    };
+    hasher.update(&manifest_bytes);
+    let runtime_shim = std::fs::read(runtime_shim_path).with_context(|| {
+        format!(
+            "failed reading runtime shim for native cache key: {}",
+            runtime_shim_path.display()
+        )
+    })?;
+    hasher.update(&runtime_shim);
+    for bytes in extra {
+        hasher.update(bytes);
+    }
+    Ok(hex_encode(hasher.finalize().as_slice()))
+}
+
 fn emit_native_artifact(
     fir: &fir::FirModule,
     project_root: &Path,
@@ -12587,6 +12652,20 @@ fn emit_native_libraries_llvm(
     )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks)?;
+    let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "ffi", "llvm");
+    let cache_key = native_artifact_cache_key(
+        "ffi",
+        "llvm",
+        artifact_stem,
+        profile,
+        fir,
+        manifest,
+        &runtime_shim_path,
+        &[llvm_ir.as_bytes()],
+    )?;
+    if native_artifact_cache_hit(&cache_marker, &cache_key, &[&static_path, &shared_path]) {
+        return Ok((Some(static_path), Some(shared_path)));
+    }
     std::fs::write(&ll_path, llvm_ir)
         .with_context(|| format!("failed writing llvm ir: {}", ll_path.display()))?;
 
@@ -12669,6 +12748,7 @@ fn emit_native_libraries_llvm(
         manifest,
         allow_undefined,
     )?;
+    write_native_artifact_cache_key(&cache_marker, &cache_key)?;
     Ok((Some(static_path), Some(shared_path)))
 }
 
@@ -12881,6 +12961,20 @@ fn emit_native_libraries_cranelift(
         &spawn_task_symbols,
         &async_exports,
     )?;
+    let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "ffi", "cranelift");
+    let cache_key = native_artifact_cache_key(
+        "ffi",
+        "cranelift",
+        artifact_stem,
+        profile,
+        fir,
+        manifest,
+        &runtime_shim_path,
+        &[],
+    )?;
+    if native_artifact_cache_hit(&cache_marker, &cache_key, &[&static_path, &shared_path]) {
+        return Ok((Some(static_path), Some(shared_path)));
+    }
     compile_runtime_shim_object(&runtime_shim_path, &shim_obj_path, profile, manifest)?;
     create_static_archive(
         &static_path,
@@ -12893,6 +12987,7 @@ fn emit_native_libraries_cranelift(
         manifest,
         allow_undefined,
     )?;
+    write_native_artifact_cache_key(&cache_marker, &cache_key)?;
     Ok((Some(static_path), Some(shared_path)))
 }
 
@@ -13039,6 +13134,20 @@ fn emit_native_artifact_llvm(
     )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks)?;
+    let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "bin", "llvm");
+    let cache_key = native_artifact_cache_key(
+        "bin",
+        "llvm",
+        artifact_stem,
+        profile,
+        fir,
+        manifest,
+        &runtime_shim_path,
+        &[llvm_ir.as_bytes()],
+    )?;
+    if native_artifact_cache_hit(&cache_marker, &cache_key, &[&bin_path]) {
+        return Ok(bin_path);
+    }
     std::fs::write(&ll_path, llvm_ir)
         .with_context(|| format!("failed writing llvm ir: {}", ll_path.display()))?;
 
@@ -13061,7 +13170,10 @@ fn emit_native_artifact_llvm(
         apply_pgo_flags(&mut cmd)?;
 
         match cmd.output() {
-            Ok(output) if output.status.success() => return Ok(bin_path),
+            Ok(output) if output.status.success() => {
+                write_native_artifact_cache_key(&cache_marker, &cache_key)?;
+                return Ok(bin_path);
+            }
             Ok(output) => {
                 last_error = Some(format!(
                     "{} failed: {}",
@@ -13167,6 +13279,20 @@ fn emit_native_artifact_cranelift(
         &spawn_task_symbols,
         &async_exports,
     )?;
+    let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "bin", "cranelift");
+    let cache_key = native_artifact_cache_key(
+        "bin",
+        "cranelift",
+        artifact_stem,
+        profile,
+        fir,
+        manifest,
+        &runtime_shim_path,
+        &[],
+    )?;
+    if native_artifact_cache_hit(&cache_marker, &cache_key, &[&bin_path]) {
+        return Ok(bin_path);
+    }
 
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
@@ -13304,7 +13430,10 @@ fn emit_native_artifact_cranelift(
         apply_pgo_flags(&mut cmd)?;
 
         match cmd.output() {
-            Ok(output) if output.status.success() => return Ok(bin_path),
+            Ok(output) if output.status.success() => {
+                write_native_artifact_cache_key(&cache_marker, &cache_key)?;
+                return Ok(bin_path);
+            }
             Ok(output) => {
                 last_error = Some(format!(
                     "{} failed: {}",

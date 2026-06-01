@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
+use std::ops::{Deref, DerefMut};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -762,6 +764,39 @@ pub(crate) fn run_scenario_replay_inner<'a>(
 }
 
 #[derive(Debug, Clone)]
+struct SharedState<T>(Arc<T>);
+
+impl<T> SharedState<T> {
+    fn new(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+
+    fn into_owned(self) -> T
+    where
+        T: Clone,
+    {
+        match Arc::try_unwrap(self.0) {
+            Ok(value) => value,
+            Err(value) => (*value).clone(),
+        }
+    }
+}
+
+impl<T> Deref for SharedState<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl<T: Clone> DerefMut for SharedState<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ExecCtx<'a> {
     det: bool,
     proc_backend: ProcBackend,
@@ -771,18 +806,18 @@ struct ExecCtx<'a> {
     host_root: PathBuf,
     rng: ChaCha20Rng,
     clock: crate::VirtualClock,
-    kv: BTreeMap<String, String>,
-    fs: BTreeMap<String, String>,
-    fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
-    replay_host_fs: BTreeMap<String, Vec<u8>>,
-    replay_host_fs_snapshots: BTreeMap<String, BTreeMap<String, Option<Vec<u8>>>>,
-    host_fs_touched: BTreeSet<PathBuf>,
-    host_fs_snapshots: BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>,
-    http_rules: Vec<HttpRule>,
-    proc_rules: Vec<ProcRule>,
-    net_queue: VecDeque<NetMessage>,
-    net_inbox: BTreeMap<String, Vec<NetMessage>>,
-    net_partitions: BTreeSet<(String, String)>,
+    kv: SharedState<BTreeMap<String, String>>,
+    fs: SharedState<BTreeMap<String, String>>,
+    fs_snapshots: SharedState<BTreeMap<String, BTreeMap<String, String>>>,
+    replay_host_fs: SharedState<BTreeMap<String, Vec<u8>>>,
+    replay_host_fs_snapshots: SharedState<BTreeMap<String, BTreeMap<String, Option<Vec<u8>>>>>,
+    host_fs_touched: SharedState<BTreeSet<PathBuf>>,
+    host_fs_snapshots: SharedState<BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>>,
+    http_rules: SharedState<Vec<HttpRule>>,
+    proc_rules: SharedState<Vec<ProcRule>>,
+    net_queue: SharedState<VecDeque<NetMessage>>,
+    net_inbox: SharedState<BTreeMap<String, Vec<NetMessage>>>,
+    net_partitions: SharedState<BTreeSet<(String, String)>>,
     net_next_id: u64,
     net_drop_rate: f64,
     net_reorder: bool,
@@ -818,18 +853,18 @@ impl<'a> ExecCtx<'a> {
             host_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             rng,
             clock: crate::VirtualClock::default(),
-            kv: BTreeMap::new(),
-            fs: BTreeMap::new(),
-            fs_snapshots: BTreeMap::new(),
-            replay_host_fs: BTreeMap::new(),
-            replay_host_fs_snapshots: BTreeMap::new(),
-            host_fs_touched: BTreeSet::new(),
-            host_fs_snapshots: BTreeMap::new(),
-            http_rules: Vec::new(),
-            proc_rules: Vec::new(),
-            net_queue: VecDeque::new(),
-            net_inbox: BTreeMap::new(),
-            net_partitions: BTreeSet::new(),
+            kv: SharedState::new(BTreeMap::new()),
+            fs: SharedState::new(BTreeMap::new()),
+            fs_snapshots: SharedState::new(BTreeMap::new()),
+            replay_host_fs: SharedState::new(BTreeMap::new()),
+            replay_host_fs_snapshots: SharedState::new(BTreeMap::new()),
+            host_fs_touched: SharedState::new(BTreeSet::new()),
+            host_fs_snapshots: SharedState::new(BTreeMap::new()),
+            http_rules: SharedState::new(Vec::new()),
+            proc_rules: SharedState::new(Vec::new()),
+            net_queue: SharedState::new(VecDeque::new()),
+            net_inbox: SharedState::new(BTreeMap::new()),
+            net_partitions: SharedState::new(BTreeSet::new()),
             net_next_id: 1,
             net_drop_rate: 0.0,
             net_reorder: false,
@@ -1123,7 +1158,7 @@ impl<'a> ExecCtx<'a> {
 
     fn host_fs_snapshot(&mut self, name: &str) -> Result<(), Finding> {
         let mut snap = BTreeMap::new();
-        for path in &self.host_fs_touched {
+        for path in self.host_fs_touched.iter() {
             let value = if path.exists() {
                 Some(std::fs::read(path).map_err(|e| Finding {
                     kind: FindingKind::Assertion,
@@ -1194,7 +1229,7 @@ impl<'a> ExecCtx<'a> {
                 })?;
             }
         }
-        self.host_fs_touched = snapshot.keys().cloned().collect();
+        self.host_fs_touched = SharedState::new(snapshot.keys().cloned().collect());
         Ok(())
     }
 
@@ -1627,7 +1662,8 @@ impl<'a> ExecCtx<'a> {
                         entries,
                     });
                 } else {
-                    self.fs_snapshots.insert(name.clone(), self.fs.clone());
+                    self.fs_snapshots
+                        .insert(name.clone(), self.fs.clone().into_owned());
                 }
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
@@ -1680,7 +1716,7 @@ impl<'a> ExecCtx<'a> {
                             location: None,
                         });
                     };
-                    self.fs = snapshot;
+                    self.fs = SharedState::new(snapshot);
                 }
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
@@ -2977,18 +3013,18 @@ impl<'a> ExecCtx<'a> {
 struct ExecCheckpoint {
     rng: ChaCha20Rng,
     clock: crate::VirtualClock,
-    kv: BTreeMap<String, String>,
-    fs: BTreeMap<String, String>,
-    fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
-    replay_host_fs: BTreeMap<String, Vec<u8>>,
-    replay_host_fs_snapshots: BTreeMap<String, BTreeMap<String, Option<Vec<u8>>>>,
-    host_fs_touched: BTreeSet<PathBuf>,
-    host_fs_snapshots: BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>,
-    http_rules: Vec<HttpRule>,
-    proc_rules: Vec<ProcRule>,
-    net_queue: VecDeque<NetMessage>,
-    net_inbox: BTreeMap<String, Vec<NetMessage>>,
-    net_partitions: BTreeSet<(String, String)>,
+    kv: SharedState<BTreeMap<String, String>>,
+    fs: SharedState<BTreeMap<String, String>>,
+    fs_snapshots: SharedState<BTreeMap<String, BTreeMap<String, String>>>,
+    replay_host_fs: SharedState<BTreeMap<String, Vec<u8>>>,
+    replay_host_fs_snapshots: SharedState<BTreeMap<String, BTreeMap<String, Option<Vec<u8>>>>>,
+    host_fs_touched: SharedState<BTreeSet<PathBuf>>,
+    host_fs_snapshots: SharedState<BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>>,
+    http_rules: SharedState<Vec<HttpRule>>,
+    proc_rules: SharedState<Vec<ProcRule>>,
+    net_queue: SharedState<VecDeque<NetMessage>>,
+    net_inbox: SharedState<BTreeMap<String, Vec<NetMessage>>>,
+    net_partitions: SharedState<BTreeSet<(String, String)>>,
     net_next_id: u64,
     net_drop_rate: f64,
     net_reorder: bool,

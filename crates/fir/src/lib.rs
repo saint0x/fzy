@@ -124,6 +124,37 @@ pub struct FirModule {
     pub linear_type_violations: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct VerifierFunction<'a> {
+    pub name: &'a str,
+    pub params: &'a [ast::Param],
+    pub return_type: &'a ast::Type,
+    pub is_async: bool,
+    pub is_unsafe: bool,
+    pub is_extern: bool,
+    pub abi: &'a Option<String>,
+    pub has_body: bool,
+}
+
+impl FirModule {
+    pub fn verifier_functions(&self) -> impl Iterator<Item = VerifierFunction<'_>> {
+        self.typed_functions.iter().map(|function| VerifierFunction {
+            name: function.name.as_str(),
+            params: function.params.as_slice(),
+            return_type: &function.return_type,
+            is_async: function.is_async,
+            is_unsafe: function.is_unsafe,
+            is_extern: function.is_extern,
+            abi: &function.abi,
+            has_body: !function.body.is_empty(),
+        })
+    }
+
+    pub fn returned_owned_sites(&self) -> usize {
+        count_module_owned_return_transfers(&self.typed_functions)
+    }
+}
+
 pub fn build(typed: TypedModule) -> FirModule {
     build_owned(typed)
 }
