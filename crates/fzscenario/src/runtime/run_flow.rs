@@ -16,8 +16,8 @@ use crate::finalize::{
 use crate::{
     Config, ExitStatus, Finding, FindingKind, FozzyError, FozzyResult, HeapBudgetPolicy,
     MemoryRunReport, RunMode, ScenarioPath, ScenarioV1Steps, TraceFile, TracePath,
-    heap_budget_findings_from_trace, wall_time_iso_utc, write_memory_artifacts,
-    write_memory_delta_artifact, write_profile_artifacts_from_trace,
+    heap_budget_findings_from_trace, trace_replay_contract, wall_time_iso_utc,
+    write_memory_artifacts, write_memory_delta_artifact, write_profile_artifacts_from_trace,
 };
 
 #[derive(Debug, Clone)]
@@ -91,12 +91,14 @@ pub fn run_scenario(
         findings,
     );
     let mut trace = if should_record || emit_profile || heap_policy_enabled(config) {
-        let mut trace = TraceFile::new(
+        let replay_contract = trace_replay_contract(seed, &decisions.decisions, &events);
+        let mut trace = TraceFile::new_with_contract(
             RunMode::Run,
             Some(scenario_path_string),
             Some(scenario_embedded),
             decisions.decisions,
             events.clone(),
+            replay_contract,
             report_summary.clone(),
         );
         trace.memory = memory.as_ref().map(|m| m.to_trace());
@@ -277,12 +279,14 @@ pub fn replay_loaded_trace(
     let emit_profile =
         crate::should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture);
     let mut profile_trace = if emit_profile || heap_policy_enabled(config) {
-        let mut profile_trace = TraceFile::new(
+        let replay_contract = trace_replay_contract(seed, &decisions.decisions, &events);
+        let mut profile_trace = TraceFile::new_with_contract(
             RunMode::Replay,
             Some(scenario_path.clone()),
             Some(scenario.clone()),
             decisions.decisions,
             events.clone(),
+            replay_contract,
             summary.clone(),
         );
         profile_trace.memory = memory.as_ref().map(|m| m.to_trace());
@@ -452,7 +456,8 @@ fn shrink_trace_inner(
                 i += chunk;
                 continue;
             };
-            if !crate::shrink_status_matches(target_status, result.run.status) || !result.objective_ok
+            if !crate::shrink_status_matches(target_status, result.run.status)
+                || !result.objective_ok
             {
                 i += chunk;
                 continue;
@@ -501,12 +506,16 @@ fn shrink_trace_inner(
         best_run.findings.clone(),
     );
 
-    let mut trace_out = TraceFile::new(
+    let decisions = best_run.decisions.decisions.clone();
+    let events = best_run.events.clone();
+    let replay_contract = trace_replay_contract(seed, &decisions, &events);
+    let mut trace_out = TraceFile::new_with_contract(
         RunMode::Run,
         None,
         Some(out_scenario),
-        best_run.decisions.decisions.clone(),
-        best_run.events.clone(),
+        decisions,
+        events,
+        replay_contract,
         summary.clone(),
     );
     trace_out.memory = best_run.memory.as_ref().map(|m| m.to_trace());

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use crate::{
     Config, ExitStatus, Finding, FindingKind, MemoryOptions, MemoryState, ProfileCaptureLevel,
     RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
-    TraceEvent, TraceFile, should_emit_profile_artifacts, wall_time_iso_utc,
+    TraceEvent, TraceFile, should_emit_profile_artifacts, trace_replay_contract, wall_time_iso_utc,
     write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
 };
 
@@ -282,10 +282,12 @@ pub fn fuzz(
                 memory: memory_state.as_ref().map(|m| m.clone().finalize().summary),
                 findings: exec.findings.clone(),
             };
-            let mut budget_trace = TraceFile::new_fuzz(
+            let replay_contract = trace_replay_contract(seed, &[], &exec.events);
+            let mut budget_trace = TraceFile::new_fuzz_with_contract(
                 target_string(target),
                 &input,
                 exec.events.clone(),
+                replay_contract.clone(),
                 summary.clone(),
             );
             budget_trace.memory = memory_state
@@ -318,10 +320,11 @@ pub fn fuzz(
                 &artifacts_dir,
                 crash_count,
             );
-            let trace = TraceFile::new_fuzz(
+            let trace = TraceFile::new_fuzz_with_contract(
                 target_string(target),
                 &input,
                 exec.events.clone(),
+                replay_contract,
                 summary.clone(),
             );
             let mut trace = trace;
@@ -396,10 +399,12 @@ pub fn fuzz(
     let mut profile_summary = summary.clone();
     profile_summary.status = profile_status;
     profile_summary.findings = profile_findings;
-    let mut profile_trace = TraceFile::new_fuzz(
+    let profile_replay_contract = trace_replay_contract(seed, &[], &profile_events);
+    let mut profile_trace = TraceFile::new_fuzz_with_contract(
         target_string(target),
         &profile_input,
         profile_events,
+        profile_replay_contract,
         profile_summary,
     );
     profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
@@ -459,7 +464,14 @@ pub fn fuzz(
         trace_summary.status = exec_status;
         trace_summary.findings = exec_findings;
         trace_summary.identity.trace_path = Some(record_path.to_string_lossy().to_string());
-        let trace = TraceFile::new_fuzz(target_string(target), &input, events, trace_summary);
+        let replay_contract = trace_replay_contract(seed, &[], &events);
+        let trace = TraceFile::new_fuzz_with_contract(
+            target_string(target),
+            &input,
+            events,
+            replay_contract,
+            trace_summary,
+        );
         let mut trace = trace;
         trace.memory = memory_report.as_ref().map(|m| m.to_trace());
         let written = write_trace_with_policy(&trace, record_path, opt.record_collision)?;
@@ -513,10 +525,12 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         memory: trace.memory.as_ref().map(|m| m.summary.clone()),
         findings,
     };
-    let mut profile_trace = TraceFile::new_fuzz(
+    let replay_contract = trace_replay_contract(trace.summary.identity.seed, &[], &exec.events);
+    let mut profile_trace = TraceFile::new_fuzz_with_contract(
         fuzz.target.clone(),
         &input,
         exec.events.clone(),
+        replay_contract,
         summary.clone(),
     );
     profile_trace.memory = trace.memory.clone();
@@ -590,10 +604,12 @@ pub fn shrink_fuzz_trace(
         findings: exec.findings.clone(),
     };
 
-    let trace_out = TraceFile::new_fuzz(
+    let replay_contract = trace_replay_contract(trace.summary.identity.seed, &[], &exec.events);
+    let trace_out = TraceFile::new_fuzz_with_contract(
         target_string(&target),
         &minimized,
         exec.events,
+        replay_contract,
         summary.clone(),
     );
     let mut trace_out = trace_out;

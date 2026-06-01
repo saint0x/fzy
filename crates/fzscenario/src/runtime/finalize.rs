@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::engine::ScenarioRun;
 use crate::{
     ExitStatus, FozzyResult, MemorySummary, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
-    RunSummary, TestCounts, TraceFile, wall_time_iso_utc,
+    RunSummary, TestCounts, TraceFile, trace_replay_contract, wall_time_iso_utc,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -67,12 +67,16 @@ pub(crate) fn build_single_scenario_trace(
         run.memory.as_ref().map(|m| m.summary.clone()),
         run.findings.clone(),
     );
-    let mut trace = TraceFile::new(
+    let decisions = run.decisions.decisions.clone();
+    let events = run.events.clone();
+    let replay_contract = trace_replay_contract(seed, &decisions, &events);
+    let mut trace = TraceFile::new_with_contract(
         mode,
         Some(run.scenario_path.to_string_lossy().to_string()),
         Some(run.scenario_embedded.clone()),
-        run.decisions.decisions.clone(),
-        run.events.clone(),
+        decisions,
+        events,
+        replay_contract,
         summary,
     );
     trace.memory = run.memory.as_ref().map(|m| m.to_trace());
@@ -113,12 +117,16 @@ pub(crate) fn build_shrink_preview_trace(
         run.memory.as_ref().map(|m| m.summary.clone()),
         run.findings.clone(),
     );
-    let mut out = TraceFile::new(
+    let decisions = run.decisions.decisions.clone();
+    let events = run.events.clone();
+    let replay_contract = trace_replay_contract(seed, &decisions, &events);
+    let mut out = TraceFile::new_with_contract(
         RunMode::Run,
         None,
         Some(scenario.clone()),
-        run.decisions.decisions.clone(),
-        run.events.clone(),
+        decisions,
+        events,
+        replay_contract,
         summary,
     );
     out.memory = run.memory.as_ref().map(|m| m.to_trace());

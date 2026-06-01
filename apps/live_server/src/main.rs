@@ -1,25 +1,26 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use core::{Capability, CapabilitySet};
 use runtime::service::{RuntimeProfile, ServiceRuntime, ShutdownSignal};
 use serde::{Deserialize, Serialize};
-use stdlib::durability::{acquire_file_lock, fsync_file, write_atomic};
-use stdlib::http::{parse_http_request, HttpResponse, HttpServerLimits};
+use stdlib::durability::{acquire_file_lock, fsync_file};
+use stdlib::http::{HttpResponse, HttpServerLimits, parse_http_request};
 use stdlib::observability::{
     LogField, LogLevel, Logger, Metrics, RedactionPolicy, RuntimeStats as ObsRuntimeStats, Tracer,
 };
 use stdlib::process::EnvConfig;
-use stdlib::security::{audit_privileged_operation, PrivilegedOperation, ServerHardeningDefaults};
+use stdlib::security::{PrivilegedOperation, ServerHardeningDefaults, audit_privileged_operation};
 
 #[derive(Debug, Clone)]
 struct AppConfig {
@@ -95,7 +96,7 @@ struct SharedState {
     shutting_down: AtomicBool,
     pending_connections: AtomicUsize,
     dirty_store: AtomicBool,
-    started_at: Instant,
+    next_request_id: AtomicUsize,
     flush_tx: SyncSender<FlushCommand>,
 }
 
@@ -119,7 +120,7 @@ impl SharedState {
             shutting_down: AtomicBool::new(false),
             pending_connections: AtomicUsize::new(0),
             dirty_store: AtomicBool::new(false),
-            started_at: Instant::now(),
+            next_request_id: AtomicUsize::new(1),
             flush_tx,
         }
     }
@@ -166,17 +167,31 @@ impl SharedState {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create store parent dir: {}", parent.display()))?;
 
-        let snapshot = self
-            .store
-            .read()
-            .map_err(|_| anyhow!("store lock poisoned"))?
-            .clone();
-        let bytes = serde_json::to_vec(&snapshot).context("failed to serialize store")?;
-
         let _lock = acquire_file_lock(&self.cfg.store_path)
             .map_err(|err| anyhow!("failed to lock store: {:?}", err))?;
-        write_atomic(&self.cfg.store_path, &bytes)
-            .map_err(|err| anyhow!("failed to write store atomically: {:?}", err))?;
+        let tmp_path = self
+            .cfg
+            .store_path
+            .with_extension(format!("{}.tmp", std::process::id()));
+        {
+            let store = self
+                .store
+                .read()
+                .map_err(|_| anyhow!("store lock poisoned"))?;
+            let mut file = File::create(&tmp_path).with_context(|| {
+                format!("failed to create temp store file: {}", tmp_path.display())
+            })?;
+            serde_json::to_writer(&mut file, &*store).context("failed to serialize store")?;
+            file.flush().context("failed to flush temp store file")?;
+            file.sync_all().context("failed to sync temp store file")?;
+        }
+        fs::rename(&tmp_path, &self.cfg.store_path).with_context(|| {
+            format!(
+                "failed to atomically replace store {} from {}",
+                self.cfg.store_path.display(),
+                tmp_path.display()
+            )
+        })?;
         fsync_file(&self.cfg.store_path)
             .map_err(|err| anyhow!("failed to fsync store: {:?}", err))?;
 
@@ -287,15 +302,15 @@ fn run_server(cfg: AppConfig) -> Result<()> {
         None,
     );
 
-    let (work_tx, work_rx) = mpsc::sync_channel::<TcpStream>(cfg.queue_capacity);
-    let shared_rx = Arc::new(Mutex::new(work_rx));
     let mut workers = Vec::with_capacity(cfg.worker_count);
+    let mut worker_txs = Vec::with_capacity(cfg.worker_count);
     for idx in 0..cfg.worker_count {
-        let rx = Arc::clone(&shared_rx);
+        let (worker_tx, worker_rx) = mpsc::sync_channel::<TcpStream>(cfg.queue_capacity);
+        worker_txs.push(worker_tx);
         let worker_state = Arc::clone(&state);
         let worker_limits = limits.clone();
         workers.push(thread::spawn(move || {
-            worker_loop(idx, worker_state, rx, worker_limits)
+            worker_loop(idx, worker_state, worker_rx, worker_limits)
         }));
     }
 
@@ -312,9 +327,12 @@ fn run_server(cfg: AppConfig) -> Result<()> {
     })
     .context("failed to register signal handler")?;
 
+    let mut dispatch_cursor = 0usize;
+    let mut idle_backoff_ms = 0u64;
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((mut stream, _addr)) => {
+                idle_backoff_ms = 0;
                 if state.shutting_down.load(Ordering::SeqCst) {
                     let _ =
                         write_response(&mut stream, 503, br#"{"error":"shutting down"}"#, false);
@@ -323,27 +341,43 @@ fn run_server(cfg: AppConfig) -> Result<()> {
                 }
 
                 state.pending_connections.fetch_add(1, Ordering::SeqCst);
-                match work_tx.try_send(stream) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(mut stream)) => {
-                        state.pending_connections.fetch_sub(1, Ordering::SeqCst);
-                        state.inc("http.queue.full", 1);
-                        let _ = write_response(
-                            &mut stream,
-                            503,
-                            br#"{"error":"server overloaded"}"#,
-                            false,
-                        );
-                        let _ = stream.shutdown(Shutdown::Both);
+                let worker_count = worker_txs.len();
+                let mut maybe_stream = Some(stream);
+                let mut dispatched = false;
+                for offset in 0..worker_count {
+                    let worker_idx = (dispatch_cursor + offset) % worker_count;
+                    let stream = maybe_stream.take().expect("stream available for dispatch");
+                    match worker_txs[worker_idx].try_send(stream) {
+                        Ok(()) => {
+                            dispatch_cursor = (worker_idx + 1) % worker_count;
+                            dispatched = true;
+                            break;
+                        }
+                        Err(TrySendError::Full(stream)) => {
+                            maybe_stream = Some(stream);
+                        }
+                        Err(TrySendError::Disconnected(_)) => {
+                            state.pending_connections.fetch_sub(1, Ordering::SeqCst);
+                            return Err(anyhow!("worker channel disconnected"));
+                        }
                     }
-                    Err(TrySendError::Disconnected(_)) => {
-                        state.pending_connections.fetch_sub(1, Ordering::SeqCst);
-                        break;
-                    }
+                }
+                if !dispatched {
+                    state.pending_connections.fetch_sub(1, Ordering::SeqCst);
+                    state.inc("http.queue.full", 1);
+                    let mut stream = maybe_stream.expect("stream preserved on overload");
+                    let _ = write_response(
+                        &mut stream,
+                        503,
+                        br#"{"error":"server overloaded"}"#,
+                        false,
+                    );
+                    let _ = stream.shutdown(Shutdown::Both);
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(1));
+                idle_backoff_ms = (idle_backoff_ms + 1).min(8);
+                thread::sleep(Duration::from_millis(idle_backoff_ms));
             }
             Err(err) => {
                 state.inc("http.accept.error", 1);
@@ -353,7 +387,7 @@ fn run_server(cfg: AppConfig) -> Result<()> {
         }
     }
 
-    drop(work_tx);
+    drop(worker_txs);
     for handle in workers {
         let _ = handle.join();
     }
@@ -369,24 +403,19 @@ fn run_server(cfg: AppConfig) -> Result<()> {
 fn worker_loop(
     _idx: usize,
     state: Arc<SharedState>,
-    rx: Arc<Mutex<Receiver<TcpStream>>>,
+    rx: mpsc::Receiver<TcpStream>,
     limits: HttpServerLimits,
 ) {
+    let mut buf = vec![0_u8; state.cfg.read_buffer_bytes];
     loop {
-        let stream = {
-            let guard = match rx.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            match guard.recv() {
-                Ok(stream) => stream,
-                Err(_) => return,
-            }
+        let stream = match rx.recv() {
+            Ok(stream) => stream,
+            Err(_) => return,
         };
 
         state.pending_connections.fetch_sub(1, Ordering::SeqCst);
         let mut stream = stream;
-        if let Err(err) = handle_connection(&state, &mut stream, &limits) {
+        if let Err(err) = handle_connection(&state, &mut stream, &limits, &mut buf) {
             state.inc("http.request.error", 1);
             state.log(LogLevel::Error, &format!("request error: {err:#}"), None);
             let _ = write_response(
@@ -400,7 +429,7 @@ fn worker_loop(
     }
 }
 
-fn flush_worker(state: Arc<SharedState>, rx: Receiver<FlushCommand>) {
+fn flush_worker(state: Arc<SharedState>, rx: mpsc::Receiver<FlushCommand>) {
     let interval = Duration::from_millis(state.cfg.flush_interval_ms.max(10));
     loop {
         match rx.recv_timeout(interval) {
@@ -426,6 +455,7 @@ fn handle_connection(
     state: &Arc<SharedState>,
     stream: &mut TcpStream,
     limits: &HttpServerLimits,
+    buf: &mut Vec<u8>,
 ) -> Result<()> {
     state.inc("http.request.total", 1);
 
@@ -436,18 +466,19 @@ fn handle_connection(
         .set_write_timeout(Some(Duration::from_millis(limits.write_timeout_ms)))
         .context("failed setting write timeout")?;
 
-    let mut buf = vec![0_u8; state.cfg.read_buffer_bytes];
-    let read = stream.read(&mut buf).context("failed reading request")?;
+    if buf.len() != state.cfg.read_buffer_bytes {
+        buf.resize(state.cfg.read_buffer_bytes, 0);
+    }
+    let read = stream.read(buf).context("failed reading request")?;
     if read == 0 {
         return Ok(());
     }
-    buf.truncate(read);
 
-    let req =
-        parse_http_request(&buf, limits).map_err(|err| anyhow!("http parse error: {err:?}"))?;
+    let req = parse_http_request(&buf[..read], limits)
+        .map_err(|err| anyhow!("http parse error: {err:?}"))?;
     let request_id = format!(
         "req-{}",
-        state.started_at.elapsed().as_nanos() % 1_000_000_000
+        state.next_request_id.fetch_add(1, Ordering::Relaxed)
     );
 
     if let Ok(mut tracer) = state.tracer.lock() {

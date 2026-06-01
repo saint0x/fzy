@@ -129,7 +129,7 @@ fn hydrate_legacy_compatibility(trace: &mut TraceFile) {
     }
     if trace.version < CURRENT_TRACE_VERSION && trace.replay_contract.scheduler.is_empty() {
         trace.replay_contract =
-            build_replay_contract(trace.summary.identity.seed, &trace.decisions, &trace.events);
+            trace_replay_contract(trace.summary.identity.seed, &trace.decisions, &trace.events);
     }
 }
 
@@ -148,7 +148,27 @@ impl TraceFile {
         events: Vec<TraceEvent>,
         summary: RunSummary,
     ) -> Self {
-        let replay_contract = build_replay_contract(summary.identity.seed, &decisions, &events);
+        let replay_contract = trace_replay_contract(summary.identity.seed, &decisions, &events);
+        Self::new_with_contract(
+            mode,
+            scenario_path,
+            scenario,
+            decisions,
+            events,
+            replay_contract,
+            summary,
+        )
+    }
+
+    pub fn new_with_contract(
+        mode: RunMode,
+        scenario_path: Option<String>,
+        scenario: Option<ScenarioV1Steps>,
+        decisions: Vec<Decision>,
+        events: Vec<TraceEvent>,
+        replay_contract: TraceReplayContract,
+        summary: RunSummary,
+    ) -> Self {
         Self {
             format: TRACE_FORMAT.to_string(),
             version: CURRENT_TRACE_VERSION,
@@ -177,7 +197,18 @@ impl TraceFile {
         summary: RunSummary,
     ) -> Self {
         let decisions = Vec::new();
-        let replay_contract = build_replay_contract(summary.identity.seed, &decisions, &events);
+        let replay_contract = trace_replay_contract(summary.identity.seed, &decisions, &events);
+        Self::new_fuzz_with_contract(target, input, events, replay_contract, summary)
+    }
+
+    pub fn new_fuzz_with_contract(
+        target: String,
+        input: &[u8],
+        events: Vec<TraceEvent>,
+        replay_contract: TraceReplayContract,
+        summary: RunSummary,
+    ) -> Self {
+        let decisions = Vec::new();
         Self {
             format: TRACE_FORMAT.to_string(),
             version: CURRENT_TRACE_VERSION,
@@ -208,7 +239,17 @@ impl TraceFile {
         events: Vec<TraceEvent>,
         summary: RunSummary,
     ) -> Self {
-        let replay_contract = build_replay_contract(summary.identity.seed, &decisions, &events);
+        let replay_contract = trace_replay_contract(summary.identity.seed, &decisions, &events);
+        Self::new_explore_with_contract(explore, decisions, events, replay_contract, summary)
+    }
+
+    pub fn new_explore_with_contract(
+        explore: ExploreTrace,
+        decisions: Vec<Decision>,
+        events: Vec<TraceEvent>,
+        replay_contract: TraceReplayContract,
+        summary: RunSummary,
+    ) -> Self {
         Self {
             format: TRACE_FORMAT.to_string(),
             version: CURRENT_TRACE_VERSION,
@@ -416,7 +457,7 @@ pub fn verify_trace(trace: &TraceFile) -> TraceVerifyReport {
     }
 }
 
-fn build_replay_contract(
+pub(crate) fn trace_replay_contract(
     seed: u64,
     decisions: &[Decision],
     events: &[TraceEvent],

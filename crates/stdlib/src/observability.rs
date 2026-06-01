@@ -51,6 +51,10 @@ pub struct Logger {
     pub sinks: Vec<LoggerSink>,
 }
 
+const DEFAULT_MEMORY_LOG_LIMIT: usize = 512;
+const DEFAULT_METRIC_HISTORY_LIMIT: usize = 512;
+const DEFAULT_TRACER_SPAN_LIMIT: usize = 1024;
+
 impl Default for Logger {
     fn default() -> Self {
         Self {
@@ -115,11 +119,13 @@ impl Logger {
     }
 
     fn emit(&self, entry: &LogEntry) {
+        let mut rendered_json: Option<String> = None;
         for sink in &self.sinks {
             match sink {
                 LoggerSink::Memory(values) => {
                     if let Ok(mut values) = values.lock() {
                         values.push(entry.clone());
+                        trim_retained_tail(&mut values, DEFAULT_MEMORY_LOG_LIMIT);
                     }
                 }
                 LoggerSink::File(path) => {
@@ -131,20 +137,24 @@ impl Logger {
                         .append(true)
                         .open(path)
                     {
-                        let line =
-                            serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
+                        let line = rendered_json.get_or_insert_with(|| {
+                            serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string())
+                        });
                         let _ = writeln!(file, "{}", line);
                     }
                 }
                 LoggerSink::UdpJson { addr } => {
                     if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-                        let line =
-                            serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
+                        let line = rendered_json.get_or_insert_with(|| {
+                            serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string())
+                        });
                         let _ = socket.send_to(line.as_bytes(), addr);
                     }
                 }
                 LoggerSink::StdoutJson => {
-                    let line = serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
+                    let line = rendered_json.get_or_insert_with(|| {
+                        serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string())
+                    });
                     let _ = writeln!(std::io::stdout(), "{}", line);
                 }
             }
@@ -175,33 +185,33 @@ impl Metrics {
     }
 
     pub fn inc_counter(&mut self, name: &str, by: u64) {
-        self.counters
-            .entry(name.to_string())
-            .or_default()
-            .push(MetricPoint {
+        record_metric_point(
+            self.counters.entry(name.to_string()).or_default(),
+            MetricPoint {
                 timestamp_ms: now_ms(),
                 value: by as i64,
-            });
+            },
+        );
     }
 
     pub fn set_gauge(&mut self, name: &str, value: i64) {
-        self.gauges
-            .entry(name.to_string())
-            .or_default()
-            .push(MetricPoint {
+        record_metric_point(
+            self.gauges.entry(name.to_string()).or_default(),
+            MetricPoint {
                 timestamp_ms: now_ms(),
                 value,
-            });
+            },
+        );
     }
 
     pub fn observe_histogram(&mut self, name: &str, value: u64) {
-        self.histograms
-            .entry(name.to_string())
-            .or_default()
-            .push(MetricPoint {
+        record_metric_point(
+            self.histograms.entry(name.to_string()).or_default(),
+            MetricPoint {
                 timestamp_ms: now_ms(),
                 value: value as i64,
-            });
+            },
+        );
     }
 
     pub fn counter(&self, name: &str) -> u64 {
@@ -231,14 +241,23 @@ impl Metrics {
     }
 
     pub fn percentile(&self, name: &str, pct: f64) -> Option<u64> {
-        let mut values = self.histogram(name);
+        let mut values = self
+            .histograms
+            .get(name)
+            .map(|points| {
+                points
+                    .iter()
+                    .map(|point| point.value.max(0) as u64)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         if values.is_empty() {
             return None;
         }
-        values.sort_unstable();
         let index =
             ((pct.clamp(0.0, 100.0) / 100.0) * ((values.len() - 1) as f64)).round() as usize;
-        values.get(index).copied()
+        let (_, selected, _) = values.select_nth_unstable(index);
+        Some(*selected)
     }
 
     pub fn p50(&self, name: &str) -> Option<u64> {
@@ -305,6 +324,7 @@ impl Tracer {
         };
         self.next_span += 1;
         self.spans.push(span.clone());
+        trim_retained_tail(&mut self.spans, DEFAULT_TRACER_SPAN_LIMIT);
         span
     }
 
@@ -321,6 +341,7 @@ impl Tracer {
         };
         self.next_span += 1;
         self.spans.push(span.clone());
+        trim_retained_tail(&mut self.spans, DEFAULT_TRACER_SPAN_LIMIT);
         span
     }
 
@@ -387,11 +408,24 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn record_metric_point(points: &mut Vec<MetricPoint>, point: MetricPoint) {
+    points.push(point);
+    trim_retained_tail(points, DEFAULT_METRIC_HISTORY_LIMIT);
+}
+
+fn trim_retained_tail<T>(values: &mut Vec<T>, limit: usize) {
+    if values.len() > limit {
+        let excess = values.len() - limit;
+        values.drain(..excess);
+    }
+}
+
 use serde::Serialize;
 
 #[cfg(test)]
 mod tests {
     use super::{
+        DEFAULT_MEMORY_LOG_LIMIT, DEFAULT_METRIC_HISTORY_LIMIT, DEFAULT_TRACER_SPAN_LIMIT,
         LogField, LogLevel, Logger, LoggerSink, Metrics, RuntimeStats, TraceContext, Tracer,
     };
 
@@ -468,5 +502,52 @@ mod tests {
             open_socket_count: 3,
         };
         assert!(stats.healthy());
+    }
+
+    #[test]
+    fn logger_memory_sink_retains_recent_bounded_entries() {
+        let sink = LoggerSink::Memory(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let mut logger = Logger::with_sinks(vec![sink]);
+        for idx in 0..(DEFAULT_MEMORY_LOG_LIMIT + 16) {
+            logger.log(LogLevel::Info, format!("entry-{idx}"), None, Vec::new());
+        }
+        let entries = logger.memory_entries();
+        assert_eq!(entries.len(), DEFAULT_MEMORY_LOG_LIMIT);
+        assert_eq!(
+            entries.first().map(|entry| entry.message.as_str()),
+            Some("entry-16")
+        );
+        assert_eq!(
+            entries.last().map(|entry| entry.message.as_str()),
+            Some("entry-527")
+        );
+    }
+
+    #[test]
+    fn metrics_retains_recent_history_and_keeps_percentiles() {
+        let mut metrics = Metrics::new();
+        for value in 0..(DEFAULT_METRIC_HISTORY_LIMIT as u64 + 32) {
+            metrics.observe_histogram("latency", value);
+        }
+        let history = metrics.histogram("latency");
+        assert_eq!(history.len(), DEFAULT_METRIC_HISTORY_LIMIT);
+        assert_eq!(history.first().copied(), Some(32));
+        assert_eq!(history.last().copied(), Some(543));
+        assert_eq!(metrics.p50("latency"), Some(288));
+    }
+
+    #[test]
+    fn tracer_retains_recent_spans() {
+        let mut tracer = Tracer::default();
+        for idx in 0..(DEFAULT_TRACER_SPAN_LIMIT + 8) {
+            let _ = tracer.start_root(format!("span-{idx}"), format!("corr-{idx}"));
+        }
+        let spans = tracer.spans();
+        assert_eq!(spans.len(), DEFAULT_TRACER_SPAN_LIMIT);
+        assert_eq!(spans.first().map(|span| span.name.as_str()), Some("span-8"));
+        assert_eq!(
+            spans.last().map(|span| span.name.as_str()),
+            Some("span-1031")
+        );
     }
 }

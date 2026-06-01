@@ -17,8 +17,8 @@ use crate::{
     HttpBackend, MemoryRunReport, MemoryState, ProcBackend, ProfileCaptureLevel,
     RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
     ScenarioV1Distributed, ScenarioV1Steps, TraceEvent, TraceFile, should_emit_profile_artifacts,
-    wall_time_iso_utc, write_memory_artifacts, write_profile_artifacts_from_trace,
-    write_trace_with_policy,
+    trace_replay_contract, wall_time_iso_utc, write_memory_artifacts,
+    write_profile_artifacts_from_trace, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -217,14 +217,17 @@ fn explore_distributed_scenario(
         memory: memory_report.as_ref().map(|m| m.summary.clone()),
         findings: findings.clone(),
     };
-    let mut profile_trace = TraceFile::new_explore(
-        ExploreTrace {
-            scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
-            scenario: scenario.clone(),
-            schedule: opt.schedule,
-        },
+    let explore_trace = ExploreTrace {
+        scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
+        scenario: scenario.clone(),
+        schedule: opt.schedule,
+    };
+    let replay_contract = trace_replay_contract(seed, &decisions, &events);
+    let mut profile_trace = TraceFile::new_explore_with_contract(
+        explore_trace.clone(),
         decisions.clone(),
         events.clone(),
+        replay_contract.clone(),
         summary.clone(),
     );
     profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
@@ -256,14 +259,11 @@ fn explore_distributed_scenario(
             .record_trace_to
             .clone()
             .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
-        let trace = TraceFile::new_explore(
-            ExploreTrace {
-                scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
-                scenario: scenario.clone(),
-                schedule: opt.schedule,
-            },
+        let trace = TraceFile::new_explore_with_contract(
+            explore_trace,
             decisions.clone(),
             events.clone(),
+            replay_contract,
             summary.clone(),
         );
         let mut trace = trace;
@@ -339,12 +339,14 @@ fn explore_steps_scenario(
         run.memory.as_ref().map(|m| m.summary.clone()),
         run.findings.clone(),
     );
-    let mut profile_trace = TraceFile::new(
+    let replay_contract = trace_replay_contract(seed, &run.decisions.decisions, &run.events);
+    let mut profile_trace = TraceFile::new_with_contract(
         RunMode::Explore,
         Some(run.scenario_path.to_string_lossy().to_string()),
         Some(run.scenario_embedded.clone()),
         run.decisions.decisions.clone(),
         run.events.clone(),
+        replay_contract,
         summary.clone(),
     );
     profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
@@ -446,10 +448,12 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         memory: trace.memory.as_ref().map(|m| m.summary.clone()),
         findings,
     };
-    let mut profile_trace = TraceFile::new_explore(
+    let replay_contract = trace_replay_contract(seed, &trace.decisions, &events);
+    let mut profile_trace = TraceFile::new_explore_with_contract(
         explore.clone(),
         trace.decisions.clone(),
         events.clone(),
+        replay_contract,
         summary.clone(),
     );
     profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
@@ -643,7 +647,15 @@ pub fn shrink_explore_trace(
         explore.clone()
     };
 
-    let trace_out = TraceFile::new_explore(out_explore, out_decisions, events, summary.clone());
+    let replay_contract =
+        trace_replay_contract(trace.summary.identity.seed, &out_decisions, &events);
+    let trace_out = TraceFile::new_explore_with_contract(
+        out_explore,
+        out_decisions,
+        events,
+        replay_contract,
+        summary.clone(),
+    );
     trace_out.write_json(&out_path).map_err(|err| {
         FozzyError::Trace(format!(
             "failed to write shrunk explore trace to {}: {err}",
