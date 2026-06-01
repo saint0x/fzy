@@ -1,5 +1,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use ast::{AstVisitor, BinaryOp, Expr, Module, Stmt, Type};
 
@@ -18,6 +20,21 @@ pub struct TypedFunction {
     pub abi: Option<String>,
     pub ffi_panic: Option<String>,
     pub required_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingTypedFunction {
+    name: String,
+    link_name: Option<String>,
+    generics: Vec<ast::GenericParam>,
+    params: Vec<ast::Param>,
+    return_type: Type,
+    body: Vec<Stmt>,
+    is_unsafe: bool,
+    is_async: bool,
+    is_extern: bool,
+    abi: Option<String>,
+    ffi_panic: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -342,6 +359,29 @@ struct ModuleDeclIndex {
     type_aliases: HashMap<String, Type>,
 }
 
+#[derive(Debug, Clone)]
+struct CowBindings<V: Clone>(Arc<BTreeMap<String, V>>);
+
+impl<V: Clone> Default for CowBindings<V> {
+    fn default() -> Self {
+        Self(Arc::new(BTreeMap::new()))
+    }
+}
+
+impl<V: Clone> Deref for CowBindings<V> {
+    type Target = BTreeMap<String, V>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<V: Clone> DerefMut for CowBindings<V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
 fn index_module_declarations(module: &Module) -> ModuleDeclIndex {
     let mut index = ModuleDeclIndex::default();
     for item in &module.items {
@@ -365,10 +405,14 @@ fn index_module_declarations(module: &Module) -> ModuleDeclIndex {
                 }
             }
             ast::Item::TypeAlias(item) => {
-                index.type_aliases.insert(item.name.clone(), item.ty.clone());
+                index
+                    .type_aliases
+                    .insert(item.name.clone(), item.ty.clone());
             }
             ast::Item::NewType(item) => {
-                index.type_aliases.insert(item.name.clone(), item.inner.clone());
+                index
+                    .type_aliases
+                    .insert(item.name.clone(), item.inner.clone());
             }
             _ => {}
         }
@@ -398,7 +442,7 @@ pub fn lower(module: &Module) -> TypedModule {
     let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
     let mut fn_async = HashMap::<String, bool>::new();
     let mut fn_generics = HashMap::<String, Vec<ast::GenericParam>>::new();
-    let mut typed_functions = Vec::new();
+    let mut pending_functions = Vec::<PendingTypedFunction>::new();
     let mut type_errors = 0usize;
     let mut type_error_details = Vec::new();
     let mut typed_globals = Vec::new();
@@ -417,6 +461,7 @@ pub fn lower(module: &Module) -> TypedModule {
     let mut fn_is_extern_unsafe_c = BTreeSet::<String>::new();
     let empty_global_types = HashMap::<String, Type>::new();
     let empty_global_mutability = HashMap::<String, bool>::new();
+    let empty_assoc_types = HashMap::<String, Type>::new();
 
     for item in &module.items {
         match item {
@@ -579,12 +624,11 @@ pub fn lower(module: &Module) -> TypedModule {
                 }
                 fn_async.insert(function.name.clone(), function.is_async);
                 fn_generics.insert(function.name.clone(), function.generics.clone());
-                typed_functions.push(TypedFunction {
+                pending_functions.push(PendingTypedFunction {
                     name: function.name.clone(),
                     link_name: function.link_name.clone(),
                     generics: function.generics.clone(),
                     params,
-                    local_types: BTreeMap::new(),
                     return_type,
                     body: function.body.clone(),
                     is_unsafe: function.is_unsafe,
@@ -592,7 +636,6 @@ pub fn lower(module: &Module) -> TypedModule {
                     is_extern: function.is_extern,
                     abi: function.abi.clone(),
                     ffi_panic: function.ffi_panic.clone(),
-                    required_capabilities: Vec::new(),
                 });
             }
             ast::Item::Test(test) => {
@@ -600,12 +643,11 @@ pub fn lower(module: &Module) -> TypedModule {
                 fn_sigs.insert(name.clone(), (Vec::new(), Type::Void));
                 fn_async.insert(name.clone(), false);
                 fn_generics.insert(name.clone(), Vec::new());
-                typed_functions.push(TypedFunction {
+                pending_functions.push(PendingTypedFunction {
                     name,
                     link_name: None,
                     generics: Vec::new(),
                     params: Vec::new(),
-                    local_types: BTreeMap::new(),
                     return_type: Type::Void,
                     body: test.body.clone(),
                     is_unsafe: false,
@@ -613,7 +655,6 @@ pub fn lower(module: &Module) -> TypedModule {
                     is_extern: false,
                     abi: None,
                     ffi_panic: None,
-                    required_capabilities: Vec::new(),
                 });
             }
             ast::Item::Impl(item) => {
@@ -625,7 +666,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     .map(|(name, ty)| {
                         let resolved = resolve_alias_type(ty, &type_aliases, 0);
                         let contextual =
-                            resolve_impl_context_type(&resolved, &for_type, &HashMap::new());
+                            resolve_impl_context_type(&resolved, &for_type, &empty_assoc_types);
                         (name.clone(), contextual)
                     })
                     .collect::<HashMap<_, _>>();
@@ -675,12 +716,11 @@ pub fn lower(module: &Module) -> TypedModule {
                     );
                     fn_async.insert(method_symbol.clone(), method.is_async);
                     fn_generics.insert(method_symbol.clone(), method.generics.clone());
-                    typed_functions.push(TypedFunction {
+                    pending_functions.push(PendingTypedFunction {
                         name: method_symbol,
                         link_name: method.link_name.clone(),
                         generics: method.generics.clone(),
                         params,
-                        local_types: BTreeMap::new(),
                         return_type,
                         body: method.body.clone(),
                         is_unsafe: method.is_unsafe,
@@ -688,7 +728,6 @@ pub fn lower(module: &Module) -> TypedModule {
                         is_extern: method.is_extern,
                         abi: method.abi.clone(),
                         ffi_panic: method.ffi_panic.clone(),
-                        required_capabilities: Vec::new(),
                     });
                 }
             }
@@ -704,23 +743,29 @@ pub fn lower(module: &Module) -> TypedModule {
         .map(|item| (item.name.clone(), item.mutable))
         .collect::<HashMap<_, _>>();
 
-    let function_capability_requirements = compute_function_capabilities(&typed_functions);
-    for function in &mut typed_functions {
-        if let Some(entry) = function_capability_requirements
-            .iter()
-            .find(|entry| entry.function == function.name)
-        {
-            function.required_capabilities = entry.required.clone();
-        }
-    }
-
-    for function in &mut typed_functions {
-        if function.body.is_empty() {
+    let mut typed_functions = Vec::with_capacity(pending_functions.len());
+    for pending in pending_functions {
+        if pending.body.is_empty() {
+            typed_functions.push(TypedFunction {
+                name: pending.name,
+                link_name: pending.link_name,
+                generics: pending.generics,
+                params: pending.params,
+                local_types: BTreeMap::new(),
+                return_type: pending.return_type,
+                body: pending.body,
+                is_unsafe: pending.is_unsafe,
+                is_async: pending.is_async,
+                is_extern: pending.is_extern,
+                abi: pending.abi,
+                ffi_panic: pending.ffi_panic,
+                required_capabilities: Vec::new(),
+            });
             continue;
         }
         let mut scopes = SymbolScopes::new();
         let mut local_types = BTreeMap::new();
-        let current_namespace = function
+        let current_namespace = pending
             .name
             .rsplit_once('.')
             .map(|(prefix, _)| prefix)
@@ -744,22 +789,45 @@ pub fn lower(module: &Module) -> TypedModule {
             generic_specializations: &mut generic_specializations,
             trait_violations: &mut trait_violations,
         };
-        for param in &function.params {
+        for param in &pending.params {
             scopes.insert(param.name.clone(), param.ty.clone(), false);
             local_types.insert(param.name.clone(), param.ty.clone());
         }
-        for stmt in &function.body {
+        for stmt in &pending.body {
             type_check_stmt(
                 stmt,
                 &mut scopes,
                 &mut local_types,
                 &env,
                 0,
-                &function.return_type,
+                &pending.return_type,
                 &mut state,
             );
         }
-        function.local_types = local_types;
+        typed_functions.push(TypedFunction {
+            name: pending.name,
+            link_name: pending.link_name,
+            generics: pending.generics,
+            params: pending.params,
+            local_types,
+            return_type: pending.return_type,
+            body: pending.body,
+            is_unsafe: pending.is_unsafe,
+            is_async: pending.is_async,
+            is_extern: pending.is_extern,
+            abi: pending.abi,
+            ffi_panic: pending.ffi_panic,
+            required_capabilities: Vec::new(),
+        });
+    }
+    let function_capability_requirements = compute_function_capabilities(&typed_functions);
+    for function in &mut typed_functions {
+        if let Some(entry) = function_capability_requirements
+            .iter()
+            .find(|entry| entry.function == function.name)
+        {
+            function.required_capabilities = entry.required.clone();
+        }
     }
     validate_async_semantics(
         &typed_functions,
@@ -1921,11 +1989,11 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let signatures = functions
         .iter()
-        .map(|function| (function.name.clone(), function.clone()))
-        .collect::<BTreeMap<_, _>>();
+        .map(|function| (function.name.as_str(), function))
+        .collect::<FunctionSignatures<'_>>();
     for function in functions {
         let has_await = function_body_has_await(&function.body);
-        let mut ref_bindings = BTreeMap::<String, (Option<String>, bool)>::new();
+        let mut ref_bindings = CowBindings::<(Option<String>, bool)>::default();
         for param in &function.params {
             if let Type::Ref {
                 lifetime, mutable, ..
@@ -2046,15 +2114,17 @@ struct BorrowBinding {
     mutable: bool,
 }
 
+type FunctionSignatures<'a> = BTreeMap<&'a str, &'a TypedFunction>;
+
 fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let signatures = functions
         .iter()
-        .map(|function| (function.name.clone(), function.clone()))
-        .collect::<BTreeMap<_, _>>();
+        .map(|function| (function.name.as_str(), function))
+        .collect::<FunctionSignatures<'_>>();
     let ownership_summaries = build_function_ownership_summaries(functions);
     for function in functions {
-        let mut bindings = BTreeMap::<String, BorrowBinding>::new();
+        let mut bindings = CowBindings::<BorrowBinding>::default();
         analyze_live_borrow_block(
             function,
             &function.body,
@@ -2072,8 +2142,8 @@ fn analyze_live_borrow_block(
     function: &TypedFunction,
     body: &[Stmt],
     suffix_after_block: &[Stmt],
-    bindings: &mut BTreeMap<String, BorrowBinding>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    bindings: &mut CowBindings<BorrowBinding>,
+    signatures: &FunctionSignatures<'_>,
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
     violations: &mut Vec<String>,
 ) {
@@ -2339,8 +2409,8 @@ fn stmt_borrow_consumptions(
 fn stmt_borrow_creations(
     function: &TypedFunction,
     stmt: &Stmt,
-    bindings: &BTreeMap<String, BorrowBinding>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    bindings: &CowBindings<BorrowBinding>,
+    signatures: &FunctionSignatures<'_>,
 ) -> Vec<BorrowCreation> {
     let mut out = Vec::new();
     match stmt {
@@ -2379,7 +2449,7 @@ fn stmt_borrow_creations(
         }
         Stmt::Expr(Expr::Call { callee, args }) => {
             let params = signatures
-                .get(callee)
+                .get(callee.as_str())
                 .map(|function| {
                     function
                         .params
@@ -2418,8 +2488,8 @@ fn stmt_direct_owner_access_label(
     function: &TypedFunction,
     stmt: &Stmt,
     owner: &str,
-    bindings: &BTreeMap<String, BorrowBinding>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    bindings: &CowBindings<BorrowBinding>,
+    signatures: &FunctionSignatures<'_>,
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
 ) -> Option<String> {
     if !stmt_uses_ident(stmt, owner) {
@@ -2490,8 +2560,8 @@ fn borrow_creation_expr_label(expr: &Expr) -> String {
 fn infer_borrow_binding_from_expr(
     value: &Expr,
     explicit_ty: Option<&Type>,
-    bindings: &BTreeMap<String, BorrowBinding>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    bindings: &CowBindings<BorrowBinding>,
+    signatures: &FunctionSignatures<'_>,
 ) -> Option<BorrowBinding> {
     let Type::Ref { mutable, .. } = explicit_ty? else {
         return None;
@@ -2504,8 +2574,8 @@ fn infer_borrow_binding_from_expr(
 
 fn infer_borrow_owner_name(
     expr: &Expr,
-    bindings: &BTreeMap<String, BorrowBinding>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    bindings: &CowBindings<BorrowBinding>,
+    signatures: &FunctionSignatures<'_>,
 ) -> Option<String> {
     match expr {
         Expr::Ident(name) => Some(
@@ -2517,7 +2587,7 @@ fn infer_borrow_owner_name(
         Expr::Group(inner) | Expr::FieldAccess { base: inner, .. } => {
             infer_borrow_owner_name(inner, bindings, signatures)
         }
-        Expr::Call { callee, args } => signatures.get(callee).and_then(|function| {
+        Expr::Call { callee, args } => signatures.get(callee.as_str()).and_then(|function| {
             let Type::Ref {
                 lifetime: Some(return_lifetime),
                 ..
@@ -2579,8 +2649,8 @@ fn infer_borrow_owner_name(
 fn validate_reference_returns(
     body: &[Stmt],
     function: &TypedFunction,
-    ref_bindings: &mut BTreeMap<String, (Option<String>, bool)>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    ref_bindings: &mut CowBindings<(Option<String>, bool)>,
+    signatures: &FunctionSignatures<'_>,
     return_lifetime: &Option<String>,
     violations: &mut Vec<String>,
 ) -> bool {
@@ -2731,8 +2801,8 @@ fn validate_reference_returns(
 fn validate_reference_return_expr(
     expr: &Expr,
     function: &TypedFunction,
-    ref_bindings: &mut BTreeMap<String, (Option<String>, bool)>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    ref_bindings: &mut CowBindings<(Option<String>, bool)>,
+    signatures: &FunctionSignatures<'_>,
     return_lifetime: &Option<String>,
     violations: &mut Vec<String>,
 ) -> bool {
@@ -2822,9 +2892,9 @@ fn validate_reference_return_expr(
 }
 
 fn merge_reference_bindings(
-    entry: &BTreeMap<String, (Option<String>, bool)>,
-    branches: &[BTreeMap<String, (Option<String>, bool)>],
-) -> BTreeMap<String, (Option<String>, bool)> {
+    entry: &CowBindings<(Option<String>, bool)>,
+    branches: &[CowBindings<(Option<String>, bool)>],
+) -> CowBindings<(Option<String>, bool)> {
     let mut merged = entry.clone();
     for name in entry.keys() {
         let mut current = branches
@@ -2847,8 +2917,8 @@ fn merge_reference_bindings(
 fn update_reference_binding(
     name: &str,
     value: &Expr,
-    ref_bindings: &mut BTreeMap<String, (Option<String>, bool)>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    ref_bindings: &mut CowBindings<(Option<String>, bool)>,
+    signatures: &FunctionSignatures<'_>,
 ) {
     let Some((_, mutable)) = ref_bindings.get(name).cloned() else {
         return;
@@ -2859,8 +2929,8 @@ fn update_reference_binding(
 
 fn infer_reference_lifetime(
     expr: &Expr,
-    ref_bindings: &BTreeMap<String, (Option<String>, bool)>,
-    signatures: &BTreeMap<String, TypedFunction>,
+    ref_bindings: &CowBindings<(Option<String>, bool)>,
+    signatures: &FunctionSignatures<'_>,
 ) -> Option<Option<String>> {
     match expr {
         Expr::Ident(name) => ref_bindings.get(name).map(|(lifetime, _)| lifetime.clone()),
@@ -2870,7 +2940,7 @@ fn infer_reference_lifetime(
         Expr::Await(inner) | Expr::Discard(inner) | Expr::Unary { expr: inner, .. } => {
             infer_reference_lifetime(inner, ref_bindings, signatures)
         }
-        Expr::Call { callee, args } => signatures.get(callee).and_then(|function| {
+        Expr::Call { callee, args } => signatures.get(callee.as_str()).and_then(|function| {
             let Type::Ref {
                 lifetime: Some(return_lifetime),
                 ..

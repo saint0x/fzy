@@ -208,6 +208,7 @@ pub struct ParsedProgram {
     pub module: ast::Module,
     pub combined_source: String,
     pub module_paths: Vec<PathBuf>,
+    pub module_fingerprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -816,7 +817,7 @@ fn lower_fir_cached_shared(parsed: &ParsedProgram) -> SharedLoweredProgram {
 }
 
 fn lower_fir_cached_shared_telemetry(parsed: &ParsedProgram) -> (SharedLoweredProgram, bool) {
-    let module_hash = sha256_hex(parsed.combined_source.as_bytes());
+    let module_hash = parsed.module_fingerprint.clone();
     let cache = LOWER_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
     if let Ok(guard) = cache.read() {
         if let Some(cached) = guard.get(&module_hash) {
@@ -5486,11 +5487,16 @@ fn parse_program_uncached_with_root_source(
     state.loaded = loaded_modules.into_iter().collect();
 
     let mut combined_source = String::new();
+    let mut fingerprint = Sha256::new();
     for path in &state.load_order {
         let loaded = state
             .loaded
             .get(path)
             .ok_or_else(|| anyhow!("internal module cache miss for {}", path.display()))?;
+        fingerprint.update(path.to_string_lossy().as_bytes());
+        fingerprint.update([0]);
+        fingerprint.update(loaded.source.as_bytes());
+        fingerprint.update([0xff]);
         combined_source.push_str("// module: ");
         combined_source.push_str(&path.display().to_string());
         combined_source.push('\n');
@@ -5520,6 +5526,7 @@ fn parse_program_uncached_with_root_source(
         module: merged,
         combined_source,
         module_paths: state.load_order,
+        module_fingerprint: format!("{:x}", fingerprint.finalize()),
     })
 }
 
