@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::{
     ArtifactCommand, Config, FlakeBudget, FozzyError, FozzyResult, ReplayOptions, ReportCommand,
     Reporter, TraceFile, TracePath, artifacts_command, profile_command, replay_trace,
-    report_command, verify_trace_file,
+    report_command, verify_trace,
 };
 use crate::{ProfileCaptureLevel, ProfileCommand};
 
@@ -67,7 +67,8 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
     }
     let mut checks = Vec::new();
 
-    let verify = verify_trace_file(&opt.trace)?;
+    let trace = TraceFile::read_json(&opt.trace)?;
+    let verify = verify_trace(&trace);
     let strict_integrity_ok =
         verify.checksum_present && verify.checksum_valid && verify.warnings.is_empty();
     let trace_verify_ok = if opt.strict {
@@ -90,7 +91,6 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         )),
     });
 
-    let trace = TraceFile::read_json(&opt.trace)?;
     let replay = replay_trace(
         config,
         TracePath::new(opt.trace.clone()),
@@ -138,38 +138,40 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         });
     }
 
-    let zip_path =
-        std::env::temp_dir().join(format!("fozzy-ci-export-{}.zip", uuid::Uuid::new_v4()));
-    artifacts_command(
-        config,
-        &ArtifactCommand::Export {
-            run: opt.trace.display().to_string(),
-            out: zip_path.clone(),
-        },
-    )?;
-    let zip_ok = if zip_path.exists() {
-        let file = std::fs::File::open(&zip_path)?;
-        let mut zip = zip::ZipArchive::new(file).map_err(|e| FozzyError::Zip(e.to_string()))?;
-        for i in 0..zip.len() {
-            let mut entry = zip
-                .by_index(i)
-                .map_err(|e| FozzyError::Zip(e.to_string()))?;
-            if entry.is_dir() {
-                continue;
+    if opt.strict {
+        let zip_path =
+            std::env::temp_dir().join(format!("fozzy-ci-export-{}.zip", uuid::Uuid::new_v4()));
+        artifacts_command(
+            config,
+            &ArtifactCommand::Export {
+                run: opt.trace.display().to_string(),
+                out: zip_path.clone(),
+            },
+        )?;
+        let zip_ok = if zip_path.exists() {
+            let file = std::fs::File::open(&zip_path)?;
+            let mut zip = zip::ZipArchive::new(file).map_err(|e| FozzyError::Zip(e.to_string()))?;
+            for i in 0..zip.len() {
+                let mut entry = zip
+                    .by_index(i)
+                    .map_err(|e| FozzyError::Zip(e.to_string()))?;
+                if entry.is_dir() {
+                    continue;
+                }
+                let mut sink = std::io::sink();
+                std::io::copy(&mut entry, &mut sink)?;
             }
-            let mut sink = std::io::sink();
-            std::io::copy(&mut entry, &mut sink)?;
-        }
-        true
-    } else {
-        false
-    };
-    checks.push(CiCheck {
-        name: "artifacts_zip_integrity".to_string(),
-        ok: zip_ok,
-        detail: Some(zip_path.display().to_string()),
-    });
-    let _ = std::fs::remove_file(zip_path);
+            true
+        } else {
+            false
+        };
+        checks.push(CiCheck {
+            name: "artifacts_zip_integrity".to_string(),
+            ok: zip_ok,
+            detail: Some(zip_path.display().to_string()),
+        });
+        let _ = std::fs::remove_file(zip_path);
+    }
 
     if !opt.flake_runs.is_empty() {
         if opt.flake_runs.len() < 2 {
@@ -300,6 +302,80 @@ mod tests {
         assert!(out.ok);
         assert!(out.checks.iter().any(|c| c.name == "trace_verify"));
         assert!(out.checks.iter().any(|c| c.name == "replay_outcome_class"));
+        assert!(
+            !out.checks
+                .iter()
+                .any(|c| c.name == "artifacts_zip_integrity")
+        );
+    }
+
+    #[test]
+    fn ci_command_keeps_zip_integrity_on_strict_path() {
+        let root = std::env::temp_dir().join(format!("fozzy-ci-cmd-strict-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace = root.join("trace.fozzy");
+        crate::TraceFile::new(
+            crate::RunMode::Run,
+            None,
+            Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            Vec::new(),
+            Vec::new(),
+            crate::RunSummary {
+                status: crate::ExitStatus::Pass,
+                mode: crate::RunMode::Run,
+                identity: crate::RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: None,
+                    report_path: None,
+                    artifacts_dir: None,
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+        )
+        .write_json(&trace)
+        .expect("write trace");
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let out = ci_command(
+            &cfg,
+            &CiOptions {
+                trace,
+                flake_runs: Vec::new(),
+                flake_budget_pct: None,
+                perf_baseline: None,
+                max_p99_delta_pct: None,
+                strict: true,
+            },
+        )
+        .expect("strict ci command");
+        assert!(out.ok);
         assert!(
             out.checks
                 .iter()

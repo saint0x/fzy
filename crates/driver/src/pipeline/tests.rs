@@ -6879,7 +6879,7 @@ fn emit_ir_includes_llvm_and_cranelift_forms() {
     std::fs::write(&path, "fn main() -> i32 {\n    return 0\n}\n")
         .expect("temp source should be written");
 
-    let output = emit_ir(&path).expect("emit ir should run");
+    let output = emit_ir(&path, None).expect("emit ir should run");
     let ir = output.backend_ir.expect("backend ir should be available");
     assert!(ir.contains("backend=llvm"));
     assert!(ir.contains("backend=cranelift"));
@@ -9404,12 +9404,57 @@ fn emit_ir_canonicalizes_sibling_module_calls() {
     )
     .expect("http source should be written");
 
-    let output = emit_ir(&root).expect("emit ir should run");
+    let output = emit_ir(&root, None).expect("emit ir should run");
     let ir = output.backend_ir.expect("backend ir should be available");
     assert!(ir.contains("@services_web_start_listener"));
     assert!(!ir.contains("@web_start_listener"));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn emit_ir_can_target_a_single_backend_without_breaking_default_dual_output() {
+    let file_name = format!(
+        "fozzylang-ir-single-backend-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(&path, "fn main() -> i32 {\n    return 0\n}\n")
+        .expect("temp source should be written");
+
+    let llvm_output = emit_ir(&path, Some("llvm")).expect("llvm emit ir should run");
+    let llvm_ir = llvm_output
+        .backend_ir
+        .expect("llvm backend ir should be available");
+    assert!(llvm_ir.contains("backend=llvm"));
+    assert!(!llvm_ir.contains("backend=cranelift"));
+
+    let cranelift_output =
+        emit_ir(&path, Some("cranelift")).expect("cranelift emit ir should run");
+    let cranelift_ir = cranelift_output
+        .backend_ir
+        .expect("cranelift backend ir should be available");
+    assert!(cranelift_ir.contains("backend=cranelift"));
+    assert!(!cranelift_ir.contains("backend=llvm"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn benchmark_resultx_fixture_stays_buildable_under_release_llvm_gate() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repo root should resolve");
+    let benchmark = repo_root.join("examples/benchmarks/resultx_scratch_bench.fzy");
+
+    let artifact = compile_file_with_backend(&benchmark, BuildProfile::Release, Some("llvm"))
+        .expect("benchmark fixture should compile");
+    assert_eq!(artifact.status, "ok");
+    assert!(artifact.output.is_some());
 }
 
 #[test]

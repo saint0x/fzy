@@ -54,6 +54,12 @@ pub struct CommandFailure {
     pub output: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CommandResult {
+    pub output: String,
+    pub exit_code: Option<i32>,
+}
+
 impl fmt::Display for CommandFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "command failed with exit code {}", self.exit_code)
@@ -166,6 +172,7 @@ pub enum Command {
     SpecCheck,
     EmitIr {
         path: PathBuf,
+        backend: Option<String>,
     },
     Perf {
         artifact: Option<PathBuf>,
@@ -258,6 +265,7 @@ pub enum Command {
     },
     Ci {
         trace: PathBuf,
+        strict: bool,
     },
     TraceNative {
         trace: PathBuf,
@@ -1007,8 +1015,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::DevLoop { path, backend } => devloop_command(&path, backend.as_deref(), format),
         Command::DxCheck { path, strict } => dx_check_command(&path, strict, format),
         Command::SpecCheck => spec_check(format),
-        Command::EmitIr { path } => {
-            let output = emit_ir(&path)?;
+        Command::EmitIr { path, backend } => {
+            let output = emit_ir(&path, backend.as_deref())?;
             Ok(render_output(format, output))
         }
         Command::Perf { artifact } => perf_command(artifact.as_deref(), format),
@@ -1121,9 +1129,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let output = fzscenario::verify_trace_file(&trace).map_err(scenario_error)?;
             render_trace_verify_report(format, output, strict)
         }
-        Command::Replay { trace } => replay_like("replay", &trace, format),
-        Command::Shrink { trace } => replay_like("shrink", &trace, format),
-        Command::Ci { trace } => replay_like("ci", &trace, format),
+        Command::Replay { trace } => replay_like("replay", &trace, false, format),
+        Command::Shrink { trace } => replay_like("shrink", &trace, false, format),
+        Command::Ci { trace, strict } => replay_like("ci", &trace, strict, format),
         Command::TraceNative { trace, output } => {
             let converted = convert_fozzy_trace_to_native(&trace, output.as_deref())?;
             Ok(render_trace_native_artifacts(format, converted))
@@ -1155,6 +1163,80 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::InspectEmbedding { path } => inspect_embedding_command(&path, format),
         Command::Version => Ok(render(format, env!("CARGO_PKG_VERSION"))),
     }
+}
+
+pub fn run_with_metadata(command: Command, format: Format) -> Result<CommandResult> {
+    let output = run(command.clone(), format)?;
+    Ok(CommandResult {
+        exit_code: infer_success_exit_code(&command, &output, format),
+        output,
+    })
+}
+
+fn infer_success_exit_code(command: &Command, output: &str, format: Format) -> Option<i32> {
+    match command {
+        Command::Build { .. } => output_contains_status_error(output, format).then_some(1),
+        Command::DoctorProject { .. }
+        | Command::DevLoop { .. }
+        | Command::Lint { .. }
+        | Command::Fmt { .. } => output_contains_status_error(output, format).then_some(1),
+        Command::Run { .. } => extract_json_i32(output, "\"exitCode\":")
+            .or_else(|| extract_text_i32(output, "exit_code"))
+            .filter(|code| *code != 0),
+        Command::Check { .. } | Command::Verify { .. } | Command::LspDiagnostics { .. } => {
+            let errors = extract_json_usize(output, "\"errors\":")
+                .or_else(|| extract_text_usize(output, "errors"))
+                .unwrap_or(0);
+            if errors > 0 || output_contains_ok_false(output) || output_contains_status_error(output, format)
+            {
+                Some(1)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn output_contains_status_error(output: &str, format: Format) -> bool {
+    match format {
+        Format::Json => output.contains("\"status\":\"error\""),
+        Format::Text => output.contains("status: error") || output.contains("status:error"),
+    }
+}
+
+fn output_contains_ok_false(output: &str) -> bool {
+    output.contains("\"ok\":false") || output.contains("ok=false")
+}
+
+fn extract_json_i32(output: &str, key: &str) -> Option<i32> {
+    let rest = output.split(key).nth(1)?;
+    let digits = rest
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
+        .collect::<String>();
+    digits.parse::<i32>().ok()
+}
+
+fn extract_json_usize(output: &str, key: &str) -> Option<usize> {
+    let rest = output.split(key).nth(1)?;
+    let digits = rest
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse::<usize>().ok()
+}
+
+fn extract_text_i32(output: &str, key: &str) -> Option<i32> {
+    let rest = output.split(&format!("{key}:")).nth(1)?;
+    rest.lines().next()?.trim().parse::<i32>().ok()
+}
+
+fn extract_text_usize(output: &str, key: &str) -> Option<usize> {
+    let rest = output.split(&format!("{key}:")).nth(1)?;
+    rest.lines().next()?.trim().parse::<usize>().ok()
 }
 
 struct BuildLinkArgsScope {
@@ -9230,8 +9312,8 @@ fn persist_runtime_threads_config(path: &Path, threads: Option<u16>) -> Result<O
     Ok(Some(config_path))
 }
 
-fn replay_like(command: &str, target: &Path, format: Format) -> Result<String> {
-    scenario_replay_like(command, target, format)
+fn replay_like(command: &str, target: &Path, strict: bool, format: Format) -> Result<String> {
+    scenario_replay_like(command, target, strict, format)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -10590,7 +10672,7 @@ fn scenario_explore(target: &Path, format: Format) -> Result<String> {
     render_scenario_run_result(format, run, true)
 }
 
-fn scenario_replay_like(command: &str, target: &Path, format: Format) -> Result<String> {
+fn scenario_replay_like(command: &str, target: &Path, strict: bool, format: Format) -> Result<String> {
     let config = scenario_config()?;
     let replay_target = resolve_replay_target(target)?;
     match command {
@@ -10651,7 +10733,7 @@ fn scenario_replay_like(command: &str, target: &Path, format: Format) -> Result<
                     flake_budget_pct: None,
                     perf_baseline: None,
                     max_p99_delta_pct: None,
-                    strict: true,
+                    strict,
                 },
             )
             .map_err(scenario_error)?;
@@ -17387,6 +17469,7 @@ fn main() -> i32 {
         let error = run(
             Command::Ci {
                 trace: trace.clone(),
+                strict: false,
             },
             Format::Text,
         )

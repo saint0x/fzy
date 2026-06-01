@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use driver::{cli_output, run as driver_run, Command, CommandFailure, Format};
+use driver::{cli_output, run as driver_run, run_with_metadata as driver_run_with_metadata, Command, CommandFailure, Format};
 
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,8 +31,8 @@ pub fn run() -> Result<()> {
     let filtered: Vec<String> = args.into_iter().filter(|a| a != "--json").collect();
 
     let command = parse_command(&filtered)?;
-    let raw_output = match driver_run(command.clone(), format) {
-        Ok(output) => output,
+    let result = match driver_run_with_metadata(command, format) {
+        Ok(result) => result,
         Err(error) => {
             if let Some(command_error) = error.downcast_ref::<CommandFailure>() {
                 if !command_error.output.trim().is_empty() {
@@ -46,107 +46,12 @@ pub fn run() -> Result<()> {
             return Err(error);
         }
     };
-    let output = cli_output::normalize_cli_output(format, &raw_output);
+    let output = cli_output::normalize_cli_output(format, &result.output);
     println!("{output}");
-    if let Some(exit_code) = infer_exit_code(&command, &raw_output, json) {
+    if let Some(exit_code) = result.exit_code {
         std::process::exit(exit_code);
     }
     Ok(())
-}
-
-fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
-    if json {
-        let payload: serde_json::Value = serde_json::from_str(output).ok()?;
-        return match command {
-            Command::Build { .. } => payload
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|status| status == "error")
-                .then_some(1),
-            Command::DoctorProject { .. }
-            | Command::DevLoop { .. }
-            | Command::Lint { .. }
-            | Command::Fmt { .. } => payload
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|status| status == "error")
-                .then_some(1),
-            Command::Run { .. } => payload
-                .get("exitCode")
-                .and_then(serde_json::Value::as_i64)
-                .map(|code| code as i32)
-                .filter(|code| *code != 0),
-            Command::Check { .. } | Command::Verify { .. } | Command::LspDiagnostics { .. } => {
-                let has_error = payload
-                    .get("items")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|items| {
-                        items.iter().any(|item| {
-                            item.get("severity")
-                                .and_then(serde_json::Value::as_str)
-                                .is_some_and(|severity| severity == "Error")
-                        })
-                    })
-                    .or_else(|| {
-                        payload
-                            .get("diagnostics")
-                            .and_then(serde_json::Value::as_array)
-                            .map(|items| {
-                                items.iter().any(|item| {
-                                    item.get("severity")
-                                        .and_then(serde_json::Value::as_str)
-                                        .is_some_and(|severity| severity == "Error")
-                                })
-                            })
-                    })
-                    .unwrap_or_else(|| {
-                        payload
-                            .get("ok")
-                            .and_then(serde_json::Value::as_bool)
-                            .is_some_and(|ok| !ok)
-                    });
-                if has_error {
-                    Some(1)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-    }
-
-    match command {
-        Command::Run { .. } => output
-            .split("exit_code=")
-            .nth(1)
-            .and_then(|tail| tail.split(';').next())
-            .and_then(|raw| raw.trim().parse::<i32>().ok())
-            .filter(|code| *code != 0),
-        Command::Check { .. } | Command::Verify { .. } | Command::LspDiagnostics { .. } => {
-            let errors = output
-                .split("errors=")
-                .nth(1)
-                .and_then(|tail| tail.split_whitespace().next())
-                .and_then(|raw| raw.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            if errors > 0 || output.contains("ok=false") {
-                Some(1)
-            } else {
-                None
-            }
-        }
-        Command::DoctorProject { .. }
-        | Command::DevLoop { .. }
-        | Command::Lint { .. }
-        | Command::Fmt { .. } => {
-            if output.contains("status: error") {
-                Some(1)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }
 
 fn parse_command(args: &[String]) -> Result<Command> {
@@ -338,6 +243,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("spec-check") => Ok(Command::SpecCheck),
         Some("emit-ir") => Ok(Command::EmitIr {
             path: arg_path_or_cwd(args, 1)?,
+            backend: parse_backend_flag(args)?,
         }),
         Some("perf") => Ok(Command::Perf {
             artifact: parse_path_flag(args, "--artifact")?,
@@ -494,6 +400,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
         }),
         Some("ci") => Ok(Command::Ci {
             trace: arg_path(args, 1)?,
+            strict: has_flag(args, "--strict"),
         }),
         Some("trace-native") => Ok(Command::TraceNative {
             trace: arg_path(args, 1)?,
@@ -605,7 +512,7 @@ commands:\n\
   devloop [path] [--backend llvm|cranelift]\n\
   dx-check [project] [--strict]\n\
   spec-check\n\
-  emit-ir [path]\n\
+  emit-ir [path] [--backend llvm|cranelift]\n\
   perf [--artifact path]\n\
   artifacts ls latest\n\
   report show latest [--format json|text]\n\
@@ -641,7 +548,7 @@ commands:\n\
   trace verify <trace> [--strict]\n\
   replay <trace>\n\
   shrink <trace>\n\
-  ci <trace>\n\
+  ci <trace> [--strict]\n\
   trace-native <trace.fozzy> [--out path]\n\
   version|--version\n\
 flags:\n\
@@ -1105,6 +1012,24 @@ mod tests {
                 assert_eq!(backend.as_deref(), Some("cranelift"));
             }
             _ => panic!("expected devloop command"),
+        }
+    }
+
+    #[test]
+    fn parse_emit_ir_command_with_optional_backend() {
+        let args = vec![
+            "emit-ir".to_string(),
+            "examples/minimal_runtime".to_string(),
+            "--backend".to_string(),
+            "llvm".to_string(),
+        ];
+        let command = parse_command(&args).expect("emit-ir should parse");
+        match command {
+            Command::EmitIr { path, backend } => {
+                assert_eq!(path, PathBuf::from("examples/minimal_runtime"));
+                assert_eq!(backend.as_deref(), Some("llvm"));
+            }
+            _ => panic!("expected emit-ir command"),
         }
     }
 

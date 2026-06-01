@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{FsBackend, HttpBackend, ProcBackend, ScenarioRun, run_scenario_inner};
-use crate::{Config, FozzyResult, MemoryOptions, RunMode, ScenarioPath};
+use crate::{
+    Config, Decision, ExitStatus, Finding, FozzyResult, MemoryOptions, MemoryRunReport, RunMode,
+    ScenarioPath, TraceEvent,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorReport {
@@ -152,13 +155,47 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
 }
 
 fn scenario_run_signature(run: &ScenarioRun) -> String {
-    let payload = serde_json::json!({
-        "status": run.status,
-        "memory": run.memory,
-        "findings": run.findings,
-        "decisions": run.decisions.decisions,
-        "events": run.events,
-    });
-    let encoded = serde_json::to_vec(&payload).unwrap_or_default();
-    blake3::hash(&encoded).to_hex().to_string()
+    let mut writer = Blake3Writer::default();
+    let payload = ScenarioRunSignatureView {
+        status: &run.status,
+        memory: run.memory.as_ref(),
+        findings: &run.findings,
+        decisions: &run.decisions.decisions,
+        events: &run.events,
+    };
+    if payload.serialize(&mut serde_json::Serializer::new(&mut writer)).is_err() {
+        return String::new();
+    }
+    writer.finalize()
+}
+
+#[derive(Default)]
+struct Blake3Writer {
+    hasher: blake3::Hasher,
+}
+
+impl Blake3Writer {
+    fn finalize(self) -> String {
+        self.hasher.finalize().to_hex().to_string()
+    }
+}
+
+impl std::io::Write for Blake3Writer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.hasher.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ScenarioRunSignatureView<'a> {
+    status: &'a ExitStatus,
+    memory: Option<&'a MemoryRunReport>,
+    findings: &'a [Finding],
+    decisions: &'a [Decision],
+    events: &'a [TraceEvent],
 }

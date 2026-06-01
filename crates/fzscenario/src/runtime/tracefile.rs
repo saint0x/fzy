@@ -401,20 +401,26 @@ pub fn trace_schema_warnings(version: u32) -> Vec<String> {
 
 pub fn verify_trace_file(path: &Path) -> FozzyResult<TraceVerifyReport> {
     let t = TraceFile::read_json(path)?;
-    let mut warnings = trace_schema_warnings(t.version);
-    warnings.extend(trace_replay_warnings(&t));
-    let checks = trace_verify_checks(&t, &mut warnings);
-    Ok(TraceVerifyReport {
+    let mut report = verify_trace(&t);
+    report.path = path.display().to_string();
+    Ok(report)
+}
+
+pub fn verify_trace(trace: &TraceFile) -> TraceVerifyReport {
+    let mut warnings = trace_schema_warnings(trace.version);
+    warnings.extend(trace_replay_warnings(trace));
+    let checks = trace_verify_checks(trace, &mut warnings);
+    TraceVerifyReport {
         ok: checks.iter().all(|check| check.ok),
-        path: path.display().to_string(),
-        version: t.version,
-        trace_schema_version: format!("{}.v{}", t.format, t.version),
-        compatibility: t.compatibility.clone(),
+        path: String::new(),
+        version: trace.version,
+        trace_schema_version: format!("{}.v{}", trace.format, trace.version),
+        compatibility: trace.compatibility.clone(),
         checks,
-        checksum_present: t.checksum.is_some(),
-        checksum_valid: t.checksum.is_some(),
+        checksum_present: trace.checksum.is_some(),
+        checksum_valid: trace.checksum.is_some(),
         warnings,
-    })
+    }
 }
 
 fn build_replay_contract(

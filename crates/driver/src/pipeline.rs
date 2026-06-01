@@ -601,7 +601,7 @@ fn normalize_diagnostics_for_path(path: &Path, diagnostics: &mut [diagnostics::D
     diagnostics::assign_stable_codes(diagnostics, diagnostics::DiagnosticDomain::Driver);
 }
 
-pub fn emit_ir(path: &Path) -> Result<Output> {
+pub fn emit_ir(path: &Path, backend: Option<&str>) -> Result<Output> {
     let resolved = resolve_source_path(path)?;
     let source_path = resolved.source_path;
     let module_name = source_path
@@ -647,18 +647,37 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
     }
     enrich_diagnostics_context(&mut diagnostics);
     diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Driver);
-    let llvm = lower_backend_ir(&lowered.fir, BackendKind::Llvm)?;
-    let cranelift = lower_backend_ir(&lowered.fir, BackendKind::Cranelift)?;
+    let mut backend_ir = String::new();
+    for backend_kind in selected_emit_ir_backends(backend)? {
+        let (label, ir) = match backend_kind {
+            BackendKind::Llvm => ("llvm", lower_backend_ir(&lowered.fir, BackendKind::Llvm)?),
+            BackendKind::Cranelift => (
+                "cranelift",
+                lower_backend_ir(&lowered.fir, BackendKind::Cranelift)?,
+            ),
+        };
+        if !backend_ir.is_empty() {
+            backend_ir.push('\n');
+        }
+        backend_ir.push_str(&format!("; backend={label}\n{ir}\n"));
+    }
 
     Ok(Output {
         module: lowered.fir.name.clone(),
         nodes: lowered.fir.nodes,
         diagnostics: diagnostics.len(),
         diagnostic_details: diagnostics,
-        backend_ir: Some(format!(
-            "; backend=llvm\n{llvm}\n; backend=cranelift\n{cranelift}\n"
-        )),
+        backend_ir: Some(backend_ir),
     })
+}
+
+fn selected_emit_ir_backends(backend: Option<&str>) -> Result<Vec<BackendKind>> {
+    match backend.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(vec![BackendKind::Llvm, BackendKind::Cranelift]),
+        Some("llvm") => Ok(vec![BackendKind::Llvm]),
+        Some("cranelift") => Ok(vec![BackendKind::Cranelift]),
+        Some(other) => bail!("invalid emit-ir backend `{other}`; expected `llvm` or `cranelift`"),
+    }
 }
 
 pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
