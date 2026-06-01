@@ -37,7 +37,7 @@ Validation evidence:
 - [x] `cargo test -q -p verifier`
 - [x] `cargo test -q -p driver`
 - [x] `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 42 --json`
-- [x] `fozzy test --det --strict tests/example.fozzy.json --json`
+- [x] `fozzy test --det --strict-verify tests/example.fozzy.json --json`
 - [x] `fozzy run tests/example.fozzy.json --det --record artifacts/dx-full-pass.trace.fozzy --json`
 - [x] `fozzy trace verify artifacts/dx-full-pass.trace.fozzy --strict --json`
 - [x] `fozzy replay artifacts/dx-full-pass.trace.fozzy --json`
@@ -206,7 +206,7 @@ Exit criteria:
 
 For each phase, run:
 - [ ] `fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`
-- [ ] `fozzy test --det --strict <scenarios...> --json`
+- [ ] `fozzy test --det --strict-verify <scenarios...> --json`
 - [ ] `fozzy run ... --det --record <trace.fozzy> --json`
 - [ ] `fozzy trace verify <trace.fozzy> --strict --json`
 - [ ] `fozzy replay <trace.fozzy> --json`

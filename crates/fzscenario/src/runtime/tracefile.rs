@@ -128,11 +128,8 @@ fn hydrate_legacy_compatibility(trace: &mut TraceFile) {
         trace.engine.compatibility = compatibility_info_for_trace_version(trace.version);
     }
     if trace.version < CURRENT_TRACE_VERSION && trace.replay_contract.scheduler.is_empty() {
-        trace.replay_contract = build_replay_contract(
-            trace.summary.identity.seed,
-            &trace.decisions,
-            &trace.events,
-        );
+        trace.replay_contract =
+            build_replay_contract(trace.summary.identity.seed, &trace.decisions, &trace.events);
     }
 }
 
@@ -242,7 +239,6 @@ impl TraceFile {
         let pretty = std::env::var("FOZZY_TRACE_PRETTY")
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-        let bytes = trace_json_bytes(self, Some(checksum.as_str()), pretty)?;
         // Atomic replace to avoid concurrent writer corruption on shared paths.
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let file_name = path
@@ -255,7 +251,10 @@ impl TraceFile {
             uuid::Uuid::new_v4()
         );
         let tmp_path = parent.join(tmp_name);
-        std::fs::write(&tmp_path, bytes)?;
+        let mut file = std::fs::File::create(&tmp_path)?;
+        write_trace_json(&mut file, self, Some(checksum.as_str()), pretty)?;
+        file.flush()?;
+        drop(file);
         std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
@@ -270,12 +269,6 @@ impl TraceFile {
         verify_checksum(&t, path)?;
         Ok(t)
     }
-}
-
-fn trace_json_bytes(trace: &TraceFile, checksum: Option<&str>, pretty: bool) -> FozzyResult<Vec<u8>> {
-    let mut bytes = Vec::new();
-    write_trace_json(&mut bytes, trace, checksum, pretty)?;
-    Ok(bytes)
 }
 
 fn write_trace_json<W: Write>(
@@ -1438,5 +1431,28 @@ mod tests {
         unsafe {
             std::env::remove_var("FOZZY_TRACE_PRETTY");
         }
+    }
+
+    #[test]
+    fn trace_write_json_streams_valid_compact_payload() {
+        let path = temp_file("compact.fozzy");
+        let trace = TraceFile::new(
+            RunMode::Run,
+            Some("tests/compact.fozzy.json".to_string()),
+            Some(ScenarioV1Steps {
+                version: 1,
+                name: "compact".to_string(),
+                steps: Vec::new(),
+            }),
+            Vec::new(),
+            Vec::new(),
+            sample_summary(None),
+        );
+        trace.write_json(&path).expect("write compact trace");
+        let raw = std::fs::read_to_string(&path).expect("read compact trace");
+        assert!(raw.contains("\"checksum\":\""));
+        assert!(raw.ends_with("}\n") || raw.ends_with('}'));
+        let loaded = TraceFile::read_json(&path).expect("read compact trace");
+        assert_eq!(loaded.format, TRACE_FORMAT);
     }
 }

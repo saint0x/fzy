@@ -95,7 +95,7 @@ fz doc gen examples/fullstack/src --format markdown --out artifacts/fullstack.ap
 
 ```bash
 fz doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json
-fz test --det --strict tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json
+fz test --det --strict-verify tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json
 fz run tests/run.pass.fozzy.json --det --record artifacts/trace.fozzy --json
 fz trace verify artifacts/trace.fozzy --strict --json
 fz replay artifacts/trace.fozzy --json
@@ -113,7 +113,7 @@ Treat your workflow as three layers:
 A complete change is not done when it only compiles. It is done when:
 
 - project conventions pass (`dx-check`)
-- deterministic tests pass (`fz test --det` and/or `fz test --det --strict`)
+- deterministic tests pass (`fz test --det` and/or `fz test --det --strict-verify`)
 - at least one trace is recordable, verifiable, and replayable
 
 The production stance is:
@@ -137,7 +137,7 @@ Use for new projects.
 
 ```bash
 fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
-fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck http://host:port/path] [--smoke-http http://host:port/path] [--json]
+fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends|--proc-backend host --fs-backend host --http-backend host] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck http://host:port/path] [--smoke-http http://host:port/path] [--json]
 fz test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
 ```
 

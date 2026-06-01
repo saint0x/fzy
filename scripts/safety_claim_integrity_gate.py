@@ -50,7 +50,7 @@ def main() -> int:
         "fz replay",
         "fz ci",
         "fz doctor --deep",
-        "fz test --det --strict",
+        "fz test --det --strict-verify",
         "fz audit unsafe",
         "fz abi-check",
         "scripts/ship_release_gate.sh",

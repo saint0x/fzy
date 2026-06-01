@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
-use driver::{cli_output, run as driver_run, run_with_metadata as driver_run_with_metadata, Command, CommandFailure, Format};
+use anyhow::{Context, Result, bail};
+use driver::{
+    Command, CommandFailure, Format, cli_output, run as driver_run,
+    run_with_metadata as driver_run_with_metadata,
+};
 
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -107,6 +110,9 @@ fn parse_command(args: &[String]) -> Result<Command> {
                     "--seed",
                     "--record",
                     "--backend",
+                    "--proc-backend",
+                    "--fs-backend",
+                    "--http-backend",
                     "--max-seconds",
                     "--exit-on-healthcheck",
                     "--smoke-http",
@@ -130,7 +136,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             let strict_verify = has_flag(args, "--strict-verify");
             let seed = parse_u64_flag(args, "--seed")?;
             let record = parse_path_flag(args, "--record")?;
-            let host_backends = has_flag(args, "--host-backends");
+            let host_backends = parse_run_host_backends(args)?;
             let backend = parse_backend_flag(args)?;
             let max_seconds = parse_u64_flag(args, "--max-seconds")?;
             let exit_on_healthcheck = parse_string_flag(args, "--exit-on-healthcheck")?;
@@ -500,7 +506,7 @@ fn print_help() {
 commands:\n\
   init [path] [--name package] [--template minimal|rust|ts] [--with run,fuzz,explore,memory,host|all] [--force]\n\
   build [path] [--release|--strict] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
-  run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
+  run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends|--proc-backend host --fs-backend host --http-backend host] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
   test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt [path ...] [--check]\n\
   check [path]\n\
@@ -560,6 +566,9 @@ flags:\n\
   --seed <u64>\n\
   --record <path>\n\
   --host-backends\n\
+  --proc-backend <name>\n\
+  --fs-backend <name>\n\
+  --http-backend <name>\n\
   --scenario <path>\n\
   --runs <u64>\n\
   --max-seconds <u64>\n\
@@ -652,6 +661,22 @@ fn parse_backend_flag(args: &[String]) -> Result<Option<String>> {
         "llvm" | "cranelift" => Ok(Some(normalized)),
         _ => bail!("invalid --backend `{value}`; expected `llvm` or `cranelift`"),
     }
+}
+
+fn parse_run_host_backends(args: &[String]) -> Result<bool> {
+    if has_flag(args, "--host-backends") {
+        return Ok(true);
+    }
+    let proc_backend = parse_string_flag(args, "--proc-backend")?;
+    let fs_backend = parse_string_flag(args, "--fs-backend")?;
+    let http_backend = parse_string_flag(args, "--http-backend")?;
+    Ok(matches_host_backend(proc_backend.as_deref())
+        && matches_host_backend(fs_backend.as_deref())
+        && matches_host_backend(http_backend.as_deref()))
+}
+
+fn matches_host_backend(value: Option<&str>) -> bool {
+    value.is_some_and(|backend| backend.trim().eq_ignore_ascii_case("host"))
 }
 
 fn parse_repeated_value_flags(args: &[String], flags: &[&str]) -> Result<Vec<String>> {
@@ -788,9 +813,10 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(err
-            .to_string()
-            .contains("production memory safety is always enabled"));
+        assert!(
+            err.to_string()
+                .contains("production memory safety is always enabled")
+        );
     }
 
     #[test]
@@ -801,9 +827,10 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(err
-            .to_string()
-            .contains("production memory safety is always enabled"));
+        assert!(
+            err.to_string()
+                .contains("production memory safety is always enabled")
+        );
     }
 
     #[test]
@@ -934,6 +961,59 @@ mod tests {
                 assert_eq!(path, PathBuf::from("tests/run.pass.fozzy.json"));
                 assert!(deterministic);
                 assert_eq!(seed, Some(1337));
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn parse_run_maps_explicit_host_backend_triple_to_host_backends() {
+        let args = vec![
+            "run".to_string(),
+            "examples/minimal_runtime".to_string(),
+            "--proc-backend".to_string(),
+            "host".to_string(),
+            "--fs-backend".to_string(),
+            "host".to_string(),
+            "--http-backend".to_string(),
+            "host".to_string(),
+        ];
+        let command = parse_command(&args).expect("run should parse explicit host backend triple");
+        match command {
+            Command::Run {
+                path,
+                host_backends,
+                ..
+            } => {
+                assert_eq!(path, PathBuf::from("examples/minimal_runtime"));
+                assert!(host_backends);
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn parse_run_does_not_treat_host_backend_value_as_path() {
+        let args = vec![
+            "run".to_string(),
+            "--proc-backend".to_string(),
+            "host".to_string(),
+            "--fs-backend".to_string(),
+            "host".to_string(),
+            "--http-backend".to_string(),
+            "host".to_string(),
+            "examples/minimal_runtime".to_string(),
+        ];
+        let command =
+            parse_command(&args).expect("run should keep explicit path after backend flags");
+        match command {
+            Command::Run {
+                path,
+                host_backends,
+                ..
+            } => {
+                assert_eq!(path, PathBuf::from("examples/minimal_runtime"));
+                assert!(host_backends);
             }
             _ => panic!("expected run command"),
         }
@@ -1158,9 +1238,11 @@ mod tests {
             "artifacts/default.profdata".to_string(),
         ];
         let error = parse_command(&args).expect_err("combined pgo flags should fail");
-        assert!(error
-            .to_string()
-            .contains("--pgo-generate and --pgo-use are mutually exclusive"));
+        assert!(
+            error
+                .to_string()
+                .contains("--pgo-generate and --pgo-use are mutually exclusive")
+        );
     }
 
     #[test]

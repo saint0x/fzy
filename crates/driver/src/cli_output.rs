@@ -53,12 +53,7 @@ pub fn format_json_value(value: &Value) -> String {
 
 pub fn normalize_cli_output(format: Format, output: &str) -> String {
     match format {
-        Format::Json => {
-            let Ok(parsed) = serde_json::from_str::<Value>(output) else {
-                return output.trim_end().to_string();
-            };
-            serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| output.trim_end().to_string())
-        }
+        Format::Json => output.trim_end().to_string(),
         Format::Text => normalize_text_output(output),
     }
 }
@@ -122,5 +117,12 @@ mod tests {
         assert!(normalized.contains("checks"));
         assert!(normalized.contains("- manifest:ok:loaded fozzy.toml"));
         assert!(normalized.contains("- lockfile:ok:validated"));
+    }
+
+    #[test]
+    fn normalize_json_output_preserves_existing_encoding() {
+        let output = "{\"z\":1,\"a\":[3,2,1]}\n";
+        let normalized = normalize_cli_output(Format::Json, output);
+        assert_eq!(normalized, "{\"z\":1,\"a\":[3,2,1]}");
     }
 }
