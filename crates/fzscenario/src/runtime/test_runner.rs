@@ -6,7 +6,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::engine::{
-    RecordCollisionPolicy, RunOptions, RunResult, ScenarioRun, run_scenario_inner,
+    RecordCollisionPolicy, RunOptions, RunResult, ScenarioRun, run_embedded_scenario_inner,
 };
 use crate::finalize::{
     build_run_summary, write_reporter_artifacts, write_single_scenario_trace, write_summary_report,
@@ -59,22 +59,29 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
         filtered_paths.push(p);
     }
 
-    let mut distributed_paths = Vec::new();
-    for path in &filtered_paths {
-        let scenario_path = ScenarioPath::new(path.clone());
-        if matches!(
-            crate::Scenario::load_file(&scenario_path)?,
-            crate::ScenarioFile::Distributed(_)
-        ) {
-            distributed_paths.push(path.display().to_string());
-        }
-    }
+    let planned_scenarios = plan_test_scenarios(&filtered_paths)?;
+    let distributed_paths = planned_scenarios
+        .iter()
+        .filter_map(|planned| match planned {
+            PlannedScenario::Distributed { path } => Some(path.display().to_string()),
+            PlannedScenario::Executable { .. } => None,
+        })
+        .collect::<Vec<_>>();
     if !distributed_paths.is_empty() {
         return Err(FozzyError::InvalidArgument(format!(
             "fz test discovered distributed scenario(s) that must be run with `fz explore`: {}",
             distributed_paths.join(", ")
         )));
     }
+    let executable_scenarios = planned_scenarios
+        .into_iter()
+        .filter_map(|planned| match planned {
+            PlannedScenario::Executable { path, scenario } => {
+                Some(PreparedScenario { path, scenario })
+            }
+            PlannedScenario::Distributed { .. } => None,
+        })
+        .collect::<Vec<_>>();
 
     let jobs = if opt.fail_fast {
         1
@@ -82,10 +89,10 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
         opt.jobs.unwrap_or(1).max(1)
     };
     let mut outcome = TestOutcome::new(skipped, opt.record_trace_to.is_some());
-    if jobs == 1 || filtered_paths.len() <= 1 {
-        run_serial_tests(config, &filtered_paths, opt, seed, &mut outcome)?;
+    if jobs == 1 || executable_scenarios.len() <= 1 {
+        run_serial_tests(config, &executable_scenarios, opt, seed, &mut outcome)?;
     } else {
-        run_parallel_tests(config, &filtered_paths, opt, seed, jobs, &mut outcome);
+        run_parallel_tests(config, &executable_scenarios, opt, seed, jobs, &mut outcome);
     }
 
     let finished_at = wall_time_iso_utc();
@@ -131,17 +138,16 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
 }
 
 fn run_serial_tests(
-    config: &Config,
-    filtered_paths: &[PathBuf],
+    _config: &Config,
+    planned_scenarios: &[PreparedScenario],
     opt: &RunOptions,
     seed: u64,
     outcome: &mut TestOutcome,
 ) -> FozzyResult<()> {
-    for path in filtered_paths {
-        let run = run_scenario_inner(
-            config,
-            RunMode::Test,
-            ScenarioPath::new(path.clone()),
+    for planned in planned_scenarios {
+        let run = run_embedded_scenario_inner(
+            planned.scenario.clone(),
+            planned.path.clone(),
             seed,
             opt.det,
             opt.timeout,
@@ -159,8 +165,8 @@ fn run_serial_tests(
 }
 
 fn run_parallel_tests(
-    config: &Config,
-    filtered_paths: &[PathBuf],
+    _config: &Config,
+    planned_scenarios: &[PreparedScenario],
     opt: &RunOptions,
     seed: u64,
     jobs: usize,
@@ -170,9 +176,9 @@ fn run_parallel_tests(
     std::thread::scope(|scope| {
         let mut in_flight = 0usize;
         let mut next = 0usize;
-        while next < filtered_paths.len() || in_flight > 0 {
-            while next < filtered_paths.len() && in_flight < jobs {
-                let path = filtered_paths[next].clone();
+        while next < planned_scenarios.len() || in_flight > 0 {
+            while next < planned_scenarios.len() && in_flight < jobs {
+                let planned = planned_scenarios[next].clone();
                 let tx = tx.clone();
                 let memory = opt.memory.clone();
                 let timeout = opt.timeout;
@@ -181,10 +187,9 @@ fn run_parallel_tests(
                 let http_backend = opt.http_backend;
                 let det = opt.det;
                 scope.spawn(move || {
-                    let result = run_scenario_inner(
-                        config,
-                        RunMode::Test,
-                        ScenarioPath::new(path),
+                    let result = run_embedded_scenario_inner(
+                        planned.scenario,
+                        planned.path,
                         seed,
                         det,
                         timeout,
@@ -212,6 +217,49 @@ fn run_parallel_tests(
             }
         }
     });
+}
+
+#[derive(Debug, Clone)]
+struct PreparedScenario {
+    path: PathBuf,
+    scenario: crate::ScenarioV1Steps,
+}
+
+#[derive(Debug, Clone)]
+enum PlannedScenario {
+    Executable {
+        path: PathBuf,
+        scenario: crate::ScenarioV1Steps,
+    },
+    Distributed {
+        path: PathBuf,
+    },
+}
+
+fn plan_test_scenarios(paths: &[PathBuf]) -> FozzyResult<Vec<PlannedScenario>> {
+    let mut planned = Vec::with_capacity(paths.len());
+    for path in paths {
+        let scenario_path = ScenarioPath::new(path.clone());
+        match crate::Scenario::load_file(&scenario_path)? {
+            crate::ScenarioFile::Steps(scenario) => {
+                scenario.validate()?;
+                planned.push(PlannedScenario::Executable {
+                    path: path.clone(),
+                    scenario,
+                });
+            }
+            crate::ScenarioFile::Distributed(_) => {
+                planned.push(PlannedScenario::Distributed { path: path.clone() });
+            }
+            crate::ScenarioFile::Suites(_) => {
+                return Err(FozzyError::Scenario(format!(
+                    "scenario file {} uses `suites` without an executable step DSL (v0.1 only supports `steps`)",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(planned)
 }
 
 fn write_test_traces(
@@ -335,4 +383,54 @@ fn gen_seed() -> u64 {
     let mut seed = [0u8; 8];
     rand_core::OsRng.fill_bytes(&mut seed);
     u64::from_le_bytes(seed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("fozzy-test-runner-{name}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn plan_test_scenarios_preloads_steps_once() {
+        let path = temp_path("steps.fozzy.json");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"name":"demo","steps":[{"type":"trace_event","name":"ok","fields":{}}]}"#,
+        )
+        .expect("write scenario");
+
+        let planned = plan_test_scenarios(std::slice::from_ref(&path)).expect("plan scenarios");
+        assert_eq!(planned.len(), 1);
+        match &planned[0] {
+            PlannedScenario::Executable {
+                path: planned_path,
+                scenario,
+            } => {
+                assert_eq!(planned_path, &path);
+                assert_eq!(scenario.name, "demo");
+                assert_eq!(scenario.steps.len(), 1);
+            }
+            PlannedScenario::Distributed { .. } => panic!("expected executable scenario"),
+        }
+    }
+
+    #[test]
+    fn plan_test_scenarios_flags_distributed_inputs() {
+        let path = temp_path("distributed.fozzy.json");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"name":"dist","distributed":{"node_count":2,"steps":[]}}"#,
+        )
+        .expect("write distributed scenario");
+
+        let planned = plan_test_scenarios(std::slice::from_ref(&path)).expect("plan scenarios");
+        assert!(matches!(
+            &planned[0],
+            PlannedScenario::Distributed { path: planned_path } if planned_path == &path
+        ));
+    }
 }

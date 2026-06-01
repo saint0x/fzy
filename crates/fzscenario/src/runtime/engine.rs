@@ -282,6 +282,14 @@ fn should_emit_heavy_artifacts(status: ExitStatus, explicit_request: bool) -> bo
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
+pub(crate) fn replay_step_delay() -> Duration {
+    let millis = std::env::var("FOZZY_REPLAY_STEP_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    Duration::from_millis(millis)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ScenarioRun {
     pub(crate) status: ExitStatus,
@@ -564,7 +572,10 @@ pub(crate) fn run_scenario_replay_inner<'a>(
             }
 
             if step {
-                std::thread::sleep(Duration::from_millis(10));
+                let delay = replay_step_delay();
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
             }
 
             ctx.expect_scheduler_pick(item.id, &item.label)?;
@@ -651,7 +662,10 @@ pub(crate) fn run_scenario_replay_inner<'a>(
             }
 
             if step {
-                std::thread::sleep(Duration::from_millis(10));
+                let delay = replay_step_delay();
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
             }
 
             ctx.expect_step(idx)?;
@@ -3139,4 +3153,36 @@ fn truncate_event_text(text: &str) -> String {
         .collect::<String>();
     out.push_str("...[truncated]");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn replay_step_delay_defaults_to_zero() {
+        let _guard = env_lock().lock().expect("env lock");
+        unsafe {
+            std::env::remove_var("FOZZY_REPLAY_STEP_DELAY_MS");
+        }
+        assert_eq!(replay_step_delay(), Duration::ZERO);
+    }
+
+    #[test]
+    fn replay_step_delay_respects_env_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        unsafe {
+            std::env::set_var("FOZZY_REPLAY_STEP_DELAY_MS", "7");
+        }
+        assert_eq!(replay_step_delay(), Duration::from_millis(7));
+        unsafe {
+            std::env::remove_var("FOZZY_REPLAY_STEP_DELAY_MS");
+        }
+    }
 }

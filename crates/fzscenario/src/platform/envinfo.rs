@@ -28,6 +28,7 @@ pub struct VersionInfo {
     pub commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_date: Option<String>,
+    #[serde(default)]
     pub compatibility: CompatibilityInfo,
 }
 

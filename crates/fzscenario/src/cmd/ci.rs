@@ -37,8 +37,18 @@ pub struct CiReport {
 pub fn ci_command(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
     let report = ci_evaluate(config, opt)?;
     if !report.ok {
+        let failed_checks = report
+            .checks
+            .iter()
+            .filter(|check| !check.ok)
+            .map(|check| {
+                let detail = check.detail.as_deref().unwrap_or("<none>");
+                format!("{} ({detail})", check.name)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(FozzyError::InvalidArgument(
-            "ci gate failed (one or more checks failed)".to_string(),
+            format!("ci gate failed (one or more checks failed): {failed_checks}"),
         ));
     }
     Ok(report)
@@ -60,9 +70,14 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
     let verify = verify_trace_file(&opt.trace)?;
     let strict_integrity_ok =
         verify.checksum_present && verify.checksum_valid && verify.warnings.is_empty();
+    let trace_verify_ok = if opt.strict {
+        verify.ok && strict_integrity_ok
+    } else {
+        true
+    };
     checks.push(CiCheck {
         name: "trace_verify".to_string(),
-        ok: verify.ok && (!opt.strict || strict_integrity_ok),
+        ok: trace_verify_ok,
         detail: Some(format!(
             "checksum_present={} checksum_valid={} warnings={}",
             verify.checksum_present,

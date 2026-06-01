@@ -25,21 +25,36 @@ pub fn resolve_matching_files(patterns: &[String]) -> FozzyResult<MatchFilesResu
     let check_abs = patterns.iter().any(|p| Path::new(p).is_absolute());
     let mut out = BTreeSet::new();
     let mut missing_literal_files = BTreeSet::new();
+    let mut walk_required = false;
 
     // Accept direct file paths (absolute or relative) even when they are outside cwd.
     for pattern in patterns {
         if has_glob_meta(pattern) {
+            walk_required = true;
             continue;
         }
         let candidate = PathBuf::from(pattern);
         if candidate.is_file() {
             out.insert(candidate);
+        } else if candidate.is_dir() {
+            walk_required = true;
         } else {
             missing_literal_files.insert(candidate);
         }
     }
+    if !walk_required {
+        let files = out.into_iter().collect::<Vec<_>>();
+        return Ok(MatchFilesResult {
+            files,
+            missing_literal_files: missing_literal_files.into_iter().collect(),
+        });
+    }
 
     for root in walk_roots(patterns) {
+        if root.is_file() {
+            insert_if_matching(&mut out, root.as_path(), &cwd, &set, check_abs);
+            continue;
+        }
         for entry in WalkDir::new(&root)
             .follow_links(false)
             .into_iter()
@@ -55,17 +70,7 @@ pub fn resolve_matching_files(patterns: &[String]) -> FozzyResult<MatchFilesResu
             if !entry.file_type().is_file() {
                 continue;
             }
-            let p = entry.path();
-            let rel = p.strip_prefix(".").unwrap_or(p);
-            let rel_match = set.is_match(rel);
-            let abs_match = if check_abs {
-                set.is_match(cwd.join(rel))
-            } else {
-                false
-            };
-            if rel_match || abs_match {
-                out.insert(rel.to_path_buf());
-            }
+            insert_if_matching(&mut out, entry.path(), &cwd, &set, check_abs);
         }
     }
     let files = out.into_iter().collect::<Vec<_>>();
@@ -80,7 +85,7 @@ pub fn resolve_matching_files(patterns: &[String]) -> FozzyResult<MatchFilesResu
 }
 
 fn walk_roots(patterns: &[String]) -> BTreeSet<PathBuf> {
-    let mut roots = BTreeSet::new();
+    let mut roots = Vec::new();
     for pattern in patterns {
         if has_glob_meta(pattern) {
             let prefix = pattern
@@ -89,41 +94,74 @@ fn walk_roots(patterns: &[String]) -> BTreeSet<PathBuf> {
                 .unwrap_or_default();
             let trimmed = prefix.trim_end_matches('/');
             if trimmed.is_empty() {
-                roots.insert(PathBuf::from("."));
+                roots.push(PathBuf::from("."));
                 continue;
             }
             let p = PathBuf::from(trimmed);
             if p.is_dir() {
-                roots.insert(p);
+                roots.push(p);
             } else if let Some(parent) = p.parent() {
                 if parent.as_os_str().is_empty() {
-                    roots.insert(PathBuf::from("."));
+                    roots.push(PathBuf::from("."));
                 } else {
-                    roots.insert(parent.to_path_buf());
+                    roots.push(parent.to_path_buf());
                 }
             } else {
-                roots.insert(PathBuf::from("."));
+                roots.push(PathBuf::from("."));
             }
             continue;
         }
 
         let p = PathBuf::from(pattern);
         if p.is_dir() {
-            roots.insert(p);
+            roots.push(p);
+        } else if p.is_file() {
+            roots.push(p);
         } else if let Some(parent) = p.parent() {
             if parent.as_os_str().is_empty() {
-                roots.insert(PathBuf::from("."));
+                roots.push(PathBuf::from("."));
             } else {
-                roots.insert(parent.to_path_buf());
+                roots.push(parent.to_path_buf());
             }
         } else {
-            roots.insert(PathBuf::from("."));
+            roots.push(PathBuf::from("."));
         }
     }
     if roots.is_empty() {
-        roots.insert(PathBuf::from("."));
+        roots.push(PathBuf::from("."));
     }
-    roots
+    prune_nested_roots(roots)
+}
+
+fn prune_nested_roots(roots: Vec<PathBuf>) -> BTreeSet<PathBuf> {
+    let mut sorted = roots;
+    sorted.sort();
+    let mut kept = BTreeSet::new();
+    'outer: for root in sorted {
+        for existing in &kept {
+            if root == *existing || root.starts_with(existing) {
+                continue 'outer;
+            }
+        }
+        kept.retain(|existing: &PathBuf| !existing.starts_with(&root));
+        kept.insert(root);
+    }
+    kept
+}
+
+fn insert_if_matching(
+    out: &mut BTreeSet<PathBuf>,
+    path: &Path,
+    cwd: &Path,
+    set: &GlobSet,
+    check_abs: bool,
+) {
+    let rel = path.strip_prefix(".").unwrap_or(path);
+    let rel_match = set.is_match(rel);
+    let abs_match = check_abs && set.is_match(cwd.join(rel));
+    if rel_match || abs_match {
+        out.insert(rel.to_path_buf());
+    }
 }
 
 fn should_skip_dir(path: &Path) -> bool {
@@ -206,5 +244,24 @@ mod tests {
             resolve_matching_files(&[missing.to_string_lossy().to_string()]).expect("resolve");
         assert!(resolved.files.is_empty());
         assert_eq!(resolved.missing_literal_files, vec![missing]);
+    }
+
+    #[test]
+    fn resolve_matching_files_fast_path_returns_literal_files_without_walking() {
+        let root = temp_dir("literal-fast-path");
+        let first = root.join("one.fozzy.json");
+        let second = root.join("two.fozzy.json");
+        std::fs::write(&first, br#"{"version":1,"name":"one","steps":[]}"#).expect("write first");
+        std::fs::write(&second, br#"{"version":1,"name":"two","steps":[]}"#)
+            .expect("write second");
+
+        let resolved = resolve_matching_files(&[
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string(),
+        ])
+        .expect("resolve literal files");
+
+        assert_eq!(resolved.files, vec![first, second]);
+        assert!(resolved.missing_literal_files.is_empty());
     }
 }

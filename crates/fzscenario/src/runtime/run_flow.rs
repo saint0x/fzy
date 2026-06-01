@@ -11,7 +11,7 @@ use crate::engine::{
 };
 use crate::finalize::{
     build_run_summary, build_shrink_preview_trace, write_reporter_artifacts,
-    write_single_scenario_trace, write_summary_report,
+    write_summary_report,
 };
 use crate::{
     Config, ExitStatus, Finding, FindingKind, FozzyError, FozzyResult, HeapBudgetPolicy,
@@ -51,9 +51,25 @@ pub fn run_scenario(
 
     let report_path = artifacts_dir.join("report.json");
     let mut trace_path: Option<PathBuf> = None;
+    let crate::engine::ScenarioRun {
+        status,
+        findings,
+        memory,
+        decisions,
+        events,
+        scenario_path,
+        scenario_embedded,
+    } = run;
+    let scenario_path_string = scenario_path.to_string_lossy().to_string();
+    let explicit_capture = opt.record_trace_to.is_some();
+    let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    let emit_profile =
+        crate::should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture);
+    let should_record = opt.record_trace_to.is_some() || status != ExitStatus::Pass;
 
     let mut report_summary = build_run_summary(
-        run.status,
+        status,
         RunMode::Run,
         run_id.clone(),
         seed,
@@ -65,50 +81,56 @@ pub fn run_scenario(
         duration_ms,
         duration_ns,
         None,
-        run.memory.as_ref().map(|m| m.summary.clone()),
-        run.findings.clone(),
+        memory.as_ref().map(|m| m.summary.clone()),
+        findings,
     );
-    let mut profile_trace = TraceFile::new(
-        RunMode::Run,
-        Some(run.scenario_path.to_string_lossy().to_string()),
-        Some(run.scenario_embedded.clone()),
-        run.decisions.decisions.clone(),
-        run.events.clone(),
-        report_summary.clone(),
-    );
-    profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-    let heap_findings =
-        heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
-    if !heap_findings.is_empty() {
-        report_summary.findings.extend(heap_findings);
-        report_summary.findings = crate::collapse_findings(report_summary.findings.clone());
+    let mut trace = if should_record || emit_profile || heap_policy_enabled(config) {
+        let mut trace = TraceFile::new(
+            RunMode::Run,
+            Some(scenario_path_string),
+            Some(scenario_embedded),
+            decisions.decisions,
+            events.clone(),
+            report_summary.clone(),
+        );
+        trace.memory = memory.as_ref().map(|m| m.to_trace());
+        Some(trace)
+    } else {
+        None
+    };
+    if let Some(trace) = trace.as_ref() {
+        let heap_findings = heap_budget_findings_from_trace(trace, &heap_budget_policy(config));
+        if !heap_findings.is_empty() {
+            report_summary.findings.extend(heap_findings);
+            report_summary.findings = crate::collapse_findings(report_summary.findings.clone());
+        }
     }
-
-    let explicit_capture = opt.record_trace_to.is_some();
-    let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
-        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
-    let emit_profile =
-        crate::should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
     if emit_heavy {
         std::fs::write(
             artifacts_dir.join("events.json"),
-            serde_json::to_vec(&run.events)?,
+            serde_json::to_vec(&events)?,
         )?;
-        crate::write_timeline(&run.events, &artifacts_dir.join("timeline.json"))?;
-        if let Some(mem) = run.memory.as_ref()
+        crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
+        if let Some(mem) = memory.as_ref()
             && opt.memory.artifacts
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
     }
-    let should_record = opt.record_trace_to.is_some() || run.status != ExitStatus::Pass;
     if should_record {
         let path = opt
             .record_trace_to
             .clone()
             .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
-        let written =
-            write_single_scenario_trace(&path, &run, seed, opt.record_collision, RunMode::Run)?;
+        if let Some(trace) = trace.as_mut() {
+            trace.summary = report_summary.clone();
+        }
+        let target = crate::resolve_record_target(&path, opt.record_collision)?;
+        crate::write_trace_to_target(
+            trace.as_ref().expect("trace should exist when recording"),
+            &target,
+        )?;
+        let written = target;
         trace_path = Some(written);
     }
 
@@ -116,8 +138,10 @@ pub fn run_scenario(
     summary.identity.trace_path = trace_path.map(|p| p.to_string_lossy().to_string());
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if emit_profile {
-        profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+        if let Some(trace) = trace.as_mut() {
+            trace.summary = summary.clone();
+            write_profile_artifacts_from_trace(trace, &artifacts_dir)?;
+        }
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
 
@@ -178,7 +202,16 @@ pub fn replay_trace(
     std::fs::create_dir_all(&artifacts_dir)?;
     let report_path = artifacts_dir.join("report.json");
 
-    let mut findings = run.findings.clone();
+    let crate::engine::ScenarioRun {
+        status,
+        findings: run_findings,
+        memory,
+        decisions,
+        events,
+        scenario_path: _,
+        scenario_embedded: _,
+    } = run;
+    let mut findings = run_findings;
     for warning in crate::trace_schema_warnings(trace.version)
         .into_iter()
         .chain(crate::trace_replay_warnings(&trace))
@@ -190,7 +223,7 @@ pub fn replay_trace(
             location: None,
         });
     }
-    if let (Some(expected), Some(actual)) = (trace.memory.as_ref(), run.memory.as_ref())
+    if let (Some(expected), Some(actual)) = (trace.memory.as_ref(), memory.as_ref())
         && expected.summary != actual.summary
     {
         findings.push(Finding {
@@ -208,7 +241,7 @@ pub fn replay_trace(
     }
 
     let mut summary = build_run_summary(
-        run.status,
+        status,
         RunMode::Replay,
         run_id,
         seed,
@@ -220,46 +253,54 @@ pub fn replay_trace(
         duration_ms,
         duration_ns,
         None,
-        run.memory.as_ref().map(|m| m.summary.clone()),
+        memory.as_ref().map(|m| m.summary.clone()),
         findings,
     );
-    let mut profile_trace = TraceFile::new(
-        RunMode::Replay,
-        Some(scenario_path.clone()),
-        Some(scenario.clone()),
-        run.decisions.decisions.clone(),
-        run.events.clone(),
-        summary.clone(),
-    );
-    profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-    let heap_findings =
-        heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
-    if !heap_findings.is_empty() {
-        summary.findings.extend(heap_findings);
-        summary.findings = crate::collapse_findings(summary.findings.clone());
+    let explicit_capture = opt.dump_events || opt.step;
+    let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    let emit_profile =
+        crate::should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture);
+    let mut profile_trace = if emit_profile || heap_policy_enabled(config) {
+        let mut profile_trace = TraceFile::new(
+            RunMode::Replay,
+            Some(scenario_path.clone()),
+            Some(scenario.clone()),
+            decisions.decisions,
+            events.clone(),
+            summary.clone(),
+        );
+        profile_trace.memory = memory.as_ref().map(|m| m.to_trace());
+        Some(profile_trace)
+    } else {
+        None
+    };
+    if let Some(trace) = profile_trace.as_ref() {
+        let heap_findings = heap_budget_findings_from_trace(trace, &heap_budget_policy(config));
+        if !heap_findings.is_empty() {
+            summary.findings.extend(heap_findings);
+            summary.findings = crate::collapse_findings(summary.findings.clone());
+        }
     }
 
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
-    let explicit_capture = opt.dump_events || opt.step;
-    let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
-        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
-    let emit_profile =
-        crate::should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
     if emit_heavy {
         std::fs::write(
             artifacts_dir.join("events.json"),
-            serde_json::to_vec(&run.events)?,
+            serde_json::to_vec(&events)?,
         )?;
-        crate::write_timeline(&run.events, &artifacts_dir.join("timeline.json"))?;
-        if let Some(mem) = run.memory.as_ref()
+        crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
+        if let Some(mem) = memory.as_ref()
             && mem.options.artifacts
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
     }
     if emit_profile {
-        profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+        if let Some(trace) = profile_trace.as_mut() {
+            trace.summary = summary.clone();
+            write_profile_artifacts_from_trace(trace, &artifacts_dir)?;
+        }
     }
     Ok(RunResult { summary })
 }
@@ -490,4 +531,9 @@ fn heap_budget_policy(config: &Config) -> HeapBudgetPolicy {
         alloc_bytes_budget: config.profile_heap_alloc_budget,
         in_use_bytes_budget: config.profile_heap_in_use_budget,
     }
+}
+
+fn heap_policy_enabled(config: &Config) -> bool {
+    let policy = heap_budget_policy(config);
+    policy.alloc_bytes_budget.is_some() || policy.in_use_bytes_budget.is_some()
 }

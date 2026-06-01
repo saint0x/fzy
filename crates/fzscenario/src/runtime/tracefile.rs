@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -117,6 +118,30 @@ impl Default for TraceCompatibility {
     }
 }
 
+fn hydrate_legacy_compatibility(trace: &mut TraceFile) {
+    if trace.compatibility.versions.trace_schema_version.is_empty() {
+        trace.compatibility = TraceCompatibility {
+            versions: compatibility_info_for_trace_version(trace.version),
+        };
+    }
+    if trace.engine.compatibility.trace_schema_version.is_empty() {
+        trace.engine.compatibility = compatibility_info_for_trace_version(trace.version);
+    }
+    if trace.version < CURRENT_TRACE_VERSION && trace.replay_contract.scheduler.is_empty() {
+        trace.replay_contract = build_replay_contract(
+            trace.summary.identity.seed,
+            &trace.decisions,
+            &trace.events,
+        );
+    }
+}
+
+fn compatibility_info_for_trace_version(version: u32) -> CompatibilityInfo {
+    let mut compatibility = crate::compatibility_info();
+    compatibility.trace_schema_version = format!("{}.v{}", TRACE_FORMAT, version);
+    compatibility
+}
+
 impl TraceFile {
     pub fn new(
         mode: RunMode,
@@ -212,65 +237,12 @@ impl TraceFile {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let canonical = serde_json::to_vec(&TraceWriteView {
-            format: &self.format,
-            version: self.version,
-            engine: &self.engine,
-            compatibility: &self.compatibility,
-            mode: self.mode,
-            scenario_path: self.scenario_path.as_ref(),
-            scenario: self.scenario.as_ref(),
-            fuzz: self.fuzz.as_ref(),
-            explore: self.explore.as_ref(),
-            memory: self.memory.as_ref(),
-            decisions: &self.decisions,
-            events: &self.events,
-            replay_contract: &self.replay_contract,
-            summary: &self.summary,
-            checksum: None,
-        })?;
-        let checksum = blake3::hash(&canonical).to_hex().to_string();
+        let checksum = trace_checksum(self)?;
 
         let pretty = std::env::var("FOZZY_TRACE_PRETTY")
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-        let bytes = if pretty {
-            serde_json::to_vec_pretty(&TraceWriteView {
-                format: &self.format,
-                version: self.version,
-                engine: &self.engine,
-                compatibility: &self.compatibility,
-                mode: self.mode,
-                scenario_path: self.scenario_path.as_ref(),
-                scenario: self.scenario.as_ref(),
-                fuzz: self.fuzz.as_ref(),
-                explore: self.explore.as_ref(),
-                memory: self.memory.as_ref(),
-                decisions: &self.decisions,
-                events: &self.events,
-                replay_contract: &self.replay_contract,
-                summary: &self.summary,
-                checksum: Some(checksum.as_str()),
-            })?
-        } else {
-            serde_json::to_vec(&TraceWriteView {
-                format: &self.format,
-                version: self.version,
-                engine: &self.engine,
-                compatibility: &self.compatibility,
-                mode: self.mode,
-                scenario_path: self.scenario_path.as_ref(),
-                scenario: self.scenario.as_ref(),
-                fuzz: self.fuzz.as_ref(),
-                explore: self.explore.as_ref(),
-                memory: self.memory.as_ref(),
-                decisions: &self.decisions,
-                events: &self.events,
-                replay_contract: &self.replay_contract,
-                summary: &self.summary,
-                checksum: Some(checksum.as_str()),
-            })?
-        };
+        let bytes = trace_json_bytes(self, Some(checksum.as_str()), pretty)?;
         // Atomic replace to avoid concurrent writer corruption on shared paths.
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let file_name = path
@@ -290,12 +262,81 @@ impl TraceFile {
 
     pub fn read_json(path: &Path) -> FozzyResult<Self> {
         let bytes = std::fs::read(path)?;
-        let t: TraceFile = serde_json::from_slice(&bytes).map_err(|e| {
+        let mut t: TraceFile = serde_json::from_slice(&bytes).map_err(|e| {
             FozzyError::Trace(format!("failed to parse trace {}: {e}", path.display()))
         })?;
+        hydrate_legacy_compatibility(&mut t);
         validate_trace_header(&t, path)?;
         verify_checksum(&t, path)?;
         Ok(t)
+    }
+}
+
+fn trace_json_bytes(trace: &TraceFile, checksum: Option<&str>, pretty: bool) -> FozzyResult<Vec<u8>> {
+    let mut bytes = Vec::new();
+    write_trace_json(&mut bytes, trace, checksum, pretty)?;
+    Ok(bytes)
+}
+
+fn write_trace_json<W: Write>(
+    writer: &mut W,
+    trace: &TraceFile,
+    checksum: Option<&str>,
+    pretty: bool,
+) -> FozzyResult<()> {
+    let view = TraceWriteView {
+        format: &trace.format,
+        version: trace.version,
+        engine: &trace.engine,
+        compatibility: &trace.compatibility,
+        mode: trace.mode,
+        scenario_path: trace.scenario_path.as_ref(),
+        scenario: trace.scenario.as_ref(),
+        fuzz: trace.fuzz.as_ref(),
+        explore: trace.explore.as_ref(),
+        memory: trace.memory.as_ref(),
+        decisions: &trace.decisions,
+        events: &trace.events,
+        replay_contract: &trace.replay_contract,
+        summary: &trace.summary,
+        checksum,
+    };
+    if pretty {
+        let mut serializer =
+            serde_json::Serializer::with_formatter(writer, serde_json::ser::PrettyFormatter::new());
+        view.serialize(&mut serializer)?;
+    } else {
+        let mut serializer = serde_json::Serializer::new(writer);
+        view.serialize(&mut serializer)?;
+    }
+    Ok(())
+}
+
+fn trace_checksum(trace: &TraceFile) -> FozzyResult<String> {
+    let mut writer = Blake3Writer::default();
+    write_trace_json(&mut writer, trace, None, false)?;
+    Ok(writer.finalize())
+}
+
+#[derive(Default)]
+struct Blake3Writer {
+    hasher: blake3::Hasher,
+}
+
+impl Blake3Writer {
+    fn finalize(self) -> String {
+        self.hasher.finalize().to_hex().to_string()
+    }
+}
+
+impl Write for Blake3Writer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.hasher.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -921,10 +962,7 @@ fn verify_checksum(trace: &TraceFile, path: &Path) -> FozzyResult<()> {
     let Some(expected) = trace.checksum.as_ref() else {
         return Ok(());
     };
-    let mut canonical = trace.clone();
-    canonical.checksum = None;
-    let bytes = serde_json::to_vec(&canonical)?;
-    let got = blake3::hash(&bytes).to_hex().to_string();
+    let got = trace_checksum(trace)?;
     if &got != expected {
         return Err(FozzyError::Trace(format!(
             "trace checksum mismatch for {} (expected {}, got {})",
@@ -1367,5 +1405,32 @@ mod tests {
                 .iter()
                 .any(|check| check.name == "rpc_frames_ordered" && !check.ok)
         );
+    }
+
+    #[test]
+    fn pretty_trace_write_round_trips_with_valid_checksum() {
+        let path = temp_file("pretty.fozzy");
+        unsafe {
+            std::env::set_var("FOZZY_TRACE_PRETTY", "1");
+        }
+        let trace = TraceFile::new(
+            RunMode::Run,
+            Some("tests/pretty.fozzy.json".to_string()),
+            Some(ScenarioV1Steps {
+                version: 1,
+                name: "pretty".to_string(),
+                steps: Vec::new(),
+            }),
+            Vec::new(),
+            Vec::new(),
+            sample_summary(None),
+        );
+        trace.write_json(&path).expect("write pretty trace");
+        let loaded = TraceFile::read_json(&path).expect("read pretty trace");
+        assert_eq!(loaded.format, TRACE_FORMAT);
+        assert!(loaded.checksum.is_some());
+        unsafe {
+            std::env::remove_var("FOZZY_TRACE_PRETTY");
+        }
     }
 }
