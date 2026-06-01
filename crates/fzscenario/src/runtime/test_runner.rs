@@ -1,5 +1,6 @@
 use rand_core::RngCore as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -173,45 +174,51 @@ fn run_parallel_tests(
     outcome: &mut TestOutcome,
 ) {
     let (tx, rx) = mpsc::channel();
+    let next = AtomicUsize::new(0);
+    let worker_count = jobs.min(planned_scenarios.len()).max(1);
     std::thread::scope(|scope| {
-        let mut in_flight = 0usize;
-        let mut next = 0usize;
-        while next < planned_scenarios.len() || in_flight > 0 {
-            while next < planned_scenarios.len() && in_flight < jobs {
-                let planned = planned_scenarios[next].clone();
-                let tx = tx.clone();
-                let memory = opt.memory.clone();
-                let timeout = opt.timeout;
-                let proc_backend = opt.proc_backend;
-                let fs_backend = opt.fs_backend;
-                let http_backend = opt.http_backend;
-                let det = opt.det;
-                scope.spawn(move || {
-                    let result = run_embedded_scenario_inner(
-                        planned.scenario,
-                        planned.path,
-                        seed,
-                        det,
-                        timeout,
-                        proc_backend,
-                        fs_backend,
-                        http_backend,
-                        memory,
-                    );
-                    let _ = tx.send(result);
-                });
-                next += 1;
-                in_flight += 1;
-            }
+        for _ in 0..worker_count {
+            let tx = tx.clone();
+            let memory = opt.memory.clone();
+            let timeout = opt.timeout;
+            let proc_backend = opt.proc_backend;
+            let fs_backend = opt.fs_backend;
+            let http_backend = opt.http_backend;
+            let det = opt.det;
+            let planned_scenarios = planned_scenarios;
+            let next = &next;
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(planned) = planned_scenarios.get(index).cloned() else {
+                    break;
+                };
+                let result = run_embedded_scenario_inner(
+                    planned.scenario,
+                    planned.path,
+                    seed,
+                    det,
+                    timeout,
+                    proc_backend,
+                    fs_backend,
+                    http_backend,
+                    memory.clone(),
+                );
+                if tx.send(result).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(tx);
 
-            if in_flight > 0 {
-                if let Ok(result) = rx.recv() {
-                    in_flight = in_flight.saturating_sub(1);
-                    match result {
-                        Ok(run) => outcome.record_run(run),
-                        Err(err) => outcome.record_worker_error(err),
-                    }
-                } else {
+        for _ in 0..planned_scenarios.len() {
+            match rx.recv() {
+                Ok(Ok(run)) => outcome.record_run(run),
+                Ok(Err(err)) => outcome.record_worker_error(err),
+                Err(_) => {
+                    outcome.record_worker_error(FozzyError::Scenario(
+                        "parallel test worker exited before reporting all scenario results"
+                            .to_string(),
+                    ));
                     break;
                 }
             }
@@ -432,5 +439,52 @@ mod tests {
             &planned[0],
             PlannedScenario::Distributed { path: planned_path } if planned_path == &path
         ));
+    }
+
+    #[test]
+    fn run_tests_parallel_executes_all_scenarios() {
+        let root = temp_path("parallel-suite");
+        std::fs::create_dir_all(&root).expect("suite dir");
+        let first = root.join("a.fozzy.json");
+        let second = root.join("b.fozzy.json");
+        let scenario =
+            br#"{"version":1,"name":"demo","steps":[{"type":"trace_event","name":"ok","fields":{}}]}"#;
+        std::fs::write(&first, scenario).expect("write first scenario");
+        std::fs::write(&second, scenario).expect("write second scenario");
+
+        let config = crate::Config {
+            base_dir: root.join(".fozzy"),
+            ..crate::Config::default()
+        };
+        let globs = vec![
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string(),
+        ];
+        let result = run_tests(
+            &config,
+            &globs,
+            &RunOptions {
+                det: true,
+                seed: Some(7),
+                timeout: None,
+                reporter: crate::Reporter::Json,
+                record_trace_to: None,
+                filter: None,
+                jobs: Some(2),
+                fail_fast: false,
+                record_collision: RecordCollisionPolicy::Append,
+                profile_capture: crate::ProfileCaptureLevel::Baseline,
+                proc_backend: crate::ProcBackend::Scripted,
+                fs_backend: crate::FsBackend::Virtual,
+                http_backend: crate::HttpBackend::Scripted,
+                memory: crate::MemoryOptions::default(),
+            },
+        )
+        .expect("parallel run should succeed");
+
+        let tests = result.summary.tests.expect("test counts");
+        assert_eq!(tests.passed, 2);
+        assert_eq!(tests.failed, 0);
+        assert!(result.summary.findings.is_empty());
     }
 }

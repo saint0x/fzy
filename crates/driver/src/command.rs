@@ -2581,8 +2581,11 @@ fn write_interop_artifact_manifest(
             "invokeCallbackI32": "fz_host_invoke_callback_i32",
         },
     });
-    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&payload)?)
-        .with_context(|| format!("failed writing {}", manifest_path.display()))?;
+    let bytes = serde_json::to_vec_pretty(&payload)?;
+    if std::fs::read(&manifest_path).ok().as_deref() != Some(bytes.as_slice()) {
+        std::fs::write(&manifest_path, &bytes)
+            .with_context(|| format!("failed writing {}", manifest_path.display()))?;
+    }
     Ok(manifest_path)
 }
 
@@ -2664,11 +2667,68 @@ fn maybe_generate_unsafe_docs(path: &Path) -> Option<PathBuf> {
     if parsed.module.unsafe_sites == 0 {
         return None;
     }
+    let docs_path = resolved.project_root.join(".fz/unsafe-docs.md");
+    if unsafe_docs_cache_hit(path, &docs_path).ok()? {
+        return Some(docs_path);
+    }
     if audit_unsafe_command(&resolved.project_root, false, Format::Json).is_ok() {
-        Some(resolved.project_root.join(".fz/unsafe-docs.md"))
+        let _ = write_unsafe_docs_cache_stamp(path, &docs_path);
+        Some(docs_path)
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UnsafeDocsCacheStamp {
+    fingerprint: String,
+}
+
+fn unsafe_docs_cache_hit(path: &Path, docs_path: &Path) -> Result<bool> {
+    let stamp_path = unsafe_docs_cache_path(docs_path);
+    let json_path = docs_path.with_extension("json");
+    let html_path = docs_path.with_extension("html");
+    if !docs_path.exists() || !json_path.exists() || !html_path.exists() || !stamp_path.exists() {
+        return Ok(false);
+    }
+    let stamp: UnsafeDocsCacheStamp = serde_json::from_slice(
+        &std::fs::read(&stamp_path)
+            .with_context(|| format!("failed reading {}", stamp_path.display()))?,
+    )
+    .with_context(|| format!("failed parsing {}", stamp_path.display()))?;
+    Ok(stamp.fingerprint == unsafe_docs_fingerprint(path)?)
+}
+
+fn write_unsafe_docs_cache_stamp(path: &Path, docs_path: &Path) -> Result<()> {
+    let stamp_path = unsafe_docs_cache_path(docs_path);
+    let payload = UnsafeDocsCacheStamp {
+        fingerprint: unsafe_docs_fingerprint(path)?,
+    };
+    if let Some(parent) = stamp_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&stamp_path, serde_json::to_vec_pretty(&payload)?)
+        .with_context(|| format!("failed writing {}", stamp_path.display()))
+}
+
+fn unsafe_docs_cache_path(docs_path: &Path) -> PathBuf {
+    docs_path.with_extension("stamp.json")
+}
+
+fn unsafe_docs_fingerprint(path: &Path) -> Result<String> {
+    let module_set = load_resolved_module_set(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(module_set.resolved.project_root.to_string_lossy().as_bytes());
+    hasher.update(module_set.resolved.source_path.to_string_lossy().as_bytes());
+    if let Some(manifest) = module_set.resolved.manifest.as_ref() {
+        hasher.update(manifest.package.name.as_bytes());
+        hasher.update(manifest.package.version.as_bytes());
+    }
+    for module in &module_set.modules {
+        hasher.update(module.path.to_string_lossy().as_bytes());
+        hasher.update(module.source.as_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 pub(crate) const DIAGNOSTIC_EXPLAIN_SCHEMA_VERSION: &str = "fozzylang.diagnostic_explain.v1";
@@ -13200,6 +13260,127 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn generate_c_headers_reuses_cached_outputs_when_inputs_are_unchanged() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-header-cache-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"header_cache\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"header_cache\"\npath=\"src/lib.fzy\"\n\n[ffi]\npanic_boundary=\"abort\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
+        )
+        .expect("source should be written");
+
+        let first = generate_c_headers(&root, None).expect("header generation should succeed");
+        let cache_path = first.path.with_extension("header.cache.json");
+        assert!(cache_path.exists(), "cache stamp should be written");
+        let header_mtime = std::fs::metadata(&first.path)
+            .and_then(|meta| meta.modified())
+            .expect("header mtime");
+        let abi_mtime = std::fs::metadata(&first.abi_manifest)
+            .and_then(|meta| meta.modified())
+            .expect("abi mtime");
+        let cache_mtime = std::fs::metadata(&cache_path)
+            .and_then(|meta| meta.modified())
+            .expect("cache mtime");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = generate_c_headers(&root, None).expect("cached header generation should succeed");
+        assert_eq!(second.exports, 1);
+        assert_eq!(
+            std::fs::metadata(&second.path)
+                .and_then(|meta| meta.modified())
+                .expect("header mtime"),
+            header_mtime
+        );
+        assert_eq!(
+            std::fs::metadata(&second.abi_manifest)
+                .and_then(|meta| meta.modified())
+                .expect("abi mtime"),
+            abi_mtime
+        );
+        assert_eq!(
+            std::fs::metadata(&cache_path)
+                .and_then(|meta| meta.modified())
+                .expect("cache mtime"),
+            cache_mtime
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsafe_docs_cache_hit_tracks_input_fingerprint() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-unsafe-docs-cache-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"unsafe_docs\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"unsafe_docs\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "unsafe fn risky() -> i32 {\n    return 7\n}\n\nfn main() -> i32 {\n    unsafe {\n        return risky()\n    }\n}\n",
+        )
+        .expect("source should be written");
+
+        let docs = root.join(".fz/unsafe-docs.md");
+        std::fs::create_dir_all(docs.parent().expect("docs parent")).expect("docs dir");
+        std::fs::write(&docs, "# unsafe docs\n").expect("write docs");
+        std::fs::write(docs.with_extension("json"), b"{}").expect("write docs json");
+        std::fs::write(docs.with_extension("html"), b"<p>unsafe docs</p>").expect("write docs html");
+        write_unsafe_docs_cache_stamp(&root, &docs).expect("write cache stamp");
+        let stamp = unsafe_docs_cache_path(&docs);
+        assert!(stamp.exists(), "unsafe docs stamp should be written");
+        assert!(
+            unsafe_docs_cache_hit(&root, &docs).expect("cache hit should evaluate"),
+            "fresh cache stamp should match inputs"
+        );
+        let docs_mtime = std::fs::metadata(&docs)
+            .and_then(|meta| meta.modified())
+            .expect("docs mtime");
+        let stamp_mtime = std::fs::metadata(&stamp)
+            .and_then(|meta| meta.modified())
+            .expect("stamp mtime");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            std::fs::metadata(&docs)
+                .and_then(|meta| meta.modified())
+                .expect("docs mtime"),
+            docs_mtime
+        );
+        assert_eq!(
+            std::fs::metadata(&stamp)
+                .and_then(|meta| meta.modified())
+                .expect("stamp mtime"),
+            stamp_mtime
+        );
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "unsafe fn risky() -> i32 {\n    return 9\n}\n\nfn main() -> i32 {\n    unsafe {\n        return risky()\n    }\n}\n",
+        )
+        .expect("rewrite source");
+        assert!(
+            !unsafe_docs_cache_hit(&root, &docs).expect("cache hit should re-evaluate"),
+            "cache stamp should miss after source changes"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

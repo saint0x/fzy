@@ -331,7 +331,7 @@ pub(super) fn regression_priority_score(finding: &RegressionFinding) -> f64 {
     severity * 10.0 + class + finding.confidence
 }
 
-pub(super) fn explain_single(
+pub(crate) fn explain_single(
     run: &str,
     artifacts_dir: &Path,
     metrics: &ProfileMetrics,

@@ -175,6 +175,7 @@ pub(crate) fn should_skip_dir(path: &Path) -> bool {
         })
 }
 
+#[allow(dead_code)]
 pub(crate) fn list_files_shallow(dir: &Path) -> FozzyResult<Vec<PathBuf>> {
     if !dir.exists() {
         return Ok(Vec::new());

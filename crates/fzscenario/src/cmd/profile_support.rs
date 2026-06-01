@@ -5,10 +5,22 @@ pub(super) fn load_profile_bundle(
     selector: &str,
     spec: ProfileLoadSpec,
 ) -> FozzyResult<ProfileBundle> {
-    let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
+    load_profile_bundle_with_run_bundle(config, selector, spec, None)
+}
+
+pub(crate) fn load_profile_bundle_with_run_bundle(
+    config: &Config,
+    selector: &str,
+    spec: ProfileLoadSpec,
+    run_bundle: Option<&crate::RunBundle>,
+) -> FozzyResult<ProfileBundle> {
+    let (artifacts_dir, trace_path, preloaded_trace) =
+        resolve_profile_artifacts_with_run_bundle(config, selector, run_bundle)?;
     if let Some(trace_path) = trace_path {
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
-            let trace = TraceFile::read_json(&trace_path)?;
+            let trace = preloaded_trace
+                .clone()
+                .unwrap_or(TraceFile::read_json(&trace_path)?);
             write_profile_artifacts_from_trace(&trace, &artifacts_dir)?;
         }
     } else if !profile_artifacts_exist(&artifacts_dir) {
@@ -505,6 +517,16 @@ pub(super) fn resolve_profile_artifacts(
     config: &Config,
     selector: &str,
 ) -> FozzyResult<(PathBuf, Option<PathBuf>)> {
+    let (artifacts_dir, trace_path, _) =
+        resolve_profile_artifacts_with_run_bundle(config, selector, None)?;
+    Ok((artifacts_dir, trace_path))
+}
+
+fn resolve_profile_artifacts_with_run_bundle(
+    config: &Config,
+    selector: &str,
+    run_bundle: Option<&crate::RunBundle>,
+) -> FozzyResult<(PathBuf, Option<PathBuf>, Option<TraceFile>)> {
     let input = PathBuf::from(selector);
     if input.exists()
         && input.is_file()
@@ -518,42 +540,34 @@ pub(super) fn resolve_profile_artifacts(
             .to_hex()
             .to_string();
         let dir = config.base_dir.join("profile-cache").join(key);
-        return Ok((dir, Some(input)));
+        let preloaded_trace = run_bundle.and_then(|bundle| bundle.trace.clone());
+        return Ok((dir, Some(input), preloaded_trace));
     }
 
-    let artifacts_dir = resolve_artifacts_dir(config, selector)?;
-    let trace_path = artifacts_dir.join("trace.fozzy");
-    if trace_path.exists() {
-        return Ok((artifacts_dir, Some(trace_path)));
+    if let Some(bundle) = run_bundle {
+        return Ok((
+            bundle.artifacts_dir.clone(),
+            bundle.trace_path.clone(),
+            bundle.trace.clone(),
+        ));
     }
 
-    let report_path = artifacts_dir.join("report.json");
-    if report_path.exists() {
-        let bytes = std::fs::read(&report_path)?;
-        if let Ok(summary) = serde_json::from_slice::<RunSummary>(&bytes) {
-            if let Some(path) = summary.identity.trace_path {
-                let from_report = PathBuf::from(path);
-                if from_report.exists() {
-                    return Ok((artifacts_dir, Some(from_report)));
-                }
-            }
-        }
+    let bundle = crate::load_run_bundle(config, selector, crate::RunBundleTraceMode::IfNeeded)?;
+    if bundle.trace_path.is_some() || bundle.summary.is_some() {
+        return Ok((bundle.artifacts_dir, bundle.trace_path, bundle.trace));
     }
 
-    let manifest_path = artifacts_dir.join("manifest.json");
-    if manifest_path.exists() {
-        let bytes = std::fs::read(&manifest_path)?;
-        if let Ok(manifest) = serde_json::from_slice::<RunManifest>(&bytes) {
-            if let Some(path) = manifest.trace_path {
-                let from_manifest = PathBuf::from(path);
-                if from_manifest.exists() {
-                    return Ok((artifacts_dir, Some(from_manifest)));
-                }
-            }
-        }
-    }
+    Ok((resolve_artifacts_dir(config, selector)?, None, None))
+}
 
-    Ok((artifacts_dir, None))
+pub(crate) fn explain_profile_bundle(
+    run: &str,
+    bundle: &ProfileBundle,
+) -> Option<crate::ProfileExplain> {
+    bundle
+        .latency
+        .as_ref()
+        .map(|latency| crate::explain_single(run, &bundle.artifacts_dir, &bundle.metrics, latency))
 }
 
 fn profile_artifacts_exist(artifacts_dir: &Path) -> bool {

@@ -3,11 +3,10 @@
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
-use std::path::PathBuf;
-
 use crate::{
-    Config, FlakeBudget, FozzyError, FozzyResult, ProfileCommand, Reporter, RunSummary, TraceFile,
-    render_html, render_junit_xml,
+    Config, FlakeBudget, FozzyError, FozzyResult, Reporter, RunSummary, RunBundleTraceMode,
+    explain_profile_bundle, load_profile_bundle_with_run_bundle, load_run_bundle, render_html,
+    render_junit_xml,
 };
 
 #[derive(Debug, Subcommand)]
@@ -56,8 +55,9 @@ pub struct FlakyReport {
 pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<serde_json::Value> {
     match command {
         ReportCommand::Show { run, format } => {
-            let summary = load_summary(config, run)?;
-            let doc = report_doc_with_profile(config, run, &summary);
+            let bundle = load_run_bundle(config, run, RunBundleTraceMode::IfNeeded)?;
+            let summary = bundle.summary.clone().ok_or_else(|| missing_report_error(run, &bundle))?;
+            let doc = report_doc_with_profile(config, run, &summary, &bundle);
             match format {
                 Reporter::Json => Ok(doc),
                 Reporter::Pretty => Ok(serde_json::to_value(ReportEnvelope {
@@ -80,8 +80,9 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
             jq,
             list_paths,
         } => {
-            let summary = load_summary(config, run)?;
-            let value = report_doc_with_profile(config, run, &summary);
+            let bundle = load_run_bundle(config, run, RunBundleTraceMode::IfNeeded)?;
+            let summary = bundle.summary.clone().ok_or_else(|| missing_report_error(run, &bundle))?;
+            let value = report_doc_with_profile(config, run, &summary, &bundle);
             if *list_paths {
                 return Ok(serde_json::json!({
                     "paths": list_query_paths(&value)
@@ -99,23 +100,46 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
     }
 }
 
-fn report_doc_with_profile(config: &Config, run: &str, summary: &RunSummary) -> serde_json::Value {
+fn report_doc_with_profile(
+    config: &Config,
+    run: &str,
+    summary: &RunSummary,
+    bundle: &crate::RunBundle,
+) -> serde_json::Value {
     let mut value = serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}));
-    let explain = crate::profile_command(
+    let explain = load_profile_bundle_with_run_bundle(
         config,
-        &ProfileCommand::Explain {
-            run: run.to_string(),
-            diff_with: None,
+        run,
+        crate::ProfileLoadSpec {
+            latency: true,
+            ..crate::ProfileLoadSpec::default()
         },
-        false,
+        Some(bundle),
     )
-    .ok();
+    .ok()
+    .and_then(|profile| explain_profile_bundle(run, &profile));
     if let Some(obj) = value.as_object_mut()
         && let Some(explain) = explain
     {
-        obj.insert("profileDiagnosis".to_string(), explain);
+        obj.insert(
+            "profileDiagnosis".to_string(),
+            serde_json::to_value(explain).unwrap_or_else(|_| serde_json::json!({})),
+        );
     }
     value
+}
+
+fn missing_report_error(run: &str, bundle: &crate::RunBundle) -> FozzyError {
+    let report_json = bundle.artifacts_dir.join("report.json");
+    let trace_path = bundle
+        .trace_path
+        .clone()
+        .unwrap_or_else(|| bundle.artifacts_dir.join("trace.fozzy"));
+    FozzyError::Report(format!(
+        "no report found for {run:?} (looked for {} and {})",
+        report_json.display(),
+        trace_path.display()
+    ))
 }
 
 fn render_pretty_with_profile(summary: &RunSummary, doc: &serde_json::Value) -> String {
@@ -221,39 +245,11 @@ fn flaky_command(
 }
 
 fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
-    let artifacts_dir = crate::resolve_artifacts_dir(config, run)?;
-    let report_json = artifacts_dir.join("report.json");
-    if report_json.exists() {
-        let bytes = std::fs::read(report_json)?;
-        let summary: RunSummary = serde_json::from_slice(&bytes)?;
-        return Ok(summary);
-    }
-
-    let input_path = PathBuf::from(run);
-    let trace_path = if input_path.exists() {
-        let is_trace = input_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"));
-        if !is_trace {
-            return Err(FozzyError::Report(format!(
-                "invalid run identifier {run:?}: expected run id or .fozzy trace path"
-            )));
-        }
-        input_path
-    } else {
-        artifacts_dir.join("trace.fozzy")
-    };
-    if trace_path.exists() {
-        let trace = TraceFile::read_json(&trace_path)?;
-        return Ok(trace.summary);
-    }
-
-    Err(FozzyError::Report(format!(
-        "no report found for {run:?} (looked for {} and {})",
-        report_json.display(),
-        trace_path.display()
-    )))
+    let bundle = load_run_bundle(config, run, RunBundleTraceMode::IfNeeded)?;
+    bundle
+        .summary
+        .clone()
+        .ok_or_else(|| missing_report_error(run, &bundle))
 }
 
 fn query_value(root: &serde_json::Value, expr: &str) -> FozzyResult<serde_json::Value> {

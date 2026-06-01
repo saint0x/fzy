@@ -146,6 +146,20 @@ pub struct TraceDelta {
     pub first_event_diff_index: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunBundleTraceMode {
+    IfNeeded,
+    Always,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RunBundle {
+    pub(crate) artifacts_dir: PathBuf,
+    pub(crate) summary: Option<RunSummary>,
+    pub(crate) trace_path: Option<PathBuf>,
+    pub(crate) trace: Option<TraceFile>,
+}
+
 pub fn artifacts_command(
     config: &Config,
     command: &ArtifactCommand,
@@ -700,36 +714,97 @@ fn trace_delta(left: &TraceFile, right: &TraceFile) -> TraceDelta {
 }
 
 fn load_summary(config: &Config, run: &str) -> FozzyResult<Option<RunSummary>> {
-    let artifacts_dir = resolve_artifacts_dir(config, run)?;
-    let report_json = artifacts_dir.join("report.json");
-    if report_json.exists() {
-        let bytes = std::fs::read(report_json)?;
-        let summary: RunSummary = serde_json::from_slice(&bytes)?;
-        return Ok(Some(summary));
-    }
-
-    let trace = load_trace(config, run)?;
-    Ok(trace.map(|t| t.summary))
+    Ok(load_run_bundle(config, run, RunBundleTraceMode::IfNeeded)?.summary)
 }
 
 fn load_trace(config: &Config, run: &str) -> FozzyResult<Option<TraceFile>> {
+    Ok(load_run_bundle(config, run, RunBundleTraceMode::Always)?.trace)
+}
+
+pub(crate) fn load_run_bundle(
+    config: &Config,
+    run: &str,
+    trace_mode: RunBundleTraceMode,
+) -> FozzyResult<RunBundle> {
+    let artifacts_dir = resolve_artifacts_dir(config, run)?;
+    let report_json = artifacts_dir.join("report.json");
+    let manifest_json = artifacts_dir.join("manifest.json");
+
+    let mut summary = None;
+    if report_json.exists() {
+        let bytes = std::fs::read(&report_json)?;
+        summary = Some(serde_json::from_slice(&bytes)?);
+    }
+
+    let trace_path = match resolve_trace_path_from_bundle(run, &artifacts_dir, summary.as_ref())? {
+        Some(path) => Some(path),
+        None => resolve_trace_path_from_manifest(&manifest_json)?,
+    };
+
+    let mut trace = None;
+    if matches!(trace_mode, RunBundleTraceMode::Always)
+        || (matches!(trace_mode, RunBundleTraceMode::IfNeeded) && summary.is_none())
+    {
+        if let Some(path) = trace_path.as_ref() {
+            trace = Some(TraceFile::read_json(path)?);
+            if summary.is_none() {
+                summary = trace.as_ref().map(|value| value.summary.clone());
+            }
+        }
+    }
+
+    Ok(RunBundle {
+        artifacts_dir,
+        summary,
+        trace_path,
+        trace,
+    })
+}
+
+fn resolve_trace_path_from_bundle(
+    run: &str,
+    artifacts_dir: &Path,
+    summary: Option<&RunSummary>,
+) -> FozzyResult<Option<PathBuf>> {
     let input = PathBuf::from(run);
-    let trace_path = if input.exists()
+    if input.exists()
         && input.is_file()
         && input
             .extension()
             .and_then(|s| s.to_str())
             .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
     {
-        input
-    } else {
-        resolve_artifacts_dir(config, run)?.join("trace.fozzy")
-    };
+        return Ok(Some(input));
+    }
 
-    if !trace_path.exists() {
+    let default_trace = artifacts_dir.join("trace.fozzy");
+    if default_trace.exists() {
+        return Ok(Some(default_trace));
+    }
+
+    if let Some(summary) = summary
+        && let Some(path) = summary.identity.trace_path.as_ref()
+    {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Ok(Some(candidate));
+        }
+    }
+
+    Ok(None)
+}
+
+fn resolve_trace_path_from_manifest(manifest_path: &Path) -> FozzyResult<Option<PathBuf>> {
+    if !manifest_path.exists() {
         return Ok(None);
     }
-    Ok(Some(TraceFile::read_json(&trace_path)?))
+    let bytes = std::fs::read(manifest_path)?;
+    let manifest: RunManifest = serde_json::from_slice(&bytes)?;
+    let Some(path) = manifest.trace_path else {
+        return Ok(None);
+    };
+    let candidate = PathBuf::from(path);
+    Ok(candidate.exists().then_some(candidate))
 }
 
 pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<PathBuf> {

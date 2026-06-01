@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -6,8 +7,8 @@ use uuid::Uuid;
 
 use crate::engine::{
     FsBackend, HttpBackend, ProcBackend, ProfileCaptureLevel, ReplayOptions, RunOptions, RunResult,
-    ShrinkMinimize, ShrinkOptions, ShrinkResult, run_embedded_scenario_inner, run_scenario_inner,
-    run_scenario_replay_inner,
+    ScenarioRun, ShrinkMinimize, ShrinkOptions, ShrinkResult, run_embedded_scenario_inner,
+    run_scenario_inner, run_scenario_replay_inner,
 };
 use crate::finalize::{
     build_run_summary, build_shrink_preview_trace, write_reporter_artifacts, write_summary_report,
@@ -18,6 +19,12 @@ use crate::{
     heap_budget_findings_from_trace, wall_time_iso_utc, write_memory_artifacts,
     write_memory_delta_artifact, write_profile_artifacts_from_trace,
 };
+
+#[derive(Debug, Clone)]
+struct ShrinkCandidateResult {
+    run: ScenarioRun,
+    objective_ok: bool,
+}
 
 pub fn run_scenario(
     config: &Config,
@@ -386,6 +393,7 @@ fn shrink_trace_inner(
     }
 
     let mut chunk = candidate.len().max(1).div_ceil(2);
+    let mut candidate_cache = HashMap::<String, ShrinkCandidateResult>::new();
     while chunk > 0 && Instant::now() < deadline && candidate.len() > 1 {
         let mut improved = false;
         let mut i = 0usize;
@@ -403,34 +411,54 @@ fn shrink_trace_inner(
                 steps: trial.clone(),
             };
 
-            let res = run_embedded_scenario_inner(
-                trial_scenario.clone(),
-                PathBuf::from("<shrunk>"),
-                seed,
-                true,
-                None,
-                ProcBackend::Scripted,
-                FsBackend::Virtual,
-                HttpBackend::Scripted,
-                trace
-                    .memory
-                    .as_ref()
-                    .map(|m| m.options.clone())
-                    .unwrap_or_default(),
-            )?;
-            if !crate::shrink_status_matches(target_status, res.status) {
+            let fingerprint = shrink_candidate_fingerprint(&trial_scenario)?;
+            let cached = if let Some(existing) = candidate_cache.get(&fingerprint) {
+                Some(existing.clone())
+            } else {
+                let res = run_embedded_scenario_inner(
+                    trial_scenario.clone(),
+                    PathBuf::from("<shrunk>"),
+                    seed,
+                    true,
+                    None,
+                    ProcBackend::Scripted,
+                    FsBackend::Virtual,
+                    HttpBackend::Scripted,
+                    trace
+                        .memory
+                        .as_ref()
+                        .map(|m| m.options.clone())
+                        .unwrap_or_default(),
+                )?;
+                let objective_ok = if crate::shrink_status_matches(target_status, res.status) {
+                    if let Some(pred) = objective {
+                        let preview = build_shrink_preview_trace(&trial_scenario, seed, &res);
+                        pred(&preview)?
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
+                let entry = ShrinkCandidateResult {
+                    run: res,
+                    objective_ok,
+                };
+                candidate_cache.insert(fingerprint, entry.clone());
+                Some(entry)
+            };
+
+            let Some(result) = cached else {
+                i += chunk;
+                continue;
+            };
+            if !crate::shrink_status_matches(target_status, result.run.status) || !result.objective_ok
+            {
                 i += chunk;
                 continue;
             }
-            if let Some(pred) = objective {
-                let preview = build_shrink_preview_trace(&trial_scenario, seed, &res);
-                if !pred(&preview)? {
-                    i += chunk;
-                    continue;
-                }
-            }
             candidate = trial;
-            best_run = res;
+            best_run = result.run;
             improved = true;
         }
 
@@ -518,6 +546,12 @@ fn remove_step_range(steps: &[crate::Step], start: usize, end: usize) -> Vec<cra
         out.extend_from_slice(&steps[end..]);
     }
     out
+}
+
+fn shrink_candidate_fingerprint(scenario: &ScenarioV1Steps) -> FozzyResult<String> {
+    let bytes = serde_json::to_vec(scenario)
+        .map_err(|err| FozzyError::Trace(format!("failed to serialize shrink candidate: {err}")))?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
 fn gen_seed() -> u64 {

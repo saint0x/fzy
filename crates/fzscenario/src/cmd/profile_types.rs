@@ -491,23 +491,23 @@ pub struct ConfidenceMeta {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ProfileBundle {
-    pub(super) artifacts_dir: PathBuf,
-    pub(super) timeline: Option<Vec<ProfileEvent>>,
-    pub(super) cpu: Option<CpuProfile>,
-    pub(super) heap: Option<HeapProfile>,
-    pub(super) latency: Option<LatencyProfile>,
-    pub(super) metrics: ProfileMetrics,
-    pub(super) symbols: Option<SymbolsMap>,
+pub(crate) struct ProfileBundle {
+    pub(crate) artifacts_dir: PathBuf,
+    pub(crate) timeline: Option<Vec<ProfileEvent>>,
+    pub(crate) cpu: Option<CpuProfile>,
+    pub(crate) heap: Option<HeapProfile>,
+    pub(crate) latency: Option<LatencyProfile>,
+    pub(crate) metrics: ProfileMetrics,
+    pub(crate) symbols: Option<SymbolsMap>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(super) struct ProfileLoadSpec {
-    pub(super) timeline: bool,
-    pub(super) cpu: bool,
-    pub(super) heap: bool,
-    pub(super) latency: bool,
-    pub(super) symbols: bool,
+pub(crate) struct ProfileLoadSpec {
+    pub(crate) timeline: bool,
+    pub(crate) cpu: bool,
+    pub(crate) heap: bool,
+    pub(crate) latency: bool,
+    pub(crate) symbols: bool,
 }
 
 #[derive(Debug, Clone)]
