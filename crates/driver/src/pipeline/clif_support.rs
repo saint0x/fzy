@@ -29,7 +29,8 @@ pub(super) struct ClifLoweringCtx<'a> {
     pub(super) task_ref_ids: &'a HashMap<String, i32>,
     pub(super) globals: &'a HashMap<String, i32>,
     pub(super) variant_tags: &'a HashMap<String, i32>,
-    pub(super) local_types: BTreeMap<String, ast::Type>,
+    pub(super) local_types: &'a BTreeMap<String, ast::Type>,
+    pub(super) derived_local_types: BTreeMap<String, ast::Type>,
     pub(super) struct_defs: &'a HashMap<String, ast::Struct>,
     pub(super) enum_defs: &'a HashMap<String, ast::Enum>,
     pub(super) mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
@@ -170,7 +171,7 @@ pub(super) fn clif_emit_function_cfg(
     globals: &HashMap<String, i32>,
     variant_tags: &HashMap<String, i32>,
     mutable_globals: &HashMap<String, cranelift_module::DataId>,
-    local_types: BTreeMap<String, ast::Type>,
+    local_types: &BTreeMap<String, ast::Type>,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
     current_return_ty: Option<ClifType>,
@@ -192,6 +193,7 @@ pub(super) fn clif_emit_function_cfg(
         globals,
         variant_tags,
         local_types,
+        derived_local_types: BTreeMap::new(),
         struct_defs,
         enum_defs,
         mutable_globals,
@@ -214,6 +216,12 @@ pub(super) fn clif_emit_function_cfg(
         next_var,
         forced_return_i32,
     )
+}
+
+fn clif_local_type<'a>(ctx: &'a ClifLoweringCtx<'_>, name: &str) -> Option<&'a ast::Type> {
+    ctx.derived_local_types
+        .get(name)
+        .or_else(|| ctx.local_types.get(name))
 }
 
 fn clif_emit_cfg(
@@ -527,7 +535,7 @@ fn clif_cast_i64_to_ty(
 fn clif_expr_is_fzy_str(expr: &ast::Expr, ctx: &ClifLoweringCtx<'_>) -> bool {
     match expr {
         ast::Expr::Str(_) => true,
-        ast::Expr::Ident(name) => matches!(ctx.local_types.get(name), Some(ast::Type::Str)),
+        ast::Expr::Ident(name) => matches!(clif_local_type(ctx, name), Some(ast::Type::Str)),
         ast::Expr::Group(inner) | ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             clif_expr_is_fzy_str(inner, ctx)
         }
@@ -1067,7 +1075,7 @@ fn clif_emit_simd_intrinsic(
                     }
                     return clif_emit_simd_vector_from_lanes(builder, kind, &lanes);
                 }
-                if let Some(ast::Type::Array { elem, len }) = ctx.local_types.get(name) {
+                if let Some(ast::Type::Array { elem, len }) = clif_local_type(ctx, name) {
                     if *len == 4 {
                         if let Some(ptr_binding) = locals.get(name).copied() {
                             let element_ty = ast_signature_type_to_clif_type(elem.as_ref())
@@ -1575,7 +1583,7 @@ fn clif_emit_array_argument_pointer(
 ) -> Result<Option<ClifValue>> {
     match arg {
         ast::Expr::Ident(name) => {
-            if matches!(ctx.local_types.get(name), Some(ast::Type::Array { .. })) {
+            if matches!(clif_local_type(ctx, name), Some(ast::Type::Array { .. })) {
                 if let Some(binding) = locals.get(name).copied() {
                     return Ok(Some(ClifValue {
                         value: builder.use_var(binding.var),
@@ -1751,7 +1759,7 @@ fn clif_emit_array_expr_to_ptr(
                 clif_copy_array_memory(builder, src_ptr, dest_ptr, abi);
                 return Ok(());
             }
-            if matches!(ctx.local_types.get(name), Some(ast::Type::Array { .. })) {
+            if matches!(clif_local_type(ctx, name), Some(ast::Type::Array { .. })) {
                 if let Some(binding) = locals.get(name).copied() {
                     let src_ptr = builder.use_var(binding.var);
                     clif_copy_array_memory(builder, src_ptr, dest_ptr, abi);
@@ -1980,7 +1988,7 @@ fn clif_tuple_item_binding_for_local(
     index: usize,
     ctx: &ClifLoweringCtx<'_>,
 ) -> Option<ClifAggregateItemBinding> {
-    let ast::Type::Tuple(items) = ctx.local_types.get(name)? else {
+    let ast::Type::Tuple(items) = clif_local_type(ctx, name)? else {
         return None;
     };
     let item_ty = items.get(index)?;
@@ -1995,7 +2003,10 @@ fn clif_struct_field_binding_for_local(
     field: &str,
     ctx: &ClifLoweringCtx<'_>,
 ) -> Option<ClifAggregateItemBinding> {
-    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+    let ast::Type::Named {
+        name: ty_name, ..
+    } = clif_local_type(ctx, name)?
+    else {
         return None;
     };
     let struct_def = ctx.struct_defs.get(ty_name.as_str())?;
@@ -2017,7 +2028,10 @@ fn clif_enum_payload_binding_for_local(
     index: usize,
     ctx: &ClifLoweringCtx<'_>,
 ) -> Option<ClifAggregateItemBinding> {
-    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+    let ast::Type::Named {
+        name: ty_name, ..
+    } = clif_local_type(ctx, name)?
+    else {
         return None;
     };
     if ty_name != enum_name {
@@ -2039,7 +2053,10 @@ fn clif_enum_named_binding_for_local(
     field: &str,
     ctx: &ClifLoweringCtx<'_>,
 ) -> Option<ClifAggregateItemBinding> {
-    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+    let ast::Type::Named {
+        name: ty_name, ..
+    } = clif_local_type(ctx, name)?
+    else {
         return None;
     };
     if ty_name != enum_name {
@@ -2060,7 +2077,7 @@ fn clif_enum_named_binding_for_local(
 
 fn clif_local_is_aggregate(name: &str, ctx: &ClifLoweringCtx<'_>) -> bool {
     matches!(
-        ctx.local_types.get(name),
+        clif_local_type(ctx, name),
         Some(ast::Type::Tuple(_)) | Some(ast::Type::Named { .. })
     )
 }
@@ -2550,8 +2567,8 @@ pub(super) fn clif_emit_linear_stmts(
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
-                    if let Some(source_ty) = ctx.local_types.get(source).cloned() {
-                        ctx.local_types.insert(name.clone(), source_ty);
+                    if let Some(source_ty) = clif_local_type(ctx, source).cloned() {
+                        ctx.derived_local_types.insert(name.clone(), source_ty);
                     }
                     if let Some(binding) = ctx.aggregate_bindings.get(source).cloned() {
                         ctx.aggregate_bindings.insert(name.clone(), binding);
@@ -2799,8 +2816,8 @@ pub(super) fn clif_emit_linear_stmts(
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
-                    if let Some(source_ty) = ctx.local_types.get(source).cloned() {
-                        ctx.local_types.insert(target.clone(), source_ty);
+                    if let Some(source_ty) = clif_local_type(ctx, source).cloned() {
+                        ctx.derived_local_types.insert(target.clone(), source_ty);
                     }
                     if let Some(binding) = ctx.aggregate_bindings.get(source).cloned() {
                         ctx.aggregate_bindings.insert(target.clone(), binding);
@@ -3504,7 +3521,7 @@ pub(super) fn clif_emit_expr(
                         ty: binding.element_ty,
                     });
                 }
-                if let Some(ast::Type::Array { elem, len }) = ctx.local_types.get(name) {
+                if let Some(ast::Type::Array { elem, len }) = clif_local_type(ctx, name) {
                     if let Some(ptr_binding) = locals.get(name).copied() {
                         let element_ty = ast_signature_type_to_clif_type(elem.as_ref())
                             .ok_or_else(|| {

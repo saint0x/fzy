@@ -10,11 +10,11 @@ struct Token {
 
 #[derive(Debug, Clone, PartialEq)]
 enum TokenKind {
-    Ident(String),
+    Ident(Box<str>),
     Int(i128),
     Float { value: f64, bits: Option<u16> },
     Char(char),
-    Str(String),
+    Str(Box<str>),
     KwFn,
     KwPub,
     KwPubext,
@@ -139,6 +139,19 @@ struct Parser {
 }
 
 impl Parser {
+    fn at_ident(&self, expected: &str) -> bool {
+        matches!(self.peek_kind(), TokenKind::Ident(value) if value.as_ref() == expected)
+    }
+
+    fn consume_ident(&mut self, expected: &str) -> bool {
+        if self.at_ident(expected) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
     fn new(tokens: Vec<Token>, module_name: &str) -> Self {
         Self {
             tokens,
@@ -196,7 +209,7 @@ impl Parser {
             self.push_diag_at(name_token.line, name_token.col, "expected attribute name");
             return;
         };
-        match name.as_str() {
+        match name.as_ref() {
             "repr" => {
                 if !self.consume(&TokenKind::LParen) {
                     self.push_diag_at(name_token.line, name_token.col, "expected `(` after `repr`");
@@ -237,18 +250,18 @@ impl Parser {
                     }) => mode,
                     Some(tok) => {
                         self.push_diag_at(tok.line, tok.col, "invalid ffi_panic mode");
-                        String::new()
+                        Box::<str>::default()
                     }
-                    None => String::new(),
+                    None => Box::<str>::default(),
                 };
-                if !mode.is_empty() && mode != "abort" && mode != "error" {
+                if !mode.is_empty() && mode.as_ref() != "abort" && mode.as_ref() != "error" {
                     self.push_diag_at(
                         name_token.line,
                         name_token.col,
                         "ffi_panic mode must be `abort` or `error`",
                     );
                 } else if !mode.is_empty() {
-                    self.pending_ffi_panic = Some(mode);
+                    self.pending_ffi_panic = Some(mode.to_string());
                 }
                 let _ = self.consume(&TokenKind::RParen);
                 let _ = self.consume(&TokenKind::RBracket);
@@ -421,7 +434,7 @@ impl Parser {
         let _ = self.consume(&TokenKind::Semi);
         let link_name = Some(name.clone());
         self.module.items.push(ast::Item::Function(ast::Function {
-            name,
+            name: name.to_string(),
             link_name,
             generics: Vec::new(),
             params,
@@ -530,7 +543,7 @@ impl Parser {
             return false;
         }
 
-        if self.consume(&TokenKind::Ident("as".to_string())) {
+        if self.consume_ident("as") {
             let Some(alias) = self.expect_ident("expected alias target after `as`") else {
                 return false;
             };
@@ -631,7 +644,7 @@ impl Parser {
             return None;
         };
         Some(ast::Item::Test(ast::TestBlock {
-            name,
+            name: name.to_string(),
             deterministic,
             body,
         }))
@@ -703,7 +716,7 @@ impl Parser {
 
     fn parse_static(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwStatic);
-        let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
+        let mutable = self.consume_ident("mut");
         let name = self.expect_ident("expected static name")?;
         if !self.consume(&TokenKind::Colon) {
             self.push_diag_here("expected `:` in static declaration");
@@ -1190,7 +1203,7 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
         if self.consume(&TokenKind::KwLet) {
-            let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
+            let mutable = self.consume_ident("mut");
             let pattern = self.parse_pattern()?;
             if matches!(pattern, Pattern::Wildcard) {
                 self.push_diag_here("`let _ = ...` is removed; use `discard <expr>`");
@@ -1445,7 +1458,7 @@ impl Parser {
 
     fn parse_for_clause_stmt(&mut self, expect_trailing_semi: bool) -> Option<Stmt> {
         let stmt = if self.consume(&TokenKind::KwLet) {
-            let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
+            let mutable = self.consume_ident("mut");
             let pattern = self.parse_pattern()?;
             if matches!(pattern, Pattern::Wildcard) {
                 self.push_diag_here("`let _ = ...` is removed; use `discard <expr>`");
@@ -1568,7 +1581,7 @@ impl Parser {
                     return None;
                 }
                 return Some(Pattern::Struct {
-                    name: struct_name,
+                    name: struct_name.to_string(),
                     fields,
                 });
             }
@@ -1910,7 +1923,12 @@ impl Parser {
                 }
             }
             let _ = self.consume(&TokenKind::RBrace);
-            return Some(Expr::ObjectLiteral(fields));
+            return Some(Expr::ObjectLiteral(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key.to_string(), value))
+                    .collect(),
+            ));
         }
 
         let token = self.advance()?;
@@ -1920,7 +1938,7 @@ impl Parser {
             TokenKind::Char(value) => Expr::Char(value),
             TokenKind::KwTrue => Expr::Bool(true),
             TokenKind::KwFalse => Expr::Bool(false),
-            TokenKind::Str(v) => Expr::Str(v),
+            TokenKind::Str(v) => Expr::Str(v.to_string()),
             TokenKind::KwRpc => Expr::Ident("rpc".to_string()),
             TokenKind::Ident(name) => {
                 if self.looks_like_struct_initializer() {
@@ -1940,9 +1958,12 @@ impl Parser {
                         }
                     }
                     let _ = self.consume(&TokenKind::RBrace);
-                    Expr::StructInit { name, fields }
+                    Expr::StructInit {
+                        name: name.to_string(),
+                        fields,
+                    }
                 } else {
-                    Expr::Ident(name)
+                    Expr::Ident(name.to_string())
                 }
             }
             TokenKind::LParen => {
@@ -2224,7 +2245,7 @@ impl Parser {
                 ret: Box::new(ret),
             });
         }
-        if self.consume(&TokenKind::Ident("dyn".to_string())) {
+        if self.consume_ident("dyn") {
             let trait_name = self.expect_ident("expected trait name after `dyn`")?;
             return Some(Type::DynTrait(trait_name));
         }
@@ -2253,7 +2274,7 @@ impl Parser {
             return Some(first);
         }
         if self.consume(&TokenKind::Star) {
-            let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
+            let mutable = self.consume_ident("mut");
             let inner = self.parse_type()?;
             return Some(Type::Ptr {
                 mutable,
@@ -2266,7 +2287,7 @@ impl Parser {
             } else {
                 None
             };
-            let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
+            let mutable = self.consume_ident("mut");
             let inner = self.parse_type()?;
             return Some(Type::Ref {
                 mutable,
@@ -2658,7 +2679,9 @@ impl Parser {
     }
 
     fn peek_kind(&self) -> &TokenKind {
-        self.peek().map(|token| &token.kind).unwrap_or(&TokenKind::Eof)
+        self.peek()
+            .map(|token| &token.kind)
+            .unwrap_or(&TokenKind::Eof)
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -2689,7 +2712,7 @@ impl Parser {
     fn expect_ident(&mut self, message: &str) -> Option<String> {
         let token = self.advance()?;
         match token.kind {
-            TokenKind::Ident(value) => Some(value),
+            TokenKind::Ident(value) => Some(value.to_string()),
             // `rpc` is a contextual keyword: declarations use keyword position, but
             // module names and paths may still legally use `rpc`.
             TokenKind::KwRpc => Some("rpc".to_string()),
@@ -2703,7 +2726,7 @@ impl Parser {
     fn expect_member_name(&mut self, message: &str) -> Option<String> {
         let token = self.advance()?;
         match token.kind {
-            TokenKind::Ident(value) => Some(value),
+            TokenKind::Ident(value) => Some(value.to_string()),
             TokenKind::KwFn => Some("fn".to_string()),
             TokenKind::KwPub => Some("pub".to_string()),
             TokenKind::KwPubext => Some("pubext".to_string()),
@@ -3170,7 +3193,7 @@ impl<'a> Lexer<'a> {
                 }
                 '"' => {
                     self.advance_char();
-                    TokenKind::Str(self.lex_string_literal(line, col, idx))
+                    TokenKind::Str(self.lex_string_literal(line, col, idx).into_boxed_str())
                 }
                 c if c.is_ascii_digit() => self.lex_number_literal(idx),
                 c if is_ident_start(c) => {
@@ -4018,7 +4041,7 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "discard" => TokenKind::KwDiscard,
         "true" => TokenKind::KwTrue,
         "false" => TokenKind::KwFalse,
-        _ => TokenKind::Ident(ident.to_string()),
+        _ => TokenKind::Ident(ident.into()),
     }
 }
 
@@ -5799,5 +5822,11 @@ mod tests {
             .and_then(|diagnostic| diagnostic.help.as_deref())
             .unwrap_or_default();
         assert!(help.contains("rerun `fz check`"));
+    }
+
+    #[test]
+    fn parses_embedded_core_log_module_source() {
+        let source = include_str!("../../../corelib/src/logkit.fzy");
+        parse(source, "log").expect("embedded core.log module should parse");
     }
 }

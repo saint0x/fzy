@@ -23,12 +23,16 @@ use crate::pipeline::{
 };
 
 mod interop;
+mod non_scenario;
 mod source;
 mod trace_native;
 
 use self::interop::{
     generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
     HeaderArtifact,
+};
+use self::non_scenario::{
+    prepare_host_backed_bridge, run_non_scenario_test_plan_with_root_guidance,
 };
 use self::source::{
     discover_nested_project_roots, discover_project_roots, load_resolved_module_set,
@@ -414,51 +418,24 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 return render_scenario_run_result(format, run, strict_verify);
             }
             if host_backends && deterministic {
-                let bridge_root = std::env::temp_dir().join("fz-host-bridge");
-                std::fs::create_dir_all(&bridge_root).with_context(|| {
-                    format!(
-                        "failed creating host-backends bridge directory: {}",
-                        bridge_root.display()
-                    )
-                })?;
-                let stamp = format!(
-                    "{}-{}",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
-                );
-                let trace_path = bridge_root.join(format!("native-run-{stamp}.trace.fozzy"));
-                let bridge_plan = run_non_scenario_test_plan_with_root_guidance(
+                let bridge_plan = prepare_host_backed_bridge(
                     &path,
                     NonScenarioPlanRequest {
-                        deterministic: true,
                         strict_verify,
                         safe_profile,
                         scheduler: Some("fifo".to_string()),
                         seed,
-                        record: Some(&trace_path),
-                        rich_artifacts: true,
                         filter: None,
+                        deterministic: true,
+                        record: None,
+                        rich_artifacts: true,
                     },
+                    "native-run",
                 )?;
-                let artifacts = bridge_plan.artifacts.ok_or_else(|| {
-                    anyhow!(
-                        "host-backends bridge failed to produce artifacts for {}",
-                        path.display()
-                    )
-                })?;
-                let scenario = artifacts.primary_scenario_path.ok_or_else(|| {
-                    anyhow!(
-                        "host-backends bridge failed to generate a primary scenario for {}",
-                        path.display()
-                    )
-                })?;
                 let config = scenario_config_with_backends(true)?;
                 let run = fzscenario::run_scenario(
                     &config,
-                    fzscenario::ScenarioPath::new(scenario.clone()),
+                    fzscenario::ScenarioPath::new(bridge_plan.scenario_path.clone()),
                     &fzscenario::RunOptions {
                         det: deterministic,
                         seed,
@@ -480,8 +457,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 return render_host_bridge_run_result(
                     format,
                     path.as_path(),
-                    scenario.as_path(),
-                    trace_path.as_path(),
+                    bridge_plan.scenario_path.as_path(),
+                    bridge_plan.trace_path.as_path(),
                     record.as_deref(),
                     run,
                     strict_verify,
@@ -809,49 +786,22 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 return render_scenario_run_result(format, run, strict_verify);
             }
             if host_backends {
-                let bridge_root = std::env::temp_dir().join("fz-host-bridge");
-                std::fs::create_dir_all(&bridge_root).with_context(|| {
-                    format!(
-                        "failed creating host-backends bridge directory: {}",
-                        bridge_root.display()
-                    )
-                })?;
-                let stamp = format!(
-                    "{}-{}",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
-                );
-                let trace_path = bridge_root.join(format!("native-test-{stamp}.trace.fozzy"));
-                let bridge_plan = run_non_scenario_test_plan_with_root_guidance(
+                let bridge_plan = prepare_host_backed_bridge(
                     &path,
                     NonScenarioPlanRequest {
-                        deterministic: true,
                         strict_verify,
                         safe_profile,
                         scheduler: scheduler.clone(),
                         seed,
-                        record: Some(&trace_path),
-                        rich_artifacts: true,
                         filter: filter.as_deref(),
+                        deterministic: true,
+                        record: None,
+                        rich_artifacts: true,
                     },
+                    "native-test",
                 )?;
-                let artifacts = bridge_plan.artifacts.ok_or_else(|| {
-                    anyhow!(
-                        "host-backends bridge failed to produce artifacts for {}",
-                        path.display()
-                    )
-                })?;
-                let scenario = artifacts.primary_scenario_path.ok_or_else(|| {
-                    anyhow!(
-                        "host-backends bridge failed to generate a primary scenario for {}",
-                        path.display()
-                    )
-                })?;
                 let config = scenario_config_with_backends(true)?;
-                let globs = vec![scenario.display().to_string()];
+                let globs = vec![bridge_plan.scenario_path.display().to_string()];
                 let run = fzscenario::run_tests(
                     &config,
                     &globs,
@@ -876,8 +826,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 return render_host_bridge_test_result(
                     format,
                     path.as_path(),
-                    scenario.as_path(),
-                    trace_path.as_path(),
+                    bridge_plan.scenario_path.as_path(),
+                    bridge_plan.trace_path.as_path(),
                     record.as_deref(),
                     run,
                     strict_verify,
@@ -2520,14 +2470,6 @@ fn compile_library_with_backend_with_root_guidance(
     backend_override: Option<&str>,
 ) -> Result<LibraryArtifact> {
     compile_library_with_backend(path, profile, backend_override)
-        .map_err(|error| attach_project_root_guidance(path, error))
-}
-
-fn run_non_scenario_test_plan_with_root_guidance(
-    path: &Path,
-    request: NonScenarioPlanRequest<'_>,
-) -> Result<NonScenarioTestPlan> {
-    run_non_scenario_test_plan(path, request)
         .map_err(|error| attach_project_root_guidance(path, error))
 }
 
@@ -7250,7 +7192,7 @@ fn run_non_scenario_test_plan(
     };
     let workload = analyze_workload_shape(&parsed.module);
     let call_sequence = collect_call_sequence(&parsed.module);
-    let rpc_methods = parse_rpc_declarations(&parsed.combined_source).unwrap_or_default();
+    let rpc_methods = parse_rpc_declarations(parsed.combined_source()).unwrap_or_default();
     let rpc_method_names = rpc_methods
         .iter()
         .map(|method| method.name.as_str())
@@ -7416,7 +7358,7 @@ fn run_non_scenario_test_plan(
     };
     let rpc_frames = if mode == ExecMode::Det {
         build_rpc_frame_events(
-            &parsed.combined_source,
+            parsed.combined_source(),
             &call_sequence,
             &execution_order,
             &rpc_methods,
@@ -7517,7 +7459,7 @@ fn run_non_scenario_test_plan(
             total_ms: started.elapsed().as_millis() as u64,
             parse_cache_hit,
             lower_cache_hit,
-            input_bytes: parsed.combined_source.len(),
+            input_bytes: parsed.input_bytes,
         },
     })
 }

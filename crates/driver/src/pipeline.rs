@@ -22,6 +22,7 @@ mod linker_support;
 mod llvm_support;
 mod native_backend_support;
 mod native_metadata;
+mod parse_graph;
 mod native_runtime_support;
 mod native_runtime_tables;
 #[path = "pipeline/policy_artifacts.rs"]
@@ -52,6 +53,7 @@ use self::native_metadata::{
     collect_pattern_source_function_map_from_typed, collect_spawn_task_symbols,
     collect_variant_keys_from_stmt, llvm_static_symbol_name, PatternSourceFunction,
 };
+use self::parse_graph::{ModuleSourceText, ParsedProgram};
 use self::native_runtime_support::{
     collect_async_c_exports, collect_extern_c_imports, collect_used_native_data_plane_imports,
     collect_used_native_runtime_imports, compile_runtime_shim_object, ensure_native_runtime_shim,
@@ -109,6 +111,65 @@ struct ClifArrayBinding {
     element_bits: u16,
     element_align: u8,
     element_stride: u8,
+}
+
+fn declare_clif_functions<F>(
+    module: &mut ObjectModule,
+    fir: &fir::FirModule,
+    mut linkage_for: F,
+    error_label: &str,
+) -> Result<(
+    HashMap<String, cranelift_module::FuncId>,
+    HashMap<String, ClifFunctionSignature>,
+)>
+where
+    F: FnMut(&hir::TypedFunction) -> Linkage,
+{
+    let mut function_ids = HashMap::new();
+    let mut function_signatures = HashMap::new();
+    for function in &fir.typed_functions {
+        let mut sig = module.make_signature();
+        let mut param_tys = Vec::new();
+        let sret = clif_array_abi_from_type(&function.return_type);
+        if sret.is_some() {
+            sig.params.push(AbiParam::new(pointer_sized_clif_type()));
+            param_tys.push(pointer_sized_clif_type());
+        }
+        for param in &function.params {
+            let ty = ast_signature_type_to_clif_type(&param.ty)
+                .ok_or_else(|| anyhow!("unsupported native parameter type `{}`", param.ty))?;
+            sig.params.push(AbiParam::new(ty));
+            param_tys.push(ty);
+        }
+        let ret_ty = if sret.is_some() {
+            None
+        } else {
+            ast_signature_type_to_clif_type(&function.return_type)
+        };
+        if let Some(ret_ty) = ret_ty {
+            sig.returns.push(AbiParam::new(ret_ty));
+        }
+        let symbol_name = native_link_symbol_for_function(function);
+        let id = module
+            .declare_function(symbol_name.as_str(), linkage_for(function), &sig)
+            .map_err(|error| anyhow!("failed declaring {error_label} `{}`: {error}", function.name))?;
+        function_ids.insert(function.name.clone(), id);
+        function_signatures.insert(
+            function.name.clone(),
+            ClifFunctionSignature {
+                params: param_tys,
+                ret: ret_ty,
+                sret,
+                param_names: function
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+                is_extern_c_import: is_extern_c_import_decl(function),
+            },
+        );
+    }
+    Ok((function_ids, function_signatures))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,14 +262,6 @@ pub struct ValidationTelemetry {
     pub parse_cache_hit: bool,
     pub lower_cache_hit: bool,
     pub input_bytes: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct ParsedProgram {
-    pub module: ast::Module,
-    pub combined_source: String,
-    pub module_paths: Vec<PathBuf>,
-    pub module_fingerprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -648,7 +701,7 @@ fn validate_file_with_root_source(
             contract_ms,
             parse_cache_hit,
             lower_cache_hit,
-            input_bytes: parsed.combined_source.len(),
+            input_bytes: parsed.input_bytes,
         },
     })
 }
@@ -5486,8 +5539,9 @@ fn parse_program_uncached_with_root_source(
         .collect::<Result<Vec<_>>>()?;
     state.loaded = loaded_modules.into_iter().collect();
 
-    let mut combined_source = String::new();
     let mut fingerprint = Sha256::new();
+    let mut input_bytes = 0usize;
+    let mut module_sources = Vec::with_capacity(state.load_order.len());
     for path in &state.load_order {
         let loaded = state
             .loaded
@@ -5497,13 +5551,15 @@ fn parse_program_uncached_with_root_source(
         fingerprint.update([0]);
         fingerprint.update(loaded.source.as_bytes());
         fingerprint.update([0xff]);
-        combined_source.push_str("// module: ");
-        combined_source.push_str(&path.display().to_string());
-        combined_source.push('\n');
-        combined_source.push_str(&loaded.source);
+        input_bytes += "// module: ".len() + path.display().to_string().len() + 1;
+        input_bytes += loaded.source.len();
         if !loaded.source.ends_with('\n') {
-            combined_source.push('\n');
+            input_bytes += 1;
         }
+        module_sources.push(ModuleSourceText {
+            path: path.clone(),
+            source: Arc::<str>::from(loaded.source.as_str()),
+        });
     }
     let mut merged = state
         .loaded
@@ -5524,9 +5580,11 @@ fn parse_program_uncached_with_root_source(
     canonicalize_call_targets(&mut merged);
     Ok(ParsedProgram {
         module: merged,
-        combined_source,
         module_paths: state.load_order,
         module_fingerprint: format!("{:x}", fingerprint.finalize()),
+        input_bytes,
+        module_sources: Arc::new(module_sources),
+        combined_source: OnceLock::new(),
     })
 }
 
@@ -12664,8 +12722,22 @@ fn emit_native_libraries_cranelift(
         .map_err(|error| anyhow!("failed creating cranelift object builder: {error}"))?;
     let mut module = ObjectModule::new(object_builder);
 
-    let mut function_ids = HashMap::new();
-    let mut function_signatures = HashMap::new();
+    let (mut function_ids, mut function_signatures) = declare_clif_functions(
+        &mut module,
+        fir,
+        |function| {
+            if is_extern_c_import_decl(function) {
+                Linkage::Import
+            } else if task_symbol_set.contains(&function.name) {
+                Linkage::Export
+            } else if is_extern_c_abi_function(function) && !function.body.is_empty() {
+                Linkage::Export
+            } else {
+                Linkage::Local
+            }
+        },
+        "cranelift ffi symbol",
+    )?;
     let mut mutable_global_data_ids = HashMap::<String, cranelift_module::DataId>::new();
     let mut mutable_globals_sorted = plan
         .mutable_static_i32
@@ -12684,62 +12756,6 @@ fn emit_native_libraries_cranelift(
             .define_data(data_id, &data)
             .map_err(|error| anyhow!("failed defining mutable static `{name}` data: {error}"))?;
         mutable_global_data_ids.insert(name, data_id);
-    }
-    for function in &fir.typed_functions {
-        let mut sig = module.make_signature();
-        let mut param_tys = Vec::new();
-        let sret = clif_array_abi_from_type(&function.return_type);
-        if sret.is_some() {
-            sig.params.push(AbiParam::new(pointer_sized_clif_type()));
-            param_tys.push(pointer_sized_clif_type());
-        }
-        for param in &function.params {
-            let ty = ast_signature_type_to_clif_type(&param.ty)
-                .ok_or_else(|| anyhow!("unsupported native parameter type `{}`", param.ty))?;
-            sig.params.push(AbiParam::new(ty));
-            param_tys.push(ty);
-        }
-        let ret_ty = if sret.is_some() {
-            None
-        } else {
-            ast_signature_type_to_clif_type(&function.return_type)
-        };
-        if let Some(ret_ty) = ret_ty {
-            sig.returns.push(AbiParam::new(ret_ty));
-        }
-        let linkage = if is_extern_c_import_decl(function) {
-            Linkage::Import
-        } else if task_symbol_set.contains(&function.name) {
-            Linkage::Export
-        } else if is_extern_c_abi_function(function) && !function.body.is_empty() {
-            Linkage::Export
-        } else {
-            Linkage::Local
-        };
-        let symbol_name = native_link_symbol_for_function(function);
-        let id = module
-            .declare_function(symbol_name.as_str(), linkage, &sig)
-            .map_err(|error| {
-                anyhow!(
-                    "failed declaring cranelift ffi symbol `{}`: {error}",
-                    function.name
-                )
-            })?;
-        function_ids.insert(function.name.clone(), id);
-        function_signatures.insert(
-            function.name.clone(),
-            ClifFunctionSignature {
-                params: param_tys,
-                ret: ret_ty,
-                sret,
-                param_names: function
-                    .params
-                    .iter()
-                    .map(|param| param.name.clone())
-                    .collect(),
-                is_extern_c_import: is_extern_c_import_decl(function),
-            },
-        );
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     declare_native_data_plane_imports(&mut module, &mut function_ids, &mut function_signatures)?;
@@ -12823,7 +12839,7 @@ fn emit_native_libraries_cranelift(
             &plan.global_const_i32,
             &plan.variant_tags,
             &mutable_global_data_ids,
-            function.local_types.clone(),
+            &function.local_types,
             &fir.struct_defs,
             &fir.enum_defs,
             signature.ret,
@@ -13110,8 +13126,18 @@ fn emit_native_artifact_cranelift(
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
 
-    let mut function_ids = HashMap::new();
-    let mut function_signatures = HashMap::new();
+    let (mut function_ids, mut function_signatures) = declare_clif_functions(
+        &mut module,
+        fir,
+        |function| {
+            if is_extern_c_import_decl(function) {
+                Linkage::Import
+            } else {
+                Linkage::Export
+            }
+        },
+        "cranelift symbol",
+    )?;
     let mut mutable_global_data_ids = HashMap::<String, cranelift_module::DataId>::new();
     let mut mutable_globals_sorted = plan
         .mutable_static_i32
@@ -13130,58 +13156,6 @@ fn emit_native_artifact_cranelift(
             .define_data(data_id, &data)
             .map_err(|error| anyhow!("failed defining mutable static `{name}` data: {error}"))?;
         mutable_global_data_ids.insert(name, data_id);
-    }
-    for function in &fir.typed_functions {
-        let mut sig = module.make_signature();
-        let mut param_tys = Vec::new();
-        let sret = clif_array_abi_from_type(&function.return_type);
-        if sret.is_some() {
-            sig.params.push(AbiParam::new(pointer_sized_clif_type()));
-            param_tys.push(pointer_sized_clif_type());
-        }
-        for param in &function.params {
-            let ty = ast_signature_type_to_clif_type(&param.ty)
-                .ok_or_else(|| anyhow!("unsupported native parameter type `{}`", param.ty))?;
-            sig.params.push(AbiParam::new(ty));
-            param_tys.push(ty);
-        }
-        let ret_ty = if sret.is_some() {
-            None
-        } else {
-            ast_signature_type_to_clif_type(&function.return_type)
-        };
-        if let Some(ret_ty) = ret_ty {
-            sig.returns.push(AbiParam::new(ret_ty));
-        }
-        let linkage = if is_extern_c_import_decl(function) {
-            Linkage::Import
-        } else {
-            Linkage::Export
-        };
-        let symbol_name = native_link_symbol_for_function(function);
-        let id = module
-            .declare_function(symbol_name.as_str(), linkage, &sig)
-            .map_err(|error| {
-                anyhow!(
-                    "failed declaring cranelift symbol `{}`: {error}",
-                    function.name
-                )
-            })?;
-        function_ids.insert(function.name.clone(), id);
-        function_signatures.insert(
-            function.name.clone(),
-            ClifFunctionSignature {
-                params: param_tys,
-                ret: ret_ty,
-                sret,
-                param_names: function
-                    .params
-                    .iter()
-                    .map(|param| param.name.clone())
-                    .collect(),
-                is_extern_c_import: is_extern_c_import_decl(function),
-            },
-        );
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     declare_native_data_plane_imports(&mut module, &mut function_ids, &mut function_signatures)?;
@@ -13274,7 +13248,7 @@ fn emit_native_artifact_cranelift(
             &plan.global_const_i32,
             &plan.variant_tags,
             &mutable_global_data_ids,
-            function.local_types.clone(),
+            &function.local_types,
             &fir.struct_defs,
             &fir.enum_defs,
             signature.ret,

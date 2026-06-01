@@ -5667,6 +5667,37 @@ fn compile_project_accepts_core_http_helper_surface() {
 }
 
 #[test]
+fn compile_project_accepts_core_log_import_surface() {
+    let project_name = format!(
+        "fozzylang-core-log-import-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.log;\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("main should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+    let output = artifact.output.expect("native artifact should exist");
+    assert_eq!(run_native_exit(&output), 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn parse_diagnostic_context_is_reported_as_notes_not_help() {
     let project_name = format!(
         "fozzylang-parse-note-{}",
@@ -7003,7 +7034,7 @@ fn parse_program_cache_invalidates_on_source_change() {
     )
     .expect("temp source should mutate");
     let second = parse_program(&path).expect("second parse should succeed");
-    assert_ne!(first.combined_source, second.combined_source);
+    assert_ne!(first.combined_source(), second.combined_source());
 
     let _ = std::fs::remove_file(path);
 }
@@ -7042,7 +7073,7 @@ fn parse_program_cache_invalidates_on_imported_module_change() {
     )
     .expect("imported module should mutate");
     let second = parse_program(&root.join("src/main.fzy")).expect("second parse should succeed");
-    assert_ne!(first.combined_source, second.combined_source);
+    assert_ne!(first.combined_source(), second.combined_source());
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -9432,8 +9463,7 @@ fn emit_ir_can_target_a_single_backend_without_breaking_default_dual_output() {
     assert!(llvm_ir.contains("backend=llvm"));
     assert!(!llvm_ir.contains("backend=cranelift"));
 
-    let cranelift_output =
-        emit_ir(&path, Some("cranelift")).expect("cranelift emit ir should run");
+    let cranelift_output = emit_ir(&path, Some("cranelift")).expect("cranelift emit ir should run");
     let cranelift_ir = cranelift_output
         .backend_ir
         .expect("cranelift backend ir should be available");
