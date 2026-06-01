@@ -5655,12 +5655,7 @@ fn expand_wildcard_imports(
         let Some(target_module) = discovered.get(target_path) else {
             continue;
         };
-        let target_module_name = target_path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| anyhow!("invalid module filename for {}", target_path.display()))?;
-        let target_ast = parser::parse(&target_module.source, target_module_name)
-            .map_err(|diagnostics| anyhow!(render_parse_failure(target_path, &diagnostics)))?;
+        let target_ast = &target_module.ast;
         let mut seen = HashSet::<String>::new();
         for item in &target_ast.items {
             let Some(name) = (match item {

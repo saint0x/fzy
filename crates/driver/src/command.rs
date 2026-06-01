@@ -1535,6 +1535,7 @@ fn run_native_binary_with_bounds(
         .spawn()
         .with_context(|| format!("failed to execute native artifact: {}", binary.display()))?;
     let started = Instant::now();
+    let mut poll_sleep = Duration::from_millis(5);
     loop {
         if let Some(status) = child
             .try_wait()
@@ -1587,7 +1588,10 @@ fn run_native_binary_with_bounds(
                 });
             }
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(poll_sleep);
+        if poll_sleep < Duration::from_millis(50) {
+            poll_sleep = (poll_sleep * 2).min(Duration::from_millis(50));
+        }
     }
 }
 

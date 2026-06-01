@@ -10,8 +10,7 @@ use crate::engine::{
     run_scenario_replay_inner,
 };
 use crate::finalize::{
-    build_run_summary, build_shrink_preview_trace, write_reporter_artifacts,
-    write_summary_report,
+    build_run_summary, build_shrink_preview_trace, write_reporter_artifacts, write_summary_report,
 };
 use crate::{
     Config, ExitStatus, Finding, FindingKind, FozzyError, FozzyResult, HeapBudgetPolicy,
@@ -154,6 +153,15 @@ pub fn replay_trace(
     opt: &ReplayOptions,
 ) -> FozzyResult<RunResult> {
     let trace = TraceFile::read_json(trace_path.as_path())?;
+    replay_loaded_trace(config, trace_path, trace, opt)
+}
+
+pub fn replay_loaded_trace(
+    config: &Config,
+    trace_path: TracePath,
+    trace: TraceFile,
+    opt: &ReplayOptions,
+) -> FozzyResult<RunResult> {
     if trace.fuzz.is_some() && trace.scenario.is_none() {
         return crate::replay_fuzz_trace(config, &trace);
     }

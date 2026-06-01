@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::{Config, FozzyError, FozzyResult};
+use crate::{Config, FozzyError, FozzyResult, should_skip_dir};
 
 const SUITE_TEST_DET: &str = "test_det";
 const SUITE_RUN_REPLAY_CI: &str = "run_record_replay_ci";
@@ -776,48 +776,55 @@ fn scan_repo(root: &Path) -> FozzyResult<RepoFacts> {
     let mut records = Vec::<ScanRecord>::new();
     let mut scanned_files = 0usize;
     let mut skipped_source_files = Vec::new();
-    for entry in WalkDir::new(root).into_iter().flatten() {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let p = entry.path();
-        if should_skip_path(p) || !is_candidate_file(p) {
-            continue;
-        }
-        let Ok(file) = std::fs::File::open(p) else {
-            skipped_source_files.push(format!("{}: failed to open", p.display()));
-            continue;
-        };
-        let mut signal = HotspotSignals::default();
-        let mut line_count = 0usize;
-        let reader = BufReader::new(file);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
-                    line_count = line_count.saturating_add(1);
-                    accumulate_signals_line(&mut signal, &line);
-                }
-                Err(err) => {
-                    skipped_source_files
-                        .push(format!("{}: failed to read line: {err}", p.display()));
-                    break;
+    for scan_root in preferred_repo_scan_roots(root) {
+        for entry in WalkDir::new(scan_root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !should_skip_dir(entry.path()))
+            .flatten()
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let p = entry.path();
+            if should_skip_path(p) || !is_candidate_file(p) {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(p) else {
+                skipped_source_files.push(format!("{}: failed to open", p.display()));
+                continue;
+            };
+            let mut signal = HotspotSignals::default();
+            let mut line_count = 0usize;
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        line_count = line_count.saturating_add(1);
+                        accumulate_signals_line(&mut signal, &line);
+                    }
+                    Err(err) => {
+                        skipped_source_files
+                            .push(format!("{}: failed to read line: {err}", p.display()));
+                        break;
+                    }
                 }
             }
+            signal.line_count = line_count;
+            let rel = p.strip_prefix(root).unwrap_or(p).to_path_buf();
+            scanned_files += 1;
+            let (risk_score, reasons) = score_signals(&signal);
+            if risk_score == 0 {
+                continue;
+            }
+            records.push(ScanRecord {
+                component: component_for_path(&rel),
+                rel,
+                signal,
+                risk_score,
+                reasons,
+            });
         }
-        signal.line_count = line_count;
-        let rel = p.strip_prefix(root).unwrap_or(p).to_path_buf();
-        scanned_files += 1;
-        let (risk_score, reasons) = score_signals(&signal);
-        if risk_score == 0 {
-            continue;
-        }
-        records.push(ScanRecord {
-            component: component_for_path(&rel),
-            rel,
-            signal,
-            risk_score,
-            reasons,
-        });
     }
 
     let mut hotspots = Vec::<MapHotspot>::new();
@@ -908,20 +915,41 @@ fn discover_scenarios(root: &Path) -> FozzyResult<Vec<PathBuf>> {
         return Ok(Vec::new());
     }
     let mut out = Vec::<PathBuf>::new();
-    for entry in WalkDir::new(root).into_iter().flatten() {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let p = entry.path();
-        if p.file_name()
-            .and_then(|s| s.to_str())
-            .is_some_and(|n| n.ends_with(".fozzy.json"))
+    for scan_root in preferred_repo_scan_roots(root) {
+        for entry in WalkDir::new(scan_root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !should_skip_dir(entry.path()))
+            .flatten()
         {
-            out.push(p.to_path_buf());
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let p = entry.path();
+            if p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|n| n.ends_with(".fozzy.json"))
+            {
+                out.push(p.to_path_buf());
+            }
         }
     }
     out.sort();
+    out.dedup();
     Ok(out)
+}
+
+fn preferred_repo_scan_roots(root: &Path) -> Vec<PathBuf> {
+    let preferred = ["apps", "crates", "examples", "scripts", "tests"]
+        .into_iter()
+        .map(|segment| root.join(segment))
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+    if preferred.is_empty() {
+        vec![root.to_path_buf()]
+    } else {
+        preferred
+    }
 }
 
 fn hotspot_hints(h: &MapHotspot) -> Vec<String> {

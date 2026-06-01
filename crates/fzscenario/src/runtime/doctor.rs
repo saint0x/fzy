@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 
 use crate::engine::{FsBackend, HttpBackend, ProcBackend, ScenarioRun, run_scenario_inner};
 use crate::{
@@ -156,17 +157,93 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
 
 fn scenario_run_signature(run: &ScenarioRun) -> String {
     let mut writer = Blake3Writer::default();
-    let payload = ScenarioRunSignatureView {
-        status: &run.status,
-        memory: run.memory.as_ref(),
-        findings: &run.findings,
-        decisions: &run.decisions.decisions,
-        events: &run.events,
-    };
-    if payload.serialize(&mut serde_json::Serializer::new(&mut writer)).is_err() {
-        return String::new();
-    }
+    hash_status(&mut writer, run.status);
+    hash_memory(&mut writer, run.memory.as_ref());
+    hash_findings(&mut writer, &run.findings);
+    hash_decisions(&mut writer, &run.decisions.decisions);
+    hash_events(&mut writer, &run.events);
     writer.finalize()
+}
+
+fn hash_status(writer: &mut Blake3Writer, status: ExitStatus) {
+    hash_tag(writer, "status");
+    hash_str(
+        writer,
+        match status {
+            ExitStatus::Pass => "pass",
+            ExitStatus::Fail => "fail",
+            ExitStatus::Error => "error",
+            ExitStatus::Timeout => "timeout",
+            ExitStatus::Crash => "crash",
+        },
+    );
+}
+
+fn hash_memory(writer: &mut Blake3Writer, memory: Option<&MemoryRunReport>) {
+    hash_tag(writer, "memory");
+    match memory {
+        Some(memory) => {
+            hash_bool(writer, true);
+            hash_json(writer, &memory.options);
+            hash_json(writer, &memory.summary);
+            hash_json(writer, &memory.leaks);
+            hash_json(writer, &memory.graph);
+        }
+        None => hash_bool(writer, false),
+    }
+}
+
+fn hash_findings(writer: &mut Blake3Writer, findings: &[Finding]) {
+    hash_tag(writer, "findings");
+    hash_len(writer, findings.len());
+    for finding in findings {
+        hash_json(writer, finding);
+    }
+}
+
+fn hash_decisions(writer: &mut Blake3Writer, decisions: &[Decision]) {
+    hash_tag(writer, "decisions");
+    hash_len(writer, decisions.len());
+    for decision in decisions {
+        hash_json(writer, decision);
+    }
+}
+
+fn hash_events(writer: &mut Blake3Writer, events: &[TraceEvent]) {
+    hash_tag(writer, "events");
+    hash_len(writer, events.len());
+    for event in events {
+        hash_u64(writer, event.time_ms);
+        hash_str(writer, &event.name);
+        hash_json(writer, &event.fields);
+    }
+}
+
+fn hash_json<T: serde::Serialize>(writer: &mut Blake3Writer, value: &T) {
+    if serde_json::to_writer(&mut *writer, value).is_ok() {
+        hash_tag(writer, "json-end");
+    }
+}
+
+fn hash_tag(writer: &mut Blake3Writer, value: &str) {
+    hash_str(writer, value);
+}
+
+fn hash_str(writer: &mut Blake3Writer, value: &str) {
+    hash_len(writer, value.len());
+    let _ = writer.write_all(value.as_bytes());
+}
+
+fn hash_len(writer: &mut Blake3Writer, len: usize) {
+    let _ = writer.write_all(&(len as u64).to_le_bytes());
+}
+
+fn hash_u64(writer: &mut Blake3Writer, value: u64) {
+    let _ = writer.write_all(&value.to_le_bytes());
+}
+
+fn hash_bool(writer: &mut Blake3Writer, value: bool) {
+    let _ = writer.write_all(&[u8::from(value)]);
 }
 
 #[derive(Default)]
@@ -189,13 +266,4 @@ impl std::io::Write for Blake3Writer {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-}
-
-#[derive(serde::Serialize)]
-struct ScenarioRunSignatureView<'a> {
-    status: &'a ExitStatus,
-    memory: Option<&'a MemoryRunReport>,
-    findings: &'a [Finding],
-    decisions: &'a [Decision],
-    events: &'a [TraceEvent],
 }

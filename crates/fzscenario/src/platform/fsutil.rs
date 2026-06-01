@@ -84,7 +84,7 @@ pub fn resolve_matching_files(patterns: &[String]) -> FozzyResult<MatchFilesResu
     })
 }
 
-fn walk_roots(patterns: &[String]) -> BTreeSet<PathBuf> {
+pub(crate) fn walk_roots(patterns: &[String]) -> BTreeSet<PathBuf> {
     let mut roots = Vec::new();
     for pattern in patterns {
         if has_glob_meta(pattern) {
@@ -164,7 +164,7 @@ fn insert_if_matching(
     }
 }
 
-fn should_skip_dir(path: &Path) -> bool {
+pub(crate) fn should_skip_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|s| s.to_str())
         .is_some_and(|name| {
@@ -173,6 +173,21 @@ fn should_skip_dir(path: &Path) -> bool {
                 ".git" | "target" | "node_modules" | ".fozzy" | "dist" | "build" | "coverage"
             )
         })
+}
+
+pub(crate) fn list_files_shallow(dir: &Path) -> FozzyResult<Vec<PathBuf>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            files.push(entry.path());
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn compile_globset(patterns: &[String]) -> FozzyResult<GlobSet> {
@@ -252,8 +267,7 @@ mod tests {
         let first = root.join("one.fozzy.json");
         let second = root.join("two.fozzy.json");
         std::fs::write(&first, br#"{"version":1,"name":"one","steps":[]}"#).expect("write first");
-        std::fs::write(&second, br#"{"version":1,"name":"two","steps":[]}"#)
-            .expect("write second");
+        std::fs::write(&second, br#"{"version":1,"name":"two","steps":[]}"#).expect("write second");
 
         let resolved = resolve_matching_files(&[
             first.to_string_lossy().to_string(),

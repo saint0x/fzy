@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-use crate::{Config, FozzyError, FozzyResult};
+use crate::{Config, FozzyError, FozzyResult, list_files_shallow, should_skip_dir};
 
 #[derive(Debug, Subcommand)]
 pub enum CorpusCommand {
@@ -39,21 +39,10 @@ pub enum CorpusCommand {
 pub fn corpus_command(_config: &Config, command: &CorpusCommand) -> FozzyResult<serde_json::Value> {
     match command {
         CorpusCommand::List { dir } => {
-            let mut files = Vec::new();
-            if dir.exists() {
-                for entry in WalkDir::new(dir).min_depth(1).max_depth(1) {
-                    let entry = entry.map_err(|e| {
-                        let msg = e.to_string();
-                        FozzyError::Io(
-                            e.into_io_error()
-                                .unwrap_or_else(|| std::io::Error::other(msg)),
-                        )
-                    })?;
-                    if entry.file_type().is_file() {
-                        files.push(entry.path().to_string_lossy().to_string());
-                    }
-                }
-            }
+            let mut files = list_files_shallow(dir)?
+                .into_iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
             files.sort();
             Ok(serde_json::to_value(files)?)
         }
@@ -125,7 +114,11 @@ fn export_zip(dir: &Path, out_zip: &Path) -> FozzyResult<()> {
             .unix_permissions(0o644);
 
         let mut wrote_any = false;
-        for entry in WalkDir::new(dir).min_depth(1) {
+        for entry in WalkDir::new(dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !should_skip_dir(entry.path()))
+        {
             let entry = entry.map_err(|e| {
                 let msg = e.to_string();
                 FozzyError::Io(

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::{
     ArtifactCommand, Config, FlakeBudget, FozzyError, FozzyResult, ReplayOptions, ReportCommand,
-    Reporter, TraceFile, TracePath, artifacts_command, profile_command, replay_trace,
+    Reporter, TraceFile, TracePath, artifacts_command, profile_command, replay_loaded_trace,
     report_command, verify_trace,
 };
 use crate::{ProfileCaptureLevel, ProfileCommand};
@@ -47,9 +47,9 @@ pub fn ci_command(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(FozzyError::InvalidArgument(
-            format!("ci gate failed (one or more checks failed): {failed_checks}"),
-        ));
+        return Err(FozzyError::InvalidArgument(format!(
+            "ci gate failed (one or more checks failed): {failed_checks}"
+        )));
     }
     Ok(report)
 }
@@ -91,9 +91,10 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         )),
     });
 
-    let replay = replay_trace(
+    let replay = replay_loaded_trace(
         config,
         TracePath::new(opt.trace.clone()),
+        trace.clone(),
         &ReplayOptions {
             step: false,
             until: None,
@@ -311,7 +312,8 @@ mod tests {
 
     #[test]
     fn ci_command_keeps_zip_integrity_on_strict_path() {
-        let root = std::env::temp_dir().join(format!("fozzy-ci-cmd-strict-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("fozzy-ci-cmd-strict-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("mkdir");
         let trace = root.join("trace.fozzy");
         crate::TraceFile::new(
