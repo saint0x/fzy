@@ -333,42 +333,48 @@ fn resolve_impl_context_type(
     }
 }
 
-pub fn lower(module: &Module) -> TypedModule {
-    let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
-    let mut fn_async = HashMap::<String, bool>::new();
-    let mut fn_generics = HashMap::<String, Vec<ast::GenericParam>>::new();
-    let mut typed_functions = Vec::new();
-    let mut type_errors = 0usize;
-    let mut type_error_details = Vec::new();
-    let mut typed_globals = Vec::new();
-    let mut global_scope = SymbolScopes::new();
-    let mut global_const_values = HashMap::<String, i32>::new();
-    let struct_defs = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ast::Item::Struct(item) => Some((item.name.clone(), item.clone())),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
-    let enum_defs = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ast::Item::Enum(item) => Some((item.name.clone(), item.clone())),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
-    let trait_defs = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ast::Item::Trait(item) => Some((item.name.clone(), item.clone())),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
-    let mut trait_defs = trait_defs;
-    trait_defs
+#[derive(Default)]
+struct ModuleDeclIndex {
+    struct_defs: HashMap<String, ast::Struct>,
+    enum_defs: HashMap<String, ast::Enum>,
+    trait_defs: HashMap<String, ast::Trait>,
+    trait_impls: HashMap<String, Vec<Type>>,
+    type_aliases: HashMap<String, Type>,
+}
+
+fn index_module_declarations(module: &Module) -> ModuleDeclIndex {
+    let mut index = ModuleDeclIndex::default();
+    for item in &module.items {
+        match item {
+            ast::Item::Struct(item) => {
+                index.struct_defs.insert(item.name.clone(), item.clone());
+            }
+            ast::Item::Enum(item) => {
+                index.enum_defs.insert(item.name.clone(), item.clone());
+            }
+            ast::Item::Trait(item) => {
+                index.trait_defs.insert(item.name.clone(), item.clone());
+            }
+            ast::Item::Impl(item) => {
+                if let Some(trait_name) = item.trait_name.clone() {
+                    index
+                        .trait_impls
+                        .entry(trait_name)
+                        .or_default()
+                        .push(item.for_type.clone());
+                }
+            }
+            ast::Item::TypeAlias(item) => {
+                index.type_aliases.insert(item.name.clone(), item.ty.clone());
+            }
+            ast::Item::NewType(item) => {
+                index.type_aliases.insert(item.name.clone(), item.inner.clone());
+            }
+            _ => {}
+        }
+    }
+    index
+        .trait_defs
         .entry("Error".to_string())
         .or_insert_with(|| ast::Trait {
             name: "Error".to_string(),
@@ -385,36 +391,32 @@ pub fn lower(module: &Module) -> TypedModule {
             }],
             is_pub: true,
         });
-    let trait_impls = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ast::Item::Impl(item) => item
-                .trait_name
-                .clone()
-                .map(|trait_name| (trait_name, item.for_type.clone())),
-            _ => None,
-        })
-        .fold(
-            HashMap::<String, Vec<Type>>::new(),
-            |mut acc, (trait_name, ty)| {
-                acc.entry(trait_name).or_default().push(ty);
-                acc
-            },
-        );
-    let type_aliases = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ast::Item::TypeAlias(item) => Some((item.name.clone(), item.ty.clone())),
-            ast::Item::NewType(item) => Some((item.name.clone(), item.inner.clone())),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
+    index
+}
+
+pub fn lower(module: &Module) -> TypedModule {
+    let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
+    let mut fn_async = HashMap::<String, bool>::new();
+    let mut fn_generics = HashMap::<String, Vec<ast::GenericParam>>::new();
+    let mut typed_functions = Vec::new();
+    let mut type_errors = 0usize;
+    let mut type_error_details = Vec::new();
+    let mut typed_globals = Vec::new();
+    let mut global_scope = SymbolScopes::new();
+    let mut global_const_values = HashMap::<String, i32>::new();
+    let ModuleDeclIndex {
+        struct_defs,
+        enum_defs,
+        trait_defs,
+        trait_impls,
+        type_aliases,
+    } = index_module_declarations(module);
     let mut generic_specializations = BTreeSet::new();
     let mut trait_violations = validate_trait_impls(module, &trait_defs);
     let mut fn_param_names = HashMap::<String, Vec<String>>::new();
     let mut fn_is_extern_unsafe_c = BTreeSet::<String>::new();
+    let empty_global_types = HashMap::<String, Type>::new();
+    let empty_global_mutability = HashMap::<String, bool>::new();
 
     for item in &module.items {
         match item {
@@ -433,8 +435,8 @@ pub fn lower(module: &Module) -> TypedModule {
                         struct_defs: &struct_defs,
                         enum_defs: &enum_defs,
                         trait_impls: &trait_impls,
-                        global_types: &HashMap::new(),
-                        global_mutability: &HashMap::new(),
+                        global_types: &empty_global_types,
+                        global_mutability: &empty_global_mutability,
                     },
                     &mut TypeCheckState {
                         errors: &mut type_errors,
@@ -494,8 +496,8 @@ pub fn lower(module: &Module) -> TypedModule {
                         struct_defs: &struct_defs,
                         enum_defs: &enum_defs,
                         trait_impls: &trait_impls,
-                        global_types: &HashMap::new(),
-                        global_mutability: &HashMap::new(),
+                        global_types: &empty_global_types,
+                        global_mutability: &empty_global_mutability,
                     },
                     &mut TypeCheckState {
                         errors: &mut type_errors,

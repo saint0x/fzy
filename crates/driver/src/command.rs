@@ -17,9 +17,9 @@ use sha2::{Digest, Sha256};
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
-    parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact,
-    Output,
+    check_file, compile_file_with_backend, compile_library_with_backend, emit_ir,
+    lower_fir_cached, parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile,
+    LibraryArtifact, Output,
 };
 
 mod interop;
@@ -968,7 +968,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         }
         Command::Fmt { targets, check } => fmt_command(&targets, check, format),
         Command::Check { path } => {
-            let output = verify_file_with_root_guidance(&path)?;
+            let output = check_file_with_root_guidance(&path)?;
             let rendered = render_output(format, output);
             let unsafe_docs = maybe_generate_unsafe_docs(&path);
             Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
@@ -2341,6 +2341,10 @@ fn render_code_frame(
         }
     }
     Some(frame)
+}
+
+fn check_file_with_root_guidance(path: &Path) -> Result<Output> {
+    check_file(path).map_err(|error| attach_project_root_guidance(path, error))
 }
 
 fn verify_file_with_root_guidance(path: &Path) -> Result<Output> {

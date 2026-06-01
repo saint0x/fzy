@@ -124,8 +124,8 @@ pub struct FirModule {
     pub linear_type_violations: Vec<String>,
 }
 
-pub fn build(typed: &TypedModule) -> FirModule {
-    build_owned(typed.clone())
+pub fn build(typed: TypedModule) -> FirModule {
+    build_owned(typed)
 }
 
 pub fn build_owned(typed: TypedModule) -> FirModule {

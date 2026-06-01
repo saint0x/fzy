@@ -155,6 +155,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         }
     }
 
+    let repr_c_names = collect_repr_c_names(module);
     for function in &module.typed_functions {
         if extern_c_import_requires_unsafe(function) {
             report.diagnostics.push(Diagnostic::new(
@@ -200,7 +201,6 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 .with_catalog_key("verifier.extern_c_callback_requires_context_anchor"),
             );
         }
-        let repr_c_names = collect_repr_c_names(module);
         if let Some(detail) = extern_c_import_unstable_ffi_type(function, &repr_c_names) {
             report.diagnostics.push(
                 Diagnostic::new(

@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Arc, Once, OnceLock, RwLock};
 use std::time::UNIX_EPOCH;
 
 use ast::AstVisitor;
@@ -180,7 +180,7 @@ pub struct ParsedProgram {
     pub module_paths: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ModuleStamp {
     path: PathBuf,
     bytes: u64,
@@ -189,19 +189,37 @@ struct ModuleStamp {
 
 #[derive(Debug, Clone)]
 struct ParsedProgramCacheEntry {
-    parsed: ParsedProgram,
+    parsed: Arc<ParsedProgram>,
     stamps: Vec<ModuleStamp>,
 }
 
 #[derive(Debug, Clone)]
 struct LowerCacheEntry {
-    typed: hir::TypedModule,
-    fir: fir::FirModule,
+    typed: Arc<hir::TypedModule>,
+    fir: Arc<fir::FirModule>,
 }
 
-static PARSED_PROGRAM_CACHE: OnceLock<Mutex<HashMap<PathBuf, ParsedProgramCacheEntry>>> =
+#[derive(Debug, Clone)]
+struct DependencySourceCacheEntry {
+    manifest_stamp: ModuleStamp,
+    manifest_hash: String,
+    package_name: String,
+    package_version: String,
+    source_hash: String,
+    source_stamps: Vec<ModuleStamp>,
+}
+
+#[derive(Clone)]
+struct SharedLoweredProgram {
+    typed: Arc<hir::TypedModule>,
+    fir: Arc<fir::FirModule>,
+}
+
+static PARSED_PROGRAM_CACHE: OnceLock<RwLock<HashMap<PathBuf, ParsedProgramCacheEntry>>> =
     OnceLock::new();
-static LOWER_CACHE: OnceLock<Mutex<HashMap<String, LowerCacheEntry>>> = OnceLock::new();
+static LOWER_CACHE: OnceLock<RwLock<HashMap<String, LowerCacheEntry>>> = OnceLock::new();
+static DEPENDENCY_SOURCE_CACHE: OnceLock<RwLock<HashMap<PathBuf, DependencySourceCacheEntry>>> =
+    OnceLock::new();
 static CODEGEN_POOL_INIT: Once = Once::new();
 
 #[derive(Debug, Clone)]
@@ -253,7 +271,7 @@ pub fn compile_file_with_backend(
     backend_override: Option<&str>,
 ) -> Result<BuildArtifact> {
     let resolved = resolve_source_path(path)?;
-    let parsed = parse_program(&resolved.source_path)?;
+    let parsed = parse_program_shared(&resolved.source_path)?;
     let experimental_diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let backend = resolve_native_backend(profile, backend_override)?;
@@ -266,17 +284,17 @@ pub fn compile_file_with_backend(
     }
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let lowered = lower_fir_cached_shared(&parsed);
     policy_artifacts::write_safety_artifacts(
         &resolved.project_root,
         &parsed,
-        &fir,
+        &lowered.fir,
         resolved.manifest.as_ref(),
     )?;
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
-        &fir,
+        &lowered.fir,
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
             production_memory_safety: true,
@@ -292,7 +310,7 @@ pub fn compile_file_with_backend(
         .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
         .unwrap_or(true);
     let contract_diagnostics =
-        compile_time_contract_diagnostics(&parsed.module, &fir, checks_enabled, profile);
+        compile_time_contract_diagnostics(&parsed.module, &lowered.fir, checks_enabled, profile);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -323,7 +341,7 @@ pub fn compile_file_with_backend(
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let output = if status == "ok" {
         Some(emit_native_artifact(
-            &fir,
+            &lowered.fir,
             &resolved.project_root,
             &resolved.artifact_stem,
             profile,
@@ -335,7 +353,7 @@ pub fn compile_file_with_backend(
     };
 
     Ok(BuildArtifact {
-        module: fir.name,
+        module: lowered.fir.name.clone(),
         profile,
         status,
         diagnostics: diagnostic_details.len(),
@@ -351,7 +369,7 @@ pub fn compile_library_with_backend(
     backend_override: Option<&str>,
 ) -> Result<LibraryArtifact> {
     let resolved = resolve_source_path_with_target(path, true)?;
-    let parsed = parse_program(&resolved.source_path)?;
+    let parsed = parse_program_shared(&resolved.source_path)?;
     let experimental_diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let backend = resolve_native_backend(profile, backend_override)?;
@@ -364,17 +382,17 @@ pub fn compile_library_with_backend(
     }
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let lowered = lower_fir_cached_shared(&parsed);
     policy_artifacts::write_safety_artifacts(
         &resolved.project_root,
         &parsed,
-        &fir,
+        &lowered.fir,
         resolved.manifest.as_ref(),
     )?;
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
-        &fir,
+        &lowered.fir,
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
             production_memory_safety: true,
@@ -390,7 +408,7 @@ pub fn compile_library_with_backend(
         .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
         .unwrap_or(true);
     let contract_diagnostics =
-        compile_time_contract_diagnostics(&parsed.module, &fir, checks_enabled, profile);
+        compile_time_contract_diagnostics(&parsed.module, &lowered.fir, checks_enabled, profile);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -421,7 +439,7 @@ pub fn compile_library_with_backend(
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let (static_lib, shared_lib) = if status == "ok" {
         emit_native_libraries(
-            &fir,
+            &lowered.fir,
             &resolved.project_root,
             &resolved.artifact_stem,
             profile,
@@ -433,7 +451,7 @@ pub fn compile_library_with_backend(
     };
 
     Ok(LibraryArtifact {
-        module: fir.name,
+        module: lowered.fir.name.clone(),
         profile,
         status,
         diagnostics: diagnostic_details.len(),
@@ -444,17 +462,42 @@ pub fn compile_library_with_backend(
     })
 }
 
+pub fn check_file(path: &Path) -> Result<Output> {
+    validate_file_with_root_source(path, None, ValidationTier::Check)
+}
+
 pub fn verify_file(path: &Path) -> Result<Output> {
-    verify_file_with_root_source(path, None)
+    validate_file_with_root_source(path, None, ValidationTier::Verify)
 }
 
 fn is_supported_source_file(path: &Path) -> bool {
     path.extension().and_then(|value| value.to_str()) == Some("fzy")
 }
 
+pub fn check_file_with_root_source(
+    path: &Path,
+    root_source_override: Option<&str>,
+) -> Result<Output> {
+    validate_file_with_root_source(path, root_source_override, ValidationTier::Check)
+}
+
 pub fn verify_file_with_root_source(
     path: &Path,
     root_source_override: Option<&str>,
+) -> Result<Output> {
+    validate_file_with_root_source(path, root_source_override, ValidationTier::Verify)
+}
+
+#[derive(Clone, Copy)]
+enum ValidationTier {
+    Check,
+    Verify,
+}
+
+fn validate_file_with_root_source(
+    path: &Path,
+    root_source_override: Option<&str>,
+    tier: ValidationTier,
 ) -> Result<Output> {
     let resolved = resolve_source_path(path)?;
     let module_name = resolved
@@ -462,7 +505,10 @@ pub fn verify_file_with_root_source(
         .file_stem()
         .and_then(|v| v.to_str())
         .ok_or_else(|| anyhow!("invalid module filename"))?;
-    let parsed = match parse_program_with_root_source(&resolved.source_path, root_source_override) {
+    let parsed = match parse_program_shared_with_root_source(
+        &resolved.source_path,
+        root_source_override,
+    ) {
         Ok(parsed) => parsed,
         Err(error) => {
             let mut diagnostics = collect_parse_diagnostics_with_root_source(
@@ -497,32 +543,37 @@ pub fn verify_file_with_root_source(
     };
     let mut diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
-    let backend = resolve_native_backend(BuildProfile::Verify, None)?;
-    diagnostics.extend(backend_capability_diagnostics(
-        &parsed.module,
-        &backend,
-        false,
-    ));
-    diagnostics.extend(native_lowerability_diagnostics(&parsed.module));
-    let (_typed, fir) = lower_fir_cached(&parsed);
-    let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
-    let report = verifier::verify_with_policy(
-        &fir,
-        verifier::VerifyPolicy {
-            safe_profile: false,
-            production_memory_safety: true,
-            strict_unsafe_contracts: true,
-            deny_unsafe_in,
-            allow_unsafe_in,
-        },
-    );
-    diagnostics.extend(report.diagnostics);
-    diagnostics.extend(compile_time_contract_diagnostics(
-        &parsed.module,
-        &fir,
-        true,
-        BuildProfile::Strict,
-    ));
+    let lowered = lower_fir_cached_shared(&parsed);
+    match tier {
+        ValidationTier::Check => diagnostics.extend(verifier::verify(&lowered.fir).diagnostics),
+        ValidationTier::Verify => {
+            diagnostics.extend(native_lowerability_diagnostics(&parsed.module));
+            let backend = resolve_native_backend(BuildProfile::Verify, None)?;
+            diagnostics.extend(backend_capability_diagnostics(
+                &parsed.module,
+                &backend,
+                false,
+            ));
+            let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
+            let report = verifier::verify_with_policy(
+                &lowered.fir,
+                verifier::VerifyPolicy {
+                    safe_profile: false,
+                    production_memory_safety: true,
+                    strict_unsafe_contracts: true,
+                    deny_unsafe_in,
+                    allow_unsafe_in,
+                },
+            );
+            diagnostics.extend(report.diagnostics);
+            diagnostics.extend(compile_time_contract_diagnostics(
+                &parsed.module,
+                &lowered.fir,
+                true,
+                BuildProfile::Strict,
+            ));
+        }
+    }
     for diagnostic in &mut diagnostics {
         if diagnostic.path.is_none() {
             diagnostic.path = Some(resolved.source_path.display().to_string());
@@ -532,8 +583,8 @@ pub fn verify_file_with_root_source(
     diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Driver);
 
     Ok(Output {
-        module: fir.name,
-        nodes: fir.nodes,
+        module: lowered.fir.name.clone(),
+        nodes: lowered.fir.nodes,
         diagnostics: diagnostics.len(),
         diagnostic_details: diagnostics,
         backend_ir: None,
@@ -558,7 +609,7 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
         .and_then(|v| v.to_str())
         .ok_or_else(|| anyhow!("invalid module filename"))?;
 
-    let parsed = match parse_program(&source_path) {
+    let parsed = match parse_program_shared(&source_path) {
         Ok(parsed) => parsed,
         Err(error) => {
             let mut diagnostics = vec![diagnostics::Diagnostic::new(
@@ -586,8 +637,8 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
         }
     };
     let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
-    let (_typed, fir) = lower_fir_cached(&parsed);
-    let report = verifier::verify(&fir);
+    let lowered = lower_fir_cached_shared(&parsed);
+    let report = verifier::verify(&lowered.fir);
     diagnostics.extend(report.diagnostics);
     for diagnostic in &mut diagnostics {
         if diagnostic.path.is_none() {
@@ -596,12 +647,12 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
     }
     enrich_diagnostics_context(&mut diagnostics);
     diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Driver);
-    let llvm = lower_backend_ir(&fir, BackendKind::Llvm)?;
-    let cranelift = lower_backend_ir(&fir, BackendKind::Cranelift)?;
+    let llvm = lower_backend_ir(&lowered.fir, BackendKind::Llvm)?;
+    let cranelift = lower_backend_ir(&lowered.fir, BackendKind::Cranelift)?;
 
     Ok(Output {
-        module: fir.name,
-        nodes: fir.nodes,
+        module: lowered.fir.name.clone(),
+        nodes: lowered.fir.nodes,
         diagnostics: diagnostics.len(),
         diagnostic_details: diagnostics,
         backend_ir: Some(format!(
@@ -611,47 +662,74 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
 }
 
 pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
-    parse_program_with_root_source(source_path, None)
+    Ok((*parse_program_shared_with_root_source(source_path, None)?).clone())
 }
 
 pub fn parse_program_with_root_source(
     source_path: &Path,
     root_source_override: Option<&str>,
 ) -> Result<ParsedProgram> {
+    Ok((*parse_program_shared_with_root_source(
+        source_path,
+        root_source_override,
+    )?)
+    .clone())
+}
+
+fn parse_program_shared(source_path: &Path) -> Result<Arc<ParsedProgram>> {
+    parse_program_shared_with_root_source(source_path, None)
+}
+
+fn parse_program_shared_with_root_source(
+    source_path: &Path,
+    root_source_override: Option<&str>,
+) -> Result<Arc<ParsedProgram>> {
     let canonical = source_path
         .canonicalize()
         .with_context(|| format!("failed resolving source file: {}", source_path.display()))?;
     if let Some(source_override) = root_source_override {
-        return parse_program_uncached_with_root_source(&canonical, Some(source_override));
+        return parse_program_uncached_with_root_source(&canonical, Some(source_override))
+            .map(Arc::new);
     }
     if let Some(cached) = cached_parsed_program(&canonical) {
         return Ok(cached);
     }
-    let parsed = parse_program_uncached_with_root_source(&canonical, None)?;
-    store_parsed_program_cache(&canonical, &parsed);
+    let parsed = Arc::new(parse_program_uncached_with_root_source(&canonical, None)?);
+    store_parsed_program_cache(&canonical, Arc::clone(&parsed));
     Ok(parsed)
 }
 
 pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirModule) {
+    let lowered = lower_fir_cached_shared(parsed);
+    ((*lowered.typed).clone(), (*lowered.fir).clone())
+}
+
+fn lower_fir_cached_shared(parsed: &ParsedProgram) -> SharedLoweredProgram {
     let module_hash = sha256_hex(parsed.combined_source.as_bytes());
-    let cache = LOWER_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(guard) = cache.lock() {
+    let cache = LOWER_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Ok(guard) = cache.read() {
         if let Some(cached) = guard.get(&module_hash) {
-            return (cached.typed.clone(), cached.fir.clone());
+            return SharedLoweredProgram {
+                typed: Arc::clone(&cached.typed),
+                fir: Arc::clone(&cached.fir),
+            };
         }
     }
-    let typed = hir::lower(&parsed.module);
-    let fir_module = fir::build_owned(typed.clone());
-    if let Ok(mut guard) = cache.lock() {
+    let typed = Arc::new(hir::lower(&parsed.module));
+    let fir_module = Arc::new(fir::build_owned((*typed).clone()));
+    if let Ok(mut guard) = cache.write() {
         guard.insert(
             module_hash,
             LowerCacheEntry {
-                typed: typed.clone(),
-                fir: fir_module.clone(),
+                typed: Arc::clone(&typed),
+                fir: Arc::clone(&fir_module),
             },
         );
     }
-    (typed, fir_module)
+    SharedLoweredProgram {
+        typed,
+        fir: fir_module,
+    }
 }
 
 // Safety policy and artifact emission helpers live in `pipeline/policy_artifacts.rs`
@@ -5353,32 +5431,32 @@ fn module_stamp(path: &Path) -> Option<ModuleStamp> {
     })
 }
 
-fn cached_parsed_program(canonical: &Path) -> Option<ParsedProgram> {
-    let cache = PARSED_PROGRAM_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let guard = cache.lock().ok()?;
+fn cached_parsed_program(canonical: &Path) -> Option<Arc<ParsedProgram>> {
+    let cache = PARSED_PROGRAM_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    let guard = cache.read().ok()?;
     let entry = guard.get(canonical)?;
     if entry.stamps.iter().all(|stamp| {
         module_stamp(&stamp.path).is_some_and(|current| {
             current.bytes == stamp.bytes && current.modified_ns == stamp.modified_ns
         })
     }) {
-        return Some(entry.parsed.clone());
+        return Some(Arc::clone(&entry.parsed));
     }
     None
 }
 
-fn store_parsed_program_cache(canonical: &Path, parsed: &ParsedProgram) {
+fn store_parsed_program_cache(canonical: &Path, parsed: Arc<ParsedProgram>) {
     let stamps = parsed
         .module_paths
         .iter()
         .filter_map(|path| module_stamp(path))
         .collect::<Vec<_>>();
-    let cache = PARSED_PROGRAM_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut guard) = cache.lock() {
+    let cache = PARSED_PROGRAM_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Ok(mut guard) = cache.write() {
         guard.insert(
             canonical.to_path_buf(),
             ParsedProgramCacheEntry {
-                parsed: parsed.clone(),
+                parsed,
                 stamps,
             },
         );
@@ -12075,42 +12153,24 @@ fn build_dependency_graph(
                         resolved.display()
                     )
                 })?;
-                let dep_manifest_path = canonical.join("fozzy.toml");
-                let dep_manifest_text =
-                    std::fs::read_to_string(&dep_manifest_path).with_context(|| {
-                        format!(
-                            "path dependency `{}` missing manifest at {}",
-                            name,
-                            dep_manifest_path.display()
-                        )
-                    })?;
-                let dep_manifest = manifest::load(&dep_manifest_text).with_context(|| {
+                let dep_state = dependency_source_state(&canonical).with_context(|| {
                     format!(
-                        "failed parsing dependency manifest for `{}` at {}",
+                        "failed loading cached dependency state for `{}` at {}",
                         name,
-                        dep_manifest_path.display()
+                        canonical.display()
                     )
                 })?;
-                dep_manifest.validate().map_err(|err| {
-                    anyhow!(
-                        "invalid dependency manifest for `{}` at {}: {}",
-                        name,
-                        dep_manifest_path.display(),
-                        err
-                    )
-                })?;
-                let dep_source_hash = hash_directory_tree(&canonical)?;
                 dep_entries.push(serde_json::json!({
                     "name": name,
                     "sourceType": "path",
                     "path": normalize_rel_path(path),
                     "canonicalPath": canonical.display().to_string(),
                     "package": {
-                        "name": dep_manifest.package.name,
-                        "version": dep_manifest.package.version,
+                        "name": dep_state.package_name,
+                        "version": dep_state.package_version,
                     },
-                    "manifestHash": sha256_hex(dep_manifest_text.as_bytes()),
-                    "sourceHash": dep_source_hash,
+                    "manifestHash": dep_state.manifest_hash,
+                    "sourceHash": dep_state.source_hash,
                 }));
             }
             manifest::Dependency::Version { version, source } => {
@@ -12153,16 +12213,19 @@ fn normalize_rel_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-fn hash_directory_tree(root: &Path) -> Result<String> {
-    let mut files = Vec::new();
-    collect_files_recursive(root, root, &mut files)?;
+fn hash_stamped_files(root: &Path, files: &[ModuleStamp]) -> Result<String> {
     let mut hasher = Sha256::new();
-    for (rel, full) in files {
+    for stamp in files {
+        let rel = stamp
+            .path
+            .strip_prefix(root)
+            .with_context(|| format!("failed deriving relative path for {}", stamp.path.display()))?;
+        let rel = normalize_rel_path(&rel.display().to_string());
         hasher.update(rel.as_bytes());
-        let bytes = std::fs::read(&full).with_context(|| {
+        let bytes = std::fs::read(&stamp.path).with_context(|| {
             format!(
                 "failed reading dependency file for hashing: {}",
-                full.display()
+                stamp.path.display()
             )
         })?;
         hasher.update((bytes.len() as u64).to_le_bytes());
@@ -12171,10 +12234,16 @@ fn hash_directory_tree(root: &Path) -> Result<String> {
     Ok(hex_encode(hasher.finalize().as_slice()))
 }
 
+fn collect_file_stamps(root: &Path) -> Result<Vec<ModuleStamp>> {
+    let mut files = Vec::new();
+    collect_files_recursive(root, root, &mut files)?;
+    Ok(files)
+}
+
 fn collect_files_recursive(
     root: &Path,
     current: &Path,
-    out: &mut Vec<(String, PathBuf)>,
+    out: &mut Vec<ModuleStamp>,
 ) -> Result<()> {
     let mut entries = std::fs::read_dir(current)
         .with_context(|| format!("failed reading dependency directory: {}", current.display()))?
@@ -12202,10 +12271,64 @@ fn collect_files_recursive(
         {
             collect_files_recursive(root, &full, out)?;
         } else {
-            out.push((rel_str, full));
+            let Some(stamp) = module_stamp(&full) else {
+                continue;
+            };
+            out.push(stamp);
         }
     }
     Ok(())
+}
+
+fn dependency_source_state(canonical: &Path) -> Result<DependencySourceCacheEntry> {
+    let manifest_path = canonical.join("fozzy.toml");
+    let manifest_stamp = module_stamp(&manifest_path).ok_or_else(|| {
+        anyhow!(
+            "path dependency manifest missing at {}",
+            manifest_path.display()
+        )
+    })?;
+    let current_stamps = collect_file_stamps(canonical)?;
+    let cache = DEPENDENCY_SOURCE_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Ok(guard) = cache.read() {
+        if let Some(cached) = guard.get(canonical) {
+            if cached.manifest_stamp == manifest_stamp && cached.source_stamps == current_stamps {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    let dep_manifest_text = std::fs::read_to_string(&manifest_path).with_context(|| {
+        format!(
+            "path dependency manifest missing at {}",
+            manifest_path.display()
+        )
+    })?;
+    let dep_manifest = manifest::load(&dep_manifest_text).with_context(|| {
+        format!(
+            "failed parsing dependency manifest at {}",
+            manifest_path.display()
+        )
+    })?;
+    dep_manifest.validate().map_err(|err| {
+        anyhow!(
+            "invalid dependency manifest at {}: {}",
+            manifest_path.display(),
+            err
+        )
+    })?;
+    let entry = DependencySourceCacheEntry {
+        manifest_stamp,
+        manifest_hash: sha256_hex(dep_manifest_text.as_bytes()),
+        package_name: dep_manifest.package.name,
+        package_version: dep_manifest.package.version,
+        source_hash: hash_stamped_files(canonical, &current_stamps)?,
+        source_stamps: current_stamps,
+    };
+    if let Ok(mut guard) = cache.write() {
+        guard.insert(canonical.to_path_buf(), entry.clone());
+    }
+    Ok(entry)
 }
 
 fn should_skip_hash_path(rel: &str) -> bool {
