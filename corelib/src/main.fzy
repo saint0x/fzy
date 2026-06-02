@@ -17,6 +17,7 @@ mod network;
 mod concurrency;
 mod process;
 mod term;
+mod mem;
 mod threadkit;
 mod security;
 mod gpu;
@@ -48,6 +49,7 @@ fn sanity() -> i32 {
     acc = (acc + concurrency.sample()) % 251
     acc = (acc + process.sample()) % 251
     acc = (acc + term.sample()) % 251
+    acc = (acc + mem.sample()) % 251
     acc = (acc + threadkit.sample()) % 251
     acc = (acc + security.sample()) % 251
     acc = (acc + gpu.sample()) % 251

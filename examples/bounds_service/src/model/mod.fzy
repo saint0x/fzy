@@ -1,0 +1,40 @@
+struct ServiceConfig {
+    service_name: str,
+    runtime_mode: str,
+    request_budget_bytes: i32,
+    header_capacity: i32,
+    body_capacity_bytes: i32,
+    worker_queue_capacity: i32,
+    session_capacity: i32,
+    warm_memory_bytes: i32,
+}
+
+fn json_i32(value: i32) -> str {
+    return str.from_i32(value)
+}
+
+fn config() -> ServiceConfig {
+    return ServiceConfig {
+        service_name: "bounds_service",
+        runtime_mode: "strict",
+        request_budget_bytes: 32768,
+        header_capacity: 48,
+        body_capacity_bytes: 32768,
+        worker_queue_capacity: 256,
+        session_capacity: 50000,
+        warm_memory_bytes: 4096,
+    }
+}
+
+fn local_contract_json(cfg: ServiceConfig) -> str {
+    let payload = map.new()
+    discard map.set(payload, "service_name", json.str(cfg.service_name))
+    discard map.set(payload, "runtime_mode", json.str(cfg.runtime_mode))
+    discard map.set(payload, "request_budget_bytes", json_i32(cfg.request_budget_bytes))
+    discard map.set(payload, "header_capacity", json_i32(cfg.header_capacity))
+    discard map.set(payload, "body_capacity_bytes", json_i32(cfg.body_capacity_bytes))
+    discard map.set(payload, "worker_queue_capacity", json_i32(cfg.worker_queue_capacity))
+    discard map.set(payload, "session_capacity", json_i32(cfg.session_capacity))
+    discard map.set(payload, "warm_memory_bytes", json_i32(cfg.warm_memory_bytes))
+    return json.object(payload)
+}

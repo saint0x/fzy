@@ -1,0 +1,55 @@
+use model;
+
+fn positive(value: i32, fallback: i32) -> i32 {
+    if value <= 0 {
+        return fallback
+    }
+    return value
+}
+
+fn make(
+    max_memory_bytes: i32,
+    max_regions: i32,
+    max_tasks: i32,
+    max_sockets: i32,
+    max_buffers: i32,
+    max_channels: i32,
+    max_queue_entries: i32,
+    max_maps: i32,
+    max_lists: i32,
+    max_strings: i32,
+) -> model.Budget {
+    return model.budget_record(
+        positive(max_memory_bytes, 1048576),
+        positive(max_regions, 32),
+        positive(max_tasks, 128),
+        positive(max_sockets, 64),
+        positive(max_buffers, 128),
+        positive(max_channels, 64),
+        positive(max_queue_entries, 1024),
+        positive(max_maps, 64),
+        positive(max_lists, 64),
+        positive(max_strings, 512),
+    )
+}
+
+fn default_budget() -> model.Budget {
+    return make(8 * 1024 * 1024, 128, 4096, 512, 2048, 1024, 100000, 1024, 1024, 10000)
+}
+
+fn production_budget() -> model.Budget {
+    return make(64 * 1024 * 1024, 1000, 10000, 4096, 5000, 1000, 100000, 1000, 1000, 10000)
+}
+
+fn fzweb_budget() -> model.Budget {
+    return make(32 * 1024 * 1024, 2048, 4096, 1024, 4096, 512, 20000, 512, 512, 4096)
+}
+
+fn json() -> str {
+    return model.budget_json(production_budget())
+}
+
+fn surface_score() -> i32 {
+    let item = production_budget()
+    return (item.max_memory_bytes / 1024) + item.max_regions + item.max_channels + item.max_queue_entries
+}

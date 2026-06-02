@@ -19,9 +19,12 @@ fn cmd_init() -> i32 {
 
 fn cmd_set() -> i32 {
     let set_proc_owned = proc.spawn("echo robust-cli-set");
+    let command_file_ref = fs.open("robust_cli.commands.log");
+    defer fs.close(command_file_ref);
     defer proc.close(set_proc_owned);
     discard proc.exec_timeout(set_proc_owned);
-    fs.flush();
+    discard fs.write(command_file_ref, "cmd=set\n");
+    discard fs.flush(command_file_ref);
     return 0;
 }
 
@@ -40,9 +43,12 @@ fn cmd_list() -> i32 {
 }
 
 fn cmd_compact() -> i32 {
-    fs.atomic_write();
-    fs.rename_atomic();
-    fs.fsync();
+    let compact_file_ref = fs.open("robust_cli.compact.log");
+    defer fs.close(compact_file_ref);
+    discard fs.write(compact_file_ref, "cmd=compact\n");
+    discard fs.atomic_write("robust_cli.compact.log", "cmd=compact\n");
+    discard fs.rename_atomic();
+    discard fs.fsync(compact_file_ref);
     return 0;
 }
 

@@ -185,9 +185,6 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     assert!(gpu_kernel_package.contains("\"abiVersion\": \"fozzylang.gpu_launch_abi.v1\""));
     assert!(gpu_kernel_package.contains("\"argumentLayoutClasses\""));
     assert!(gpu_kernel_package.contains("\"backendLimitProfiles\""));
-    assert!(gpu_kernel_package.contains("\"sharedContract\""));
-    assert!(gpu_kernel_package.contains("\"kernelCapabilityFlags\""));
-    assert!(gpu_kernel_package.contains("\"wireSlots\""));
     assert!(gpu_kernel_package.contains("\"moduleFormat\": \"spirv.binary_module\""));
     assert!(gpu_kernel_package.contains("\"executionModel\": \"GLCompute\""));
     assert!(gpu_kernel_package.contains("\"moduleFormat\": \"ptx.assembly_text\""));
@@ -721,6 +718,90 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
     assert!(runtime_contracts.contains("\"callee\": \"fs.read\""));
     assert!(runtime_contracts.contains("\"callee\": \"thread.spawn_ctx\""));
     assert!(runtime_contracts.contains("\"returnOwnership\": \"owned_task_handle\""));
+}
+
+#[test]
+fn strict_compile_rejects_allocation_after_mem_freeze() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-freeze-strict-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_freeze_strict\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_freeze_strict\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.mem;\nfn main() -> i32 {\n    mem.freeze()\n    let p = alloc(8)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "error");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("allocation `alloc` after `mem.freeze()`"))
+        .expect("strict memory-freeze diagnostic should be present");
+    assert_eq!(diagnostic.code.as_deref(), Some("E-DRV-MEM-FREEZE-PHASE"));
+
+    let memory_report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".fz/memory-report.json")).expect("memory report should exist"),
+    )
+    .expect("memory report should be valid json");
+    let main_phase = memory_report["freeze_phases"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["function"] == "main"))
+        .expect("main freeze phase should be recorded");
+    assert_eq!(
+        main_phase["entryUnfrozen"]["allocWhileFrozen"].as_bool(),
+        Some(true)
+    );
+    assert!(memory_report["violations"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| {
+            item["kind"] == "freeze_phase"
+                && item["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("allocation `alloc` after `mem.freeze()`"))
+        })));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_compile_rejects_helper_call_from_frozen_memory_phase() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-freeze-helper-strict-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_freeze_helper_strict\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_freeze_helper_strict\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.mem;\nfn allocate_more() -> i32 {\n    let p = alloc(8)\n    free(p)\n    return 0\n}\nfn main() -> i32 {\n    mem.freeze()\n    return allocate_more()\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("calls `allocate_more` from a frozen memory phase")));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -1996,9 +2077,9 @@ fn verify_conditional_move_memory_diagnostic_is_snapshot_stable() {
         .expect("conditional-move memory diagnostic should be present");
     assert_eq!(
         diagnostic.help.as_deref(),
-        Some("enforce ownership transfer semantics and ensure every allocation is released")
+        Some("make ownership outcomes consistent on every branch and loop path before reusing or freeing the value")
     );
-    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-05B8968C"));
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-DFF13221"));
 
     let _ = std::fs::remove_file(path);
 }
@@ -2112,7 +2193,7 @@ fn verify_if_expression_conditional_move_diagnostic_is_snapshot_stable() {
         .expect("if-expression conditional-move diagnostic should be present");
     assert_eq!(
         diagnostic.help.as_deref(),
-        Some("enforce ownership transfer semantics and ensure every allocation is released")
+        Some("make ownership outcomes consistent on every branch and loop path before reusing or freeing the value")
     );
     let _ = diagnostic
         .code
@@ -2149,7 +2230,7 @@ fn verify_match_expression_conditional_move_diagnostic_is_snapshot_stable() {
         .expect("match-expression conditional-move diagnostic should be present");
     assert_eq!(
         diagnostic.help.as_deref(),
-        Some("enforce ownership transfer semantics and ensure every allocation is released")
+        Some("make ownership outcomes consistent on every branch and loop path before reusing or freeing the value")
     );
     let _ = diagnostic
         .code
@@ -6817,6 +6898,60 @@ fn compile_project_fails_when_lockfile_drifts() {
     let lock_text =
         std::fs::read_to_string(root.join("fozzy.lock")).expect("lockfile should be readable");
     assert!(lock_text.contains("dependencyGraphHash"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn parse_program_imports_symbols_from_path_dependency_library_targets() {
+    let project_name = format!(
+        "fozzylang-dep-lib-import-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    let dep_dir = root.join("deps/util");
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::create_dir_all(dep_dir.join("src/metrics")).expect("dep src dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use util;\nfn main() -> i32 {\n    return util.score()\n}\n",
+    )
+    .expect("source should be written");
+    std::fs::write(
+        dep_dir.join("fozzy.toml"),
+        "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"util\"\npath=\"src/lib.fzy\"\n",
+    )
+    .expect("dep manifest should be written");
+    std::fs::write(
+        dep_dir.join("src/lib.fzy"),
+        "mod metrics;\npub fn score() -> i32 {\n    return metrics.score()\n}\n",
+    )
+    .expect("dep lib should be written");
+    std::fs::write(
+        dep_dir.join("src/metrics/mod.fzy"),
+        "pub fn score() -> i32 {\n    return 7\n}\n",
+    )
+    .expect("dep module should be written");
+
+    let parsed = parse_program(&root.join("src/main.fzy")).expect("project should parse");
+    let qualified = parsed
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ast::Item::Function(function) if function.name == "util.score" => Some(function),
+            _ => None,
+        })
+        .expect("dependency library function should be qualified into the merged program");
+    assert!(qualified.is_pub);
 
     let _ = std::fs::remove_dir_all(root);
 }

@@ -74,9 +74,9 @@ fn parse(conn: HttpHandle, max_bytes: i32) -> UploadSummary {
 
 fn json_summary(info: UploadSummary, request_id: str) -> str {
     let payload = map.new()
-    discard map.set(payload, "fields", json.raw(str.from_i32(info.field_count)))
-    discard map.set(payload, "files", json.raw(str.from_i32(info.file_count)))
-    discard map.set(payload, "bytes", json.raw(str.from_i32(info.bytes)))
+    discard map.set(payload, "fields", json.str(str.from_i32(info.field_count)))
+    discard map.set(payload, "files", json.str(str.from_i32(info.file_count)))
+    discard map.set(payload, "bytes", json.str(str.from_i32(info.bytes)))
     discard map.set(payload, "request_id", json.str(request_id))
     return json.object(payload)
 }

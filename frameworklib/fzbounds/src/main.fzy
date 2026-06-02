@@ -1,0 +1,20 @@
+use core.term;
+use core.thread;
+
+mod api;
+mod model;
+mod budget;
+mod runtime;
+mod regions;
+mod arena;
+mod containers;
+mod integration;
+mod services;
+mod cli;
+mod tests;
+
+fn main() -> i32 {
+    discard term.is_interactive()
+    discard api.touch()
+    return cli.run()
+}

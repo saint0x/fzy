@@ -2904,6 +2904,10 @@ void fz_native_free(uintptr_t ptr) {
   free((void*)ptr);
 }
 
+void fz_native_mem_freeze(void) {}
+
+void fz_native_mem_unfreeze(void) {}
+
 int32_t fz_native_time_now(void) {
   return (int32_t)fz_now_ms();
 }

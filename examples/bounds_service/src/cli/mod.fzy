@@ -1,0 +1,52 @@
+use core.log;
+use core.term;
+use core.text;
+
+use services;
+
+fn print_help() -> i32 {
+    discard term.print_line("bounds_service")
+    discard term.print_line("  doctor         print the app-local bounded service contract")
+    discard term.print_line("  doctor-json    print the raw doctor JSON")
+    discard term.print_line("  framework      build/query fzbounds and print the combined report")
+    discard term.print_line("  framework-json print the raw framework report")
+    discard term.print_line("  gate           print the deterministic local gate decision")
+    discard term.print_line("  gate-json      print the raw gate JSON")
+    return 0
+}
+
+fn print_json(payload: str) -> i32 {
+    discard term.print_line(text.indent(payload, "  "))
+    return 0
+}
+
+fn print_plain_json(payload: str) -> i32 {
+    discard term.print_line(payload)
+    return 0
+}
+
+fn run(command: str) -> i32 {
+    if command == "help" || command == "--help" {
+        log.quiet()
+        return print_help()
+    }
+    if command == "doctor-json" {
+        log.quiet()
+        return print_plain_json(services.doctor_json())
+    }
+    if command == "framework-json" {
+        log.quiet()
+        return print_plain_json(services.framework_json())
+    }
+    if command == "gate-json" {
+        log.quiet()
+        return print_plain_json(services.gate_json())
+    }
+    if command == "doctor" {
+        return print_json(services.doctor_json())
+    }
+    if command == "framework" {
+        return print_json(services.framework_json())
+    }
+    return print_json(services.gate_json())
+}

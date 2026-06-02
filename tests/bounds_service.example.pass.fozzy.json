@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "bounds-service-example-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": ["scripts/verify_bounds_service_example.py"],
+      "exit_code": 0,
+      "stdout": "bounds-service-example-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": ["scripts/verify_bounds_service_example.py"],
+      "expect_exit": 0,
+      "expect_stdout": "bounds-service-example-ok\n"
+    }
+  ]
+}

@@ -2,21 +2,21 @@ use core.fs;
 use core.mem;
 
 fn read_user() -> i32 {
-    let store_file_ref = fs.open();
-    discard store_file_ref;
-    fs.flush();
-    fs.read();
+    let store_file_ref = fs.open("live_server.store.kv");
+    defer fs.close(store_file_ref);
+    discard fs.flush(store_file_ref);
+    discard fs.read(store_file_ref, 4096);
     return 0;
 }
 
 fn write_user() -> i32 {
-    let store_file_ref = fs.open();
-    discard store_file_ref;
-    fs.flush();
-    fs.atomic_write();
-    fs.rename_atomic();
-    fs.flush();
-    fs.fsync();
-    fs.write();
+    let store_file_ref = fs.open("live_server.store.kv");
+    defer fs.close(store_file_ref);
+    discard fs.flush(store_file_ref);
+    discard fs.atomic_write("live_server.store.kv", "{\"status\":\"updated\"}\n");
+    discard fs.rename_atomic();
+    discard fs.write(store_file_ref, "{\"status\":\"updated\"}\n");
+    discard fs.flush(store_file_ref);
+    discard fs.fsync(store_file_ref);
     return 0;
 }

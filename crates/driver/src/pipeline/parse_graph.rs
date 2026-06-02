@@ -11,6 +11,7 @@ pub(super) struct ModuleSourceText {
 pub struct ParsedProgram {
     pub module: ast::Module,
     pub module_paths: Vec<PathBuf>,
+    pub(super) cache_paths: Arc<Vec<PathBuf>>,
     pub module_fingerprint: String,
     pub input_bytes: usize,
     pub(super) module_sources: Arc<Vec<ModuleSourceText>>,
@@ -22,6 +23,7 @@ impl Clone for ParsedProgram {
         let cloned = Self {
             module: self.module.clone(),
             module_paths: self.module_paths.clone(),
+            cache_paths: Arc::clone(&self.cache_paths),
             module_fingerprint: self.module_fingerprint.clone(),
             input_bytes: self.input_bytes,
             module_sources: Arc::clone(&self.module_sources),

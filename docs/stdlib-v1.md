@@ -169,6 +169,11 @@ let err = proc.stderr(handle)
 - `KvStoreHandle`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
 - `ChannelHandle`: copy=no, owned=yes, linear=yes, closable=no, send-safe=yes, async-stable=yes
 - `RpcFrame`: copy=no, owned=yes, linear=yes, closable=no, send-safe=no, async-stable=no
+- `GpuDevice`: copy=yes, owned=no, linear=no, closable=no, send-safe=yes, async-stable=yes
+- `GpuBuffer`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
+- `GpuSlice`: copy=yes, owned=no, linear=no, closable=no, send-safe=no, async-stable=no
+- `GpuEvent`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
+- `GpuStream`: copy=no, owned=yes, linear=yes, closable=no, send-safe=no, async-stable=yes
 - Compiler-shipped handle contracts are emitted in `.fz/handle-contracts.json`.
 - Native runtime edge contracts are emitted in `.fz/native-runtime-contracts.json`.
 - Human-readable native runtime contract tables are emitted in `.fz/native-runtime-contracts.md`.
@@ -314,7 +319,7 @@ Transcript guidance:
   - typed load/store helpers for `GpuSlice<f32/i32/u32>`
   - slice indexing syntax over `GpuSlice<f32/i32/u32>`
 - Handle contract:
-  - `GpuDevice`: copy=yes, owned=no, linear=no, closable=no, send-safe=no, async-stable=yes
+  - `GpuDevice`: copy=yes, owned=no, linear=no, closable=no, send-safe=yes, async-stable=yes
   - `GpuBuffer<T>`: copy=no, owned=yes, linear=yes, closable=yes via `gpu.free`, send-safe=no, async-stable=no
   - `GpuSlice<T>`: copy=no, owned=yes, linear=no, closable=no, send-safe=no, async-stable=no
   - `GpuEvent`: copy=no, owned=yes, linear=yes, closable=yes via `gpu.wait`/`gpu.wait_async`, send-safe=no, async-stable=yes

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "compiler-memory-phase-freeze-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(textwrap.dedent(f'''\\\n        [package]\n        name=\"{name}\"\n        version=\"0.1.0\"\n\n        [[target.bin]]\n        name=\"{name}\"\n        path=\"src/main.fzy\"\n    '''))\n    (root / 'src/main.fzy').write_text(textwrap.dedent(source))\n    return root\n\nbad = write_project('memory_phase_bad', '''\n    use core.mem;\n    fn main() -> i32 {\n        mem.freeze()\n        let p = alloc(8)\n        free(p)\n        return 0\n    }\n''')\nbad_proc = subprocess.run([str(fz), 'build', str(bad), '--strict', '--json'], cwd=str(repo), capture_output=True, text=True)\nbad_payload = json.loads(bad_proc.stdout.strip())\nassert bad_proc.returncode == 1, (bad_proc.returncode, bad_payload, bad_proc.stderr)\nassert any('allocation `alloc` after `mem.freeze()`' in item['message'] for item in bad_payload['items']), bad_payload\nmemory_report = json.loads((bad / '.fz' / 'memory-report.json').read_text())\nmain_phase = next(item for item in memory_report['freeze_phases'] if item['function'] == 'main')\nassert main_phase['entryUnfrozen']['allocWhileFrozen'] is True, main_phase\nassert any(item['kind'] == 'freeze_phase' for item in memory_report['violations']), memory_report\n\nok = write_project('memory_phase_ok', '''\n    use core.mem;\n    fn main() -> i32 {\n        mem.freeze()\n        mem.unfreeze()\n        let p = alloc(8)\n        free(p)\n        return 0\n    }\n''')\nok_proc = subprocess.run([str(fz), 'build', str(ok), '--strict', '--json'], cwd=str(repo), capture_output=True, text=True)\nok_payload = json.loads(ok_proc.stdout.strip())\nassert ok_proc.returncode == 0, (ok_proc.returncode, ok_payload, ok_proc.stderr)\ncontracts = json.loads((ok / '.fz' / 'native-runtime-contracts.json').read_text())\nby_callee = {item['callee']: item for item in contracts['imports']}\nassert by_callee['mem.freeze']['requiredCapability'] == 'mem', by_callee['mem.freeze']\nassert by_callee['mem.unfreeze']['requiredCapability'] == 'mem', by_callee['mem.unfreeze']\nprint('compiler-memory-phase-freeze-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-memory-phase-freeze-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(textwrap.dedent(f'''\\\n        [package]\n        name=\"{name}\"\n        version=\"0.1.0\"\n\n        [[target.bin]]\n        name=\"{name}\"\n        path=\"src/main.fzy\"\n    '''))\n    (root / 'src/main.fzy').write_text(textwrap.dedent(source))\n    return root\n\nbad = write_project('memory_phase_bad', '''\n    use core.mem;\n    fn main() -> i32 {\n        mem.freeze()\n        let p = alloc(8)\n        free(p)\n        return 0\n    }\n''')\nbad_proc = subprocess.run([str(fz), 'build', str(bad), '--strict', '--json'], cwd=str(repo), capture_output=True, text=True)\nbad_payload = json.loads(bad_proc.stdout.strip())\nassert bad_proc.returncode == 1, (bad_proc.returncode, bad_payload, bad_proc.stderr)\nassert any('allocation `alloc` after `mem.freeze()`' in item['message'] for item in bad_payload['items']), bad_payload\nmemory_report = json.loads((bad / '.fz' / 'memory-report.json').read_text())\nmain_phase = next(item for item in memory_report['freeze_phases'] if item['function'] == 'main')\nassert main_phase['entryUnfrozen']['allocWhileFrozen'] is True, main_phase\nassert any(item['kind'] == 'freeze_phase' for item in memory_report['violations']), memory_report\n\nok = write_project('memory_phase_ok', '''\n    use core.mem;\n    fn main() -> i32 {\n        mem.freeze()\n        mem.unfreeze()\n        let p = alloc(8)\n        free(p)\n        return 0\n    }\n''')\nok_proc = subprocess.run([str(fz), 'build', str(ok), '--strict', '--json'], cwd=str(repo), capture_output=True, text=True)\nok_payload = json.loads(ok_proc.stdout.strip())\nassert ok_proc.returncode == 0, (ok_proc.returncode, ok_payload, ok_proc.stderr)\ncontracts = json.loads((ok / '.fz' / 'native-runtime-contracts.json').read_text())\nby_callee = {item['callee']: item for item in contracts['imports']}\nassert by_callee['mem.freeze']['requiredCapability'] == 'mem', by_callee['mem.freeze']\nassert by_callee['mem.unfreeze']['requiredCapability'] == 'mem', by_callee['mem.unfreeze']\nprint('compiler-memory-phase-freeze-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "compiler-memory-phase-freeze-ok\n"
+    }
+  ]
+}

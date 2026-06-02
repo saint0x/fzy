@@ -2729,7 +2729,7 @@ impl Parser {
     }
 
     fn compound_assign_op(&self) -> Option<BinaryOp> {
-        match self.peek_n(1).map(|token| &token.kind) {
+        match self.peek().map(|token| &token.kind) {
             Some(TokenKind::PlusEq) => Some(BinaryOp::Add),
             Some(TokenKind::MinusEq) => Some(BinaryOp::Sub),
             Some(TokenKind::StarEq) => Some(BinaryOp::Mul),

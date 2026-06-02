@@ -12941,6 +12941,52 @@ mod tests {
     }
 
     #[test]
+    fn audit_memory_includes_path_dependency_library_functions() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-audit-memory-dep-{suffix}"));
+        let dep_dir = root.join("deps/util");
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::create_dir_all(dep_dir.join("src")).expect("dep project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"audit_memory_dep\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"audit_memory_dep\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "use util;\nfn main() -> i32 {\n    let score = util.score()\n    if score == 7 {\n        return 0\n    }\n    return 91\n}\n",
+        )
+        .expect("source should be written");
+        std::fs::write(
+            dep_dir.join("fozzy.toml"),
+            "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"util\"\npath=\"src/lib.fzy\"\n",
+        )
+        .expect("dep manifest should be written");
+        std::fs::write(
+            dep_dir.join("src/lib.fzy"),
+            "pub fn score() -> i32 {\n    return 7\n}\n",
+        )
+        .expect("dep lib source should be written");
+
+        let output = run(Command::AuditMemory { path: root.clone() }, Format::Json)
+            .expect("memory audit should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("memory audit should emit json");
+        let function_names = payload["report"]["functions"]
+            .as_array()
+            .expect("report functions should be present")
+            .iter()
+            .filter_map(|value| value["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(function_names.contains(&"util.score"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn audit_ffi_emits_import_and_export_inventory() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -15200,7 +15246,7 @@ mod tests {
         std::fs::write(
             &source,
             format!(
-                "use core.http;\n\nfn read_event_type(stream: HttpStreamHandle) -> str {{\n    loop {{\n        let line = http.stream_read_line(stream)\n        if line == \"\" {{\n            if http.stream_eof(stream) == 1 {{\n                return \"\"\n            }}\n            continue\n        }}\n        if str.starts_with(line, \"event:\") == 1 {{\n            let value = str.slice(line, 6, str.len(line))\n            if str.starts_with(value, \" \") == 1 {{\n                return str.slice(value, 1, str.len(value))\n            }}\n            return value\n        }}\n    }}\n}}\n\nfn read_event_data(stream: HttpStreamHandle) -> str {{\n    loop {{\n        let line = http.stream_read_line(stream)\n        if line == \"\" {{\n            if http.stream_eof(stream) == 1 {{\n                return \"\"\n            }}\n            continue\n        }}\n        if str.starts_with(line, \"data:\") == 1 {{\n            let value = str.slice(line, 5, str.len(line))\n            if str.starts_with(value, \" \") == 1 {{\n                return str.slice(value, 1, str.len(value))\n            }}\n            return value\n        }}\n    }}\n}}\n\nfn main() -> i32 {{\n    discard http.header_set(\"accept\", \"text/event-stream\")\n    let stream = http.post_json_stream(\"http://127.0.0.1:{}/sse\", \"{{\\\"stream\\\":true}}\")\n    if http.stream_status(stream) != 200 {{\n        return http.stream_status(stream)\n    }}\n    let first = read_event_type(stream)\n    let second = read_event_type(stream)\n    let second_data = read_event_data(stream)\n    let third = read_event_type(stream)\n    discard http.stream_close(stream)\n    if first == \"message_start\" && second == \"content_block_delta\" && second_data == \"{{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"hi\\\"}}\" && third == \"message_stop\" {{\n        return 0\n    }}\n    return 17\n}}\n",
+                "use core.http;\n\nfn read_event_type(stream: HttpStreamHandle) -> str {{\n    loop {{\n        let line = http.stream_read_line(stream)\n        if line == \"\" {{\n            if http.stream_eof(stream) == 1 {{\n                return \"\"\n            }}\n            continue\n        }}\n        if str.starts_with(line, \"event:\") == 1 {{\n            let value = str.slice(line, 6, str.len(line))\n            if str.starts_with(value, \" \") == 1 {{\n                return str.slice(value, 1, str.len(value))\n            }}\n            return value\n        }}\n    }}\n}}\n\nfn read_event_data(stream: HttpStreamHandle) -> str {{\n    loop {{\n        let line = http.stream_read_line(stream)\n        if line == \"\" {{\n            if http.stream_eof(stream) == 1 {{\n                return \"\"\n            }}\n            continue\n        }}\n        if str.starts_with(line, \"data:\") == 1 {{\n            let value = str.slice(line, 5, str.len(line))\n            if str.starts_with(value, \" \") == 1 {{\n                return str.slice(value, 1, str.len(value))\n            }}\n            return value\n        }}\n    }}\n}}\n\nfn main() -> i32 {{\n    discard http.header_set(\"accept\", \"text/event-stream\")\n    let stream = http.post_json_stream(\"http://127.0.0.1:{}/sse\", \"{{\\\"stream\\\":true}}\")\n    let status = http.stream_status(stream)\n    if status != 200 {{\n        discard http.stream_close(stream)\n        return status\n    }}\n    let first = read_event_type(stream)\n    let second = read_event_type(stream)\n    let second_data = read_event_data(stream)\n    let third = read_event_type(stream)\n    discard http.stream_close(stream)\n    if first == \"message_start\" && second == \"content_block_delta\" && second_data == \"{{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"hi\\\"}}\" && third == \"message_stop\" {{\n        return 0\n    }}\n    return 17\n}}\n",
                 addr.port()
             ),
         )
@@ -15548,7 +15594,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.poll_register(conn) != 0 {\n        return 23\n    }\n    discard http.poll_next()\n    let read_status = http.read(conn)\n    if read_status != 0 {\n        http.write(conn, 503, \"{\\\"error\\\":\\\"read_failed\\\"}\")\n        return 25\n    }\n    http.write(conn, 200, \"ok\")\n    return 0\n}\n",
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.poll_register(conn) != 0 {\n        discard http.close(conn)\n        return 23\n    }\n    discard http.poll_next()\n    let read_status = http.read(conn)\n    if read_status != 0 {\n        http.write(conn, 503, \"{\\\"error\\\":\\\"read_failed\\\"}\")\n        return 25\n    }\n    http.write(conn, 200, \"ok\")\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -15738,7 +15784,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read(conn) != 0 {\n        return 23\n    }\n    let body = http.body(conn)\n    discard http.write_response(conn, 200, \"application/json; charset=utf-8\", body, 1)\n    if body == \"{\\\"ok\\\":true}\" {\n        return 0\n    }\n    return 25\n}\n",
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read(conn) != 0 {\n        discard http.close(conn)\n        return 23\n    }\n    let body = http.body(conn)\n    discard http.write_response(conn, 200, \"application/json; charset=utf-8\", body, 1)\n    if body == \"{\\\"ok\\\":true}\" {\n        return 0\n    }\n    return 25\n}\n",
         )
         .expect("source should be written");
 
@@ -16027,7 +16073,7 @@ fn main() -> i32 {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read(conn) != 0 {\n        return 23\n    }\n    discard http.response_header_set(conn, \"X-Test\", \"present\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"sid=abc; Path=/; HttpOnly\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"pref=dark; Path=/; Secure\")\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", \"ok\", 1)\n    return 0\n}\n",
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read(conn) != 0 {\n        discard http.close(conn)\n        return 23\n    }\n    discard http.response_header_set(conn, \"X-Test\", \"present\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"sid=abc; Path=/; HttpOnly\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"pref=dark; Path=/; Secure\")\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", \"ok\", 1)\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -16117,7 +16163,7 @@ fn main() -> i32 {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read_headers(conn) != 0 {\n        return 23\n    }\n    let mut body = \"\"\n    while http.body_eof(conn) == 0 {\n        body = str.concat(body, http.body_read(conn, 4))\n    }\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", body, 1)\n    return 0\n}\n",
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read_headers(conn) != 0 {\n        discard http.close(conn)\n        return 23\n    }\n    let mut body = \"\"\n    while http.body_eof(conn) == 0 {\n        body = str.concat(body, http.body_read(conn, 4))\n    }\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", body, 1)\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -17877,7 +17923,7 @@ fn main() -> i32 {
         let source = std::env::temp_dir().join(format!("fozzylang-run-det-route-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "use core.fs;\nfn main() -> i32 {\n    fs.open()\n    return 0\n}\n",
+            "use core.fs;\nfn main() -> i32 {\n    let file = fs.open(\"/tmp/fozzylang-run-det-route.txt\")\n    defer fs.close(file)\n    discard fs.write(file, \"route=det\\n\")\n    return 0\n}\n",
         )
         .expect("source should be written");
 

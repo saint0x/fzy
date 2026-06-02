@@ -11,14 +11,14 @@ fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
 }
 
 fn sample() -> i32 {
-    let stats_file_ref = fs.open();
-    discard stats_file_ref;
+    let stats_file_ref = fs.open("live_server.runtime.stats");
+    defer fs.close(stats_file_ref);
     checkpoint();
     log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_a"));
     log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_b"));
     log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_c"));
     discard time.now();
-    fs.write();
+    discard fs.write(stats_file_ref, "runtime.stats.sample\n");
     yield();
     return 0;
 }

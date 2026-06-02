@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -144,6 +145,26 @@ impl Default for UnsafePolicy {
 }
 
 impl Manifest {
+    pub fn infer_default_targets(&mut self, dir: &Path) {
+        if !self.target.bin.is_empty() || self.target.lib.is_some() {
+            return;
+        }
+
+        let src_dir = dir.join("src");
+        if src_dir.join("lib.fzy").exists() {
+            self.target.lib = Some(LibTarget {
+                name: self.package.name.clone(),
+                path: "src/lib.fzy".to_string(),
+            });
+        }
+        if src_dir.join("main.fzy").exists() {
+            self.target.bin.push(BinTarget {
+                name: self.package.name.clone(),
+                path: "src/main.fzy".to_string(),
+            });
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.package.name.trim().is_empty() {
             return Err("package.name cannot be empty".to_string());
@@ -287,6 +308,36 @@ mod tests {
             .expect("manifest should pass validation");
         assert_eq!(manifest.primary_bin_path(), Some("src/main.fzy"));
         assert_eq!(manifest.primary_bin_name(), Some("demo"));
+    }
+
+    #[test]
+    fn infers_default_targets_from_src_layout() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-manifest-default-targets-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("src should be created");
+        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 { return 0 }\n")
+            .expect("main should be written");
+        std::fs::write(root.join("src/lib.fzy"), "fn helper() -> i32 { return 1 }\n")
+            .expect("lib should be written");
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+        "#;
+        let mut manifest = load(input).expect("manifest should parse");
+        manifest.infer_default_targets(&root);
+        manifest
+            .validate()
+            .expect("inferred manifest should pass validation");
+        assert_eq!(manifest.primary_bin_path(), Some("src/main.fzy"));
+        assert_eq!(
+            manifest.target.lib.as_ref().map(|lib| lib.path.as_str()),
+            Some("src/lib.fzy")
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

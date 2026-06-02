@@ -2,19 +2,20 @@ use core.fs;
 use core.time;
 
 fn append_event() -> i32 {
-    let journal_file_ref = fs.open();
-    discard journal_file_ref;
-    fs.write();
-    fs.flush();
+    let journal_file_ref = fs.open("robust_cli.journal.log");
+    defer fs.close(journal_file_ref);
+    discard fs.write(journal_file_ref, "event=append\n");
+    discard fs.flush(journal_file_ref);
     return 0;
 }
 
 fn rotate_segment() -> i32 {
-    let segment_file_ref = fs.open();
-    discard segment_file_ref;
-    fs.atomic_write();
-    fs.rename_atomic();
-    fs.fsync();
+    let segment_file_ref = fs.open("robust_cli.segment.tmp");
+    defer fs.close(segment_file_ref);
+    discard fs.write(segment_file_ref, "segment-rotated\n");
+    discard fs.atomic_write("robust_cli.segment", "segment-rotated\n");
+    discard fs.rename_atomic();
+    discard fs.fsync(segment_file_ref);
     discard time.now();
     return 0;
 }

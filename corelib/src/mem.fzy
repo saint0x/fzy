@@ -1,0 +1,9 @@
+fn phase_fence() -> i32 {
+    mem.freeze()
+    mem.unfreeze()
+    return 0
+}
+
+fn sample() -> i32 {
+    return phase_fence()
+}

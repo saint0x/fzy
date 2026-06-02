@@ -1,0 +1,11 @@
+[package]
+name = "fzbounds"
+version = "0.1.0"
+
+[target.lib]
+name = "fzbounds"
+path = "src/lib.fzy"
+
+[[target.bin]]
+name = "fzbounds"
+path = "src/main.fzy"

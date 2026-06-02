@@ -1,0 +1,14 @@
+use model;
+
+fn request_headroom_percent(cfg: model.ServiceConfig) -> i32 {
+    return (cfg.request_budget_bytes * 100) / 65536
+}
+
+fn queue_weight(cfg: model.ServiceConfig) -> i32 {
+    return cfg.worker_queue_capacity / 16
+}
+
+fn boot() -> i32 {
+    let cfg = model.config()
+    return request_headroom_percent(cfg) + queue_weight(cfg) + cfg.header_capacity
+}

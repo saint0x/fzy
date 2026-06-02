@@ -2,8 +2,9 @@ use core.fs;
 use core.time;
 
 fn init() -> i32 {
-    let metrics_ref = fs.open();
-    discard metrics_ref;
+    let metrics_ref = fs.open("fullstack.metrics.log");
+    defer fs.close(metrics_ref);
+    discard fs.write(metrics_ref, "metrics.init\n");
     discard time.now();
     return 0;
 }

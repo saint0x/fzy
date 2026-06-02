@@ -1,0 +1,46 @@
+use core.time;
+
+use model;
+
+fn peak_of(left: i32, right: i32) -> i32 {
+    if left >= right {
+        return left
+    }
+    return right
+}
+
+fn open(name: str, budget_bytes: i32) -> model.Region {
+    return model.region(name, budget_bytes, time.monotonic_ms())
+}
+
+fn allocate(region: model.Region, bytes: i32) -> model.Region {
+    if bytes <= 0 {
+        return region
+    }
+    let next_used = region.used_bytes + bytes
+    let next_overflows = if next_used > region.budget_bytes { region.overflows + 1 } else { region.overflows }
+    return model.region_full(region.name, region.budget_bytes, next_used, peak_of(region.peak_bytes, next_used), next_overflows, region.allocation_count + 1, region.started_ms, region.ended_ms, region.closed)
+}
+
+fn finish(region: model.Region) -> model.Region {
+    return model.region_full(region.name, region.budget_bytes, region.used_bytes, region.peak_bytes, region.overflows, region.allocation_count, region.started_ms, time.monotonic_ms(), 1)
+}
+
+fn remaining(region: model.Region) -> i32 {
+    let rem = region.budget_bytes - region.used_bytes
+    if rem < 0 {
+        return 0
+    }
+    return rem
+}
+
+fn validate(region: model.Region) -> i32 {
+    if region.used_bytes <= region.budget_bytes && region.overflows == 0 {
+        return 1
+    }
+    return 0
+}
+
+fn json(region: model.Region) -> str {
+    return model.region_json(region)
+}

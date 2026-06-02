@@ -240,14 +240,14 @@ fn openapi_json(app: App) -> str {
     while idx < list.len(app.routes) {
         let item = route_at(app, idx)
         let route_json = map.new()
-        discard map.set(route_json, "route_id", json.raw(str.from_i32(item.route_id)))
+        discard map.set(route_json, "route_id", json.str(str.from_i32(item.route_id)))
         discard map.set(route_json, "name", json.str(item.name))
         discard map.set(route_json, "method", json.str(item.method))
         discard map.set(route_json, "path", json.str(item.path))
         discard map.set(route_json, "group", json.str(item.group))
-        discard map.set(route_json, "public", if item.public_route == 1 { json.raw("true") } else { json.raw("false") })
-        discard map.set(route_json, "json_body", if item.require_json == 1 { json.raw("true") } else { json.raw("false") })
-        discard map.set(route_json, "rate_limited", if item.skip_rate == 1 { json.raw("false") } else { json.raw("true") })
+        discard map.set(route_json, "public", json.str(if item.public_route == 1 { "true" } else { "false" }))
+        discard map.set(route_json, "json_body", json.str(if item.require_json == 1 { "true" } else { "false" }))
+        discard map.set(route_json, "rate_limited", json.str(if item.skip_rate == 1 { "false" } else { "true" }))
         discard list.push(routes, json.object(route_json))
         idx += 1
     }

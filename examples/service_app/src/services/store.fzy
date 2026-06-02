@@ -1,7 +1,8 @@
 use core.fs;
 
 fn init() -> i32 {
-    let db_ref = fs.open();
-    discard db_ref;
+    let db_ref = fs.open("service_app.store.db");
+    defer fs.close(db_ref);
+    discard fs.write(db_ref, "store.init\n");
     return 0;
 }

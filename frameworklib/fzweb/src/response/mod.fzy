@@ -160,7 +160,7 @@ fn inspect_json(
 fn search_json(query_text: str, limit: i32, request_id: str) -> str {
     let payload = map.new()
     discard map.set(payload, "query", json.str(query_text))
-    discard map.set(payload, "limit", json.raw(str.from_i32(limit)))
+    discard map.set(payload, "limit", json.str(str.from_i32(limit)))
     discard map.set(payload, "request_id", json.str(request_id))
     return json.object(payload)
 }
@@ -175,7 +175,7 @@ fn named_echo_json(name: str, request_id: str) -> str {
 fn bind_json(user: str, active: i32, request_id: str) -> str {
     let payload = map.new()
     discard map.set(payload, "user", json.str(user))
-    discard map.set(payload, "active", if active == 1 { json.raw("true") } else { json.raw("false") })
+    discard map.set(payload, "active", json.str(if active == 1 { "true" } else { "false" }))
     discard map.set(payload, "request_id", json.str(request_id))
     return json.object(payload)
 }
@@ -184,7 +184,7 @@ fn item_json(action: str, item_id: str, version: i32, request_id: str) -> str {
     let payload = map.new()
     discard map.set(payload, "action", json.str(action))
     discard map.set(payload, "item_id", json.str(item_id))
-    discard map.set(payload, "version", json.raw(str.from_i32(version)))
+    discard map.set(payload, "version", json.str(str.from_i32(version)))
     discard map.set(payload, "framework", json.str("fzweb"))
     discard map.set(payload, "request_id", json.str(request_id))
     return json.object(payload)
@@ -193,18 +193,24 @@ fn item_json(action: str, item_id: str, version: i32, request_id: str) -> str {
 fn item_view_json(item_id: str, version: i32, exists: i32, request_id: str) -> str {
     let payload = map.new()
     discard map.set(payload, "item_id", json.str(item_id))
-    discard map.set(payload, "version", json.raw(str.from_i32(version)))
-    discard map.set(payload, "exists", if exists == 1 { json.raw("true") } else { json.raw("false") })
+    discard map.set(payload, "version", json.str(str.from_i32(version)))
+    discard map.set(payload, "exists", json.str(if exists == 1 { "true" } else { "false" }))
     discard map.set(payload, "request_id", json.str(request_id))
     return json.object(payload)
 }
 
 fn items_json(request_id: str) -> str {
     let items = list.new()
-    discard list.push(items, json.raw("{\"item_id\":\"alpha\",\"version\":1}"))
-    discard list.push(items, json.raw("{\"item_id\":\"beta\",\"version\":2}"))
+    let alpha = map.new()
+    discard map.set(alpha, "item_id", json.str("alpha"))
+    discard map.set(alpha, "version", json.str("1"))
+    discard list.push(items, json.object(alpha))
+    let beta = map.new()
+    discard map.set(beta, "item_id", json.str("beta"))
+    discard map.set(beta, "version", json.str("2"))
+    discard list.push(items, json.object(beta))
     let payload = map.new()
-    discard map.set(payload, "count", json.raw("2"))
+    discard map.set(payload, "count", json.str("2"))
     discard map.set(payload, "items", json.array(items))
     discard map.set(payload, "request_id", json.str(request_id))
     return json.object(payload)

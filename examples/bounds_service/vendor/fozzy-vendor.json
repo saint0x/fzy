@@ -1,0 +1,19 @@
+{
+  "dependencies": [
+    {
+      "name": "fzbounds",
+      "package": {
+        "name": "fzbounds",
+        "version": "0.1.0"
+      },
+      "source": "/Users/deepsaint/Desktop/fozzylang/examples/bounds_service/../../frameworklib/fzbounds",
+      "sourceHash": "0d7a89cbf6eb6f3ad7f60021cfa596ee0db066f589a6f6430422bc06bed0591e",
+      "sourceType": "path",
+      "target": "/Users/deepsaint/Desktop/fozzylang/examples/bounds_service/vendor/fzbounds",
+      "vendorHash": "0d7a89cbf6eb6f3ad7f60021cfa596ee0db066f589a6f6430422bc06bed0591e"
+    }
+  ],
+  "lockHash": "7c8ddbea7d41caa03d44f97f2bd1f29355fd22a9b9be26c7f92983d95d460a02",
+  "lockfile": "/Users/deepsaint/Desktop/fozzylang/examples/bounds_service/fozzy.lock",
+  "schemaVersion": "fozzylang.vendor.v0"
+}

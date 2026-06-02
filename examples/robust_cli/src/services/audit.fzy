@@ -13,8 +13,9 @@ fn log_access() -> i32 {
     let audit_proc_owned = proc.spawn("echo audit-access");
     defer proc.close(audit_proc_owned);
     discard proc.exec_timeout(audit_proc_owned);
-    let audit_file_ref = fs.open();
-    discard audit_file_ref;
+    let audit_file_ref = fs.open("robust_cli.audit.log");
+    defer fs.close(audit_file_ref);
+    discard fs.write(audit_file_ref, "audit.access\n");
     log.info("audit.access", fields2("component", "audit", "phase", "access"));
     return 0;
 }

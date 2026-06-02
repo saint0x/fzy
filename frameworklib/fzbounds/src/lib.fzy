@@ -1,0 +1,29 @@
+use core.thread;
+
+mod api;
+mod model;
+mod budget;
+mod runtime;
+mod regions;
+mod arena;
+mod containers;
+mod integration;
+mod services;
+mod cli;
+mod tests;
+
+pub fn library_name() -> str {
+    return api.library_name()
+}
+
+pub fn touch() -> i32 {
+    return api.touch()
+}
+
+pub fn doctor_json() -> str {
+    return api.doctor_json()
+}
+
+pub fn inspect_json() -> str {
+    return api.inspect_json()
+}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "fzbounds-framework-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": ["scripts/verify_fzbounds_framework.py"],
+      "exit_code": 0,
+      "stdout": "fzbounds-framework-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": ["scripts/verify_fzbounds_framework.py"],
+      "expect_exit": 0,
+      "expect_stdout": "fzbounds-framework-ok\n"
+    }
+  ]
+}

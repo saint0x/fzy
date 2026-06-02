@@ -1,0 +1,532 @@
+struct Budget {
+    max_memory_bytes: i32,
+    max_regions: i32,
+    max_tasks: i32,
+    max_sockets: i32,
+    max_buffers: i32,
+    max_channels: i32,
+    max_queue_entries: i32,
+    max_maps: i32,
+    max_lists: i32,
+    max_strings: i32,
+}
+
+struct RuntimeState {
+    budget: Budget,
+    max_memory_bytes: i32,
+    mode: str,
+    frozen: i32,
+    memory_used: i32,
+    memory_peak: i32,
+    allocations_total: i32,
+    overflows_total: i32,
+    rejected_total: i32,
+    region_count: i32,
+    region_peak: i32,
+    assert_failures_total: i32,
+    closed_regions: ListHandle,
+    overflow_events: ListHandle,
+    audit_events: ListHandle,
+    injected_region: str,
+    injected_alloc_fail: i32,
+}
+
+struct OverflowEvent {
+    resource: str,
+    capacity: i32,
+    attempt: i32,
+    region: str,
+    message: str,
+    timestamp_ms: i32,
+    rejected: i32,
+}
+
+struct Region {
+    name: str,
+    budget_bytes: i32,
+    used_bytes: i32,
+    peak_bytes: i32,
+    overflows: i32,
+    allocation_count: i32,
+    started_ms: i32,
+    ended_ms: i32,
+    closed: i32,
+}
+
+struct Arena {
+    capacity_bytes: i32,
+    used_bytes: i32,
+    peak_bytes: i32,
+    allocations: i32,
+    resets: i32,
+    overflows: i32,
+    last_error: str,
+}
+
+struct BoundedList {
+    capacity: i32,
+    len: i32,
+    peak_len: i32,
+    overflows: i32,
+    items: ListHandle,
+    last_error: str,
+}
+
+struct BoundedMap {
+    capacity: i32,
+    len: i32,
+    peak_len: i32,
+    overflows: i32,
+    entries: ListHandle,
+    last_error: str,
+}
+
+struct BoundedQueue {
+    capacity: i32,
+    len: i32,
+    peak_len: i32,
+    head: i32,
+    overflows: i32,
+    items: ListHandle,
+    last_error: str,
+}
+
+struct BoundedChannel {
+    capacity: i32,
+    len: i32,
+    peak_len: i32,
+    head: i32,
+    overflows: i32,
+    items: ListHandle,
+    last_error: str,
+}
+
+struct BoundedBuffer {
+    capacity_bytes: i32,
+    used_bytes: i32,
+    peak_bytes: i32,
+    overflows: i32,
+    data: str,
+    last_error: str,
+}
+
+fn budget_record(
+    max_memory_bytes: i32,
+    max_regions: i32,
+    max_tasks: i32,
+    max_sockets: i32,
+    max_buffers: i32,
+    max_channels: i32,
+    max_queue_entries: i32,
+    max_maps: i32,
+    max_lists: i32,
+    max_strings: i32,
+) -> Budget {
+    return Budget {
+        max_memory_bytes: max_memory_bytes,
+        max_regions: max_regions,
+        max_tasks: max_tasks,
+        max_sockets: max_sockets,
+        max_buffers: max_buffers,
+        max_channels: max_channels,
+        max_queue_entries: max_queue_entries,
+        max_maps: max_maps,
+        max_lists: max_lists,
+        max_strings: max_strings,
+    }
+}
+
+fn runtime_state(budget: Budget, mode: str) -> RuntimeState {
+    return RuntimeState {
+        budget: budget,
+        max_memory_bytes: budget.max_memory_bytes,
+        mode: mode,
+        frozen: 0,
+        memory_used: 0,
+        memory_peak: 0,
+        allocations_total: 0,
+        overflows_total: 0,
+        rejected_total: 0,
+        region_count: 0,
+        region_peak: 0,
+        assert_failures_total: 0,
+        closed_regions: list.new(),
+        overflow_events: list.new(),
+        audit_events: list.new(),
+        injected_region: "",
+        injected_alloc_fail: 0,
+    }
+}
+
+fn runtime_state_full(
+    budget: Budget,
+    mode: str,
+    max_memory_bytes: i32,
+    frozen: i32,
+    memory_used: i32,
+    memory_peak: i32,
+    allocations_total: i32,
+    overflows_total: i32,
+    rejected_total: i32,
+    region_count: i32,
+    region_peak: i32,
+    assert_failures_total: i32,
+    closed_regions: ListHandle,
+    overflow_events: ListHandle,
+    audit_events: ListHandle,
+    injected_region: str,
+    injected_alloc_fail: i32,
+) -> RuntimeState {
+    return RuntimeState {
+        budget: budget,
+        max_memory_bytes: max_memory_bytes,
+        mode: mode,
+        frozen: frozen,
+        memory_used: memory_used,
+        memory_peak: memory_peak,
+        allocations_total: allocations_total,
+        overflows_total: overflows_total,
+        rejected_total: rejected_total,
+        region_count: region_count,
+        region_peak: region_peak,
+        assert_failures_total: assert_failures_total,
+        closed_regions: closed_regions,
+        overflow_events: overflow_events,
+        audit_events: audit_events,
+        injected_region: injected_region,
+        injected_alloc_fail: injected_alloc_fail,
+    }
+}
+
+fn overflow_event(resource: str, capacity: i32, attempt: i32, region: str, message: str, timestamp_ms: i32, rejected: i32) -> OverflowEvent {
+    return OverflowEvent {
+        resource: resource,
+        capacity: capacity,
+        attempt: attempt,
+        region: region,
+        message: message,
+        timestamp_ms: timestamp_ms,
+        rejected: rejected,
+    }
+}
+
+fn region(name: str, budget_bytes: i32, started_ms: i32) -> Region {
+    return Region {
+        name: name,
+        budget_bytes: budget_bytes,
+        used_bytes: 0,
+        peak_bytes: 0,
+        overflows: 0,
+        allocation_count: 0,
+        started_ms: started_ms,
+        ended_ms: started_ms,
+        closed: 0,
+    }
+}
+
+fn region_full(
+    name: str,
+    budget_bytes: i32,
+    used_bytes: i32,
+    peak_bytes: i32,
+    overflows: i32,
+    allocation_count: i32,
+    started_ms: i32,
+    ended_ms: i32,
+    closed: i32,
+) -> Region {
+    return Region {
+        name: name,
+        budget_bytes: budget_bytes,
+        used_bytes: used_bytes,
+        peak_bytes: peak_bytes,
+        overflows: overflows,
+        allocation_count: allocation_count,
+        started_ms: started_ms,
+        ended_ms: ended_ms,
+        closed: closed,
+    }
+}
+
+fn arena(capacity_bytes: i32) -> Arena {
+    return Arena {
+        capacity_bytes: capacity_bytes,
+        used_bytes: 0,
+        peak_bytes: 0,
+        allocations: 0,
+        resets: 0,
+        overflows: 0,
+        last_error: "",
+    }
+}
+
+fn arena_full(capacity_bytes: i32, used_bytes: i32, peak_bytes: i32, allocations: i32, resets: i32, overflows: i32, last_error: str) -> Arena {
+    return Arena {
+        capacity_bytes: capacity_bytes,
+        used_bytes: used_bytes,
+        peak_bytes: peak_bytes,
+        allocations: allocations,
+        resets: resets,
+        overflows: overflows,
+        last_error: last_error,
+    }
+}
+
+fn bounded_list(capacity: i32) -> BoundedList {
+    return BoundedList {
+        capacity: capacity,
+        len: 0,
+        peak_len: 0,
+        overflows: 0,
+        items: list.new(),
+        last_error: "",
+    }
+}
+
+fn bounded_list_full(capacity: i32, len: i32, peak_len: i32, overflows: i32, items: ListHandle, last_error: str) -> BoundedList {
+    return BoundedList {
+        capacity: capacity,
+        len: len,
+        peak_len: peak_len,
+        overflows: overflows,
+        items: items,
+        last_error: last_error,
+    }
+}
+
+fn bounded_map(capacity: i32) -> BoundedMap {
+    return BoundedMap {
+        capacity: capacity,
+        len: 0,
+        peak_len: 0,
+        overflows: 0,
+        entries: list.new(),
+        last_error: "",
+    }
+}
+
+fn bounded_map_full(capacity: i32, len: i32, peak_len: i32, overflows: i32, entries: ListHandle, last_error: str) -> BoundedMap {
+    return BoundedMap {
+        capacity: capacity,
+        len: len,
+        peak_len: peak_len,
+        overflows: overflows,
+        entries: entries,
+        last_error: last_error,
+    }
+}
+
+fn bounded_queue(capacity: i32) -> BoundedQueue {
+    return BoundedQueue {
+        capacity: capacity,
+        len: 0,
+        peak_len: 0,
+        head: 0,
+        overflows: 0,
+        items: list.new(),
+        last_error: "",
+    }
+}
+
+fn bounded_queue_full(capacity: i32, len: i32, peak_len: i32, head: i32, overflows: i32, items: ListHandle, last_error: str) -> BoundedQueue {
+    return BoundedQueue {
+        capacity: capacity,
+        len: len,
+        peak_len: peak_len,
+        head: head,
+        overflows: overflows,
+        items: items,
+        last_error: last_error,
+    }
+}
+
+fn bounded_channel(capacity: i32) -> BoundedChannel {
+    return BoundedChannel {
+        capacity: capacity,
+        len: 0,
+        peak_len: 0,
+        head: 0,
+        overflows: 0,
+        items: list.new(),
+        last_error: "",
+    }
+}
+
+fn bounded_channel_full(capacity: i32, len: i32, peak_len: i32, head: i32, overflows: i32, items: ListHandle, last_error: str) -> BoundedChannel {
+    return BoundedChannel {
+        capacity: capacity,
+        len: len,
+        peak_len: peak_len,
+        head: head,
+        overflows: overflows,
+        items: items,
+        last_error: last_error,
+    }
+}
+
+fn bounded_buffer(capacity_bytes: i32) -> BoundedBuffer {
+    return BoundedBuffer {
+        capacity_bytes: capacity_bytes,
+        used_bytes: 0,
+        peak_bytes: 0,
+        overflows: 0,
+        data: "",
+        last_error: "",
+    }
+}
+
+fn bounded_buffer_full(capacity_bytes: i32, used_bytes: i32, peak_bytes: i32, overflows: i32, data: str, last_error: str) -> BoundedBuffer {
+    return BoundedBuffer {
+        capacity_bytes: capacity_bytes,
+        used_bytes: used_bytes,
+        peak_bytes: peak_bytes,
+        overflows: overflows,
+        data: data,
+        last_error: last_error,
+    }
+}
+
+fn bool_json(v: i32) -> str {
+    if v == 1 {
+        return "true"
+    }
+    return "false"
+}
+
+fn json_i32(value: i32) -> str {
+    return str.from_i32(value)
+}
+
+fn json_bool(value: i32) -> str {
+    return bool_json(value)
+}
+
+fn budget_json(budget: Budget) -> str {
+    let payload = map.new()
+    discard map.set(payload, "max_memory_bytes", json_i32(budget.max_memory_bytes))
+    discard map.set(payload, "max_regions", json_i32(budget.max_regions))
+    discard map.set(payload, "max_tasks", json_i32(budget.max_tasks))
+    discard map.set(payload, "max_sockets", json_i32(budget.max_sockets))
+    discard map.set(payload, "max_buffers", json_i32(budget.max_buffers))
+    discard map.set(payload, "max_channels", json_i32(budget.max_channels))
+    discard map.set(payload, "max_queue_entries", json_i32(budget.max_queue_entries))
+    discard map.set(payload, "max_maps", json_i32(budget.max_maps))
+    discard map.set(payload, "max_lists", json_i32(budget.max_lists))
+    discard map.set(payload, "max_strings", json_i32(budget.max_strings))
+    return json.object(payload)
+}
+
+fn overflow_json(event: OverflowEvent) -> str {
+    let payload = map.new()
+    discard map.set(payload, "resource", json.str(event.resource))
+    discard map.set(payload, "capacity", json_i32(event.capacity))
+    discard map.set(payload, "attempt", json_i32(event.attempt))
+    discard map.set(payload, "region", json.str(event.region))
+    discard map.set(payload, "message", json.str(event.message))
+    discard map.set(payload, "timestamp_ms", json_i32(event.timestamp_ms))
+    discard map.set(payload, "rejected", json_bool(event.rejected))
+    return json.object(payload)
+}
+
+fn region_json(item: Region) -> str {
+    let payload = map.new()
+    discard map.set(payload, "name", json.str(item.name))
+    discard map.set(payload, "budget_bytes", json_i32(item.budget_bytes))
+    discard map.set(payload, "used_bytes", json_i32(item.used_bytes))
+    discard map.set(payload, "peak_bytes", json_i32(item.peak_bytes))
+    discard map.set(payload, "overflows", json_i32(item.overflows))
+    discard map.set(payload, "allocation_count", json_i32(item.allocation_count))
+    discard map.set(payload, "started_ms", json_i32(item.started_ms))
+    discard map.set(payload, "ended_ms", json_i32(item.ended_ms))
+    discard map.set(payload, "closed", json_bool(item.closed))
+    return json.object(payload)
+}
+
+fn arena_json(item: Arena) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity_bytes", json_i32(item.capacity_bytes))
+    discard map.set(payload, "used_bytes", json_i32(item.used_bytes))
+    discard map.set(payload, "peak_bytes", json_i32(item.peak_bytes))
+    discard map.set(payload, "allocations", json_i32(item.allocations))
+    discard map.set(payload, "resets", json_i32(item.resets))
+    discard map.set(payload, "overflows", json_i32(item.overflows))
+    discard map.set(payload, "last_error", json.str(item.last_error))
+    return json.object(payload)
+}
+
+fn bounded_list_json(item: BoundedList) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity", json_i32(item.capacity))
+    discard map.set(payload, "len", json_i32(item.len))
+    discard map.set(payload, "peak_len", json_i32(item.peak_len))
+    discard map.set(payload, "overflows", json_i32(item.overflows))
+    discard map.set(payload, "last_error", json.str(item.last_error))
+    discard map.set(payload, "items", json.array(item.items))
+    return json.object(payload)
+}
+
+fn bounded_map_json(item: BoundedMap) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity", json_i32(item.capacity))
+    discard map.set(payload, "len", json_i32(item.len))
+    discard map.set(payload, "peak_len", json_i32(item.peak_len))
+    discard map.set(payload, "overflows", json_i32(item.overflows))
+    discard map.set(payload, "last_error", json.str(item.last_error))
+    discard map.set(payload, "entries", json.array(item.entries))
+    return json.object(payload)
+}
+
+fn bounded_queue_json(item: BoundedQueue) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity", json_i32(item.capacity))
+    discard map.set(payload, "len", json_i32(item.len))
+    discard map.set(payload, "peak_len", json_i32(item.peak_len))
+    discard map.set(payload, "head", json_i32(item.head))
+    discard map.set(payload, "overflows", json_i32(item.overflows))
+    discard map.set(payload, "last_error", json.str(item.last_error))
+    discard map.set(payload, "items", json.array(item.items))
+    return json.object(payload)
+}
+
+fn bounded_channel_json(item: BoundedChannel) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity", json_i32(item.capacity))
+    discard map.set(payload, "len", json_i32(item.len))
+    discard map.set(payload, "peak_len", json_i32(item.peak_len))
+    discard map.set(payload, "head", json_i32(item.head))
+    discard map.set(payload, "overflows", json_i32(item.overflows))
+    discard map.set(payload, "last_error", json.str(item.last_error))
+    discard map.set(payload, "items", json.array(item.items))
+    return json.object(payload)
+}
+
+fn bounded_buffer_json(item: BoundedBuffer) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity_bytes", json_i32(item.capacity_bytes))
+    discard map.set(payload, "used_bytes", json_i32(item.used_bytes))
+    discard map.set(payload, "peak_bytes", json_i32(item.peak_bytes))
+    discard map.set(payload, "overflows", json_i32(item.overflows))
+    discard map.set(payload, "last_error", json.str(item.last_error))
+    discard map.set(payload, "data", json.str(item.data))
+    return json.object(payload)
+}
+
+fn runtime_json(state: RuntimeState) -> str {
+    let payload = map.new()
+    discard map.set(payload, "mode", json.str(state.mode))
+    discard map.set(payload, "frozen", json_bool(state.frozen))
+    discard map.set(payload, "max_memory_bytes", json_i32(state.max_memory_bytes))
+    discard map.set(payload, "memory_used", json_i32(state.memory_used))
+    discard map.set(payload, "memory_peak", json_i32(state.memory_peak))
+    discard map.set(payload, "allocations_total", json_i32(state.allocations_total))
+    discard map.set(payload, "overflows_total", json_i32(state.overflows_total))
+    discard map.set(payload, "rejected_total", json_i32(state.rejected_total))
+    discard map.set(payload, "region_count", json_i32(state.region_count))
+    discard map.set(payload, "region_peak", json_i32(state.region_peak))
+    discard map.set(payload, "assert_failures_total", json_i32(state.assert_failures_total))
+    discard map.set(payload, "budget", budget_json(state.budget))
+    discard map.set(payload, "closed_regions", json.array(state.closed_regions))
+    discard map.set(payload, "overflow_events", json.array(state.overflow_events))
+    discard map.set(payload, "audit_events", json.array(state.audit_events))
+    return json.object(payload)
+}

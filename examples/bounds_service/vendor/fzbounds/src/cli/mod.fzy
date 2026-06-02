@@ -1,0 +1,75 @@
+use core.log;
+use core.process;
+use core.term;
+use core.text;
+
+use services;
+
+fn log_fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let fields = map.new()
+    discard map.set(fields, k1, v1)
+    discard map.set(fields, k2, v2)
+    return log.fields(fields)
+}
+
+fn print_help() -> i32 {
+    discard term.print_line("fzbounds")
+    discard term.print_line("  doctor       print production budget and surface summary")
+    discard term.print_line("  inspect      print a full deterministic inspect snapshot")
+    discard term.print_line("  strict-demo  show strict freeze rejection behavior")
+    discard term.print_line("  audit-demo   show audit overflow behavior")
+    discard term.print_line("  fzweb        print the bounded fzweb request profile")
+    return 0
+}
+
+fn print_json(payload: str) -> i32 {
+    discard term.print_line(text.indent(payload, "  "))
+    return 0
+}
+
+fn print_plain_json(payload: str) -> i32 {
+    discard term.print_line(payload)
+    return 0
+}
+
+fn run() -> i32 {
+    let command = process.argv_or(1, "inspect")
+    if command == "help" || command == "--help" {
+        log.quiet()
+        return print_help()
+    }
+    if command == "doctor-json" {
+        log.quiet()
+        return print_plain_json(services.doctor_json())
+    }
+    if command == "doctor" {
+        log.info("fzbounds.doctor", log_fields2("framework", "fzbounds", "command", command))
+        return print_json(services.doctor_json())
+    }
+    if command == "strict-demo-json" {
+        log.quiet()
+        return print_plain_json(services.strict_demo_json())
+    }
+    if command == "strict-demo" {
+        log.info("fzbounds.demo", log_fields2("framework", "fzbounds", "mode", "strict"))
+        return print_json(services.strict_demo_json())
+    }
+    if command == "audit-demo-json" {
+        log.quiet()
+        return print_plain_json(services.audit_demo_json())
+    }
+    if command == "audit-demo" {
+        log.info("fzbounds.demo", log_fields2("framework", "fzbounds", "mode", "audit"))
+        return print_json(services.audit_demo_json())
+    }
+    if command == "inspect-json" {
+        log.quiet()
+        return print_plain_json(services.inspect_json())
+    }
+    if command == "fzweb" {
+        log.info("fzbounds.integration", log_fields2("framework", "fzbounds", "target", "fzweb"))
+        return print_json(services.inspect_json())
+    }
+    log.info("fzbounds.inspect", log_fields2("framework", "fzbounds", "command", command))
+    return print_json(services.inspect_json())
+}

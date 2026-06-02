@@ -1,0 +1,47 @@
+fn json_i32(value: i32) -> str {
+    return str.from_i32(value)
+}
+
+fn fzweb_request_json() -> str {
+    let payload = map.new()
+    discard map.set(payload, "framework", json.str("fzweb"))
+    discard map.set(payload, "mode", json.str("strict"))
+    discard map.set(payload, "request_budget_bytes", json_i32(64 * 1024))
+    discard map.set(payload, "header_capacity", json_i32(64))
+    discard map.set(payload, "body_capacity_bytes", json_i32(64 * 1024))
+    discard map.set(payload, "overflow_policy", json.str("reject"))
+    return json.object(payload)
+}
+
+fn jobs_worker_json() -> str {
+    let payload = map.new()
+    discard map.set(payload, "framework", json.str("fzjobs"))
+    discard map.set(payload, "queue_capacity", json_i32(4))
+    discard map.set(payload, "worker_pool", json_i32(64))
+    discard map.set(payload, "overflow_policy", json.str("reject"))
+    return json.object(payload)
+}
+
+fn auth_store_json() -> str {
+    let payload = map.new()
+    discard map.set(payload, "framework", json.str("fzauth"))
+    discard map.set(payload, "session_capacity", json_i32(100000))
+    discard map.set(payload, "lookup_session_1", json.str("saint"))
+    return json.object(payload)
+}
+
+fn realtime_room_json() -> str {
+    let payload = map.new()
+    discard map.set(payload, "framework", json.str("fzrealtime"))
+    discard map.set(payload, "room_capacity", json_i32(5000))
+    discard map.set(payload, "channel_capacity", json_i32(2048))
+    return json.object(payload)
+}
+
+fn arena_bootstrap_json() -> str {
+    let payload = map.new()
+    discard map.set(payload, "framework", json.str("fzbounds"))
+    discard map.set(payload, "arena_capacity_bytes", json_i32(16 * 1024))
+    discard map.set(payload, "boot_allocated_bytes", json_i32(2048 + 4096))
+    return json.object(payload)
+}

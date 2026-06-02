@@ -10275,7 +10275,7 @@ fn pattern_is_partial_move(
 }
 
 fn is_alloc_callee(callee: &str) -> bool {
-    callee == "alloc" || callee.ends_with(".alloc")
+    callee == "alloc" || callee.ends_with(".alloc") || callee.starts_with("gpu.alloc_")
 }
 
 fn is_free_callee(callee: &str) -> bool {
@@ -10287,7 +10287,7 @@ fn is_close_callee(callee: &str) -> bool {
 }
 
 fn is_alloc_expr(expr: &Expr) -> bool {
-    matches!(expr, Expr::Call { callee, .. } if callee == "alloc" || callee.ends_with(".alloc"))
+    matches!(expr, Expr::Call { callee, .. } if is_alloc_callee(callee))
 }
 
 fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
@@ -16309,6 +16309,9 @@ fn resolve_call_signature(
         let Some(arg_ty) = arg_ty else {
             continue;
         };
+        if !type_contains_typevars(param) {
+            continue;
+        }
         if !bind_typevars(param, arg_ty, &mut bindings) {
             return None;
         }
@@ -16323,6 +16326,12 @@ fn resolve_call_signature(
         resolved_ret,
         bindings.into_iter().collect::<Vec<_>>(),
     ))
+}
+
+fn type_contains_typevars(ty: &Type) -> bool {
+    let mut names = BTreeSet::new();
+    collect_typevars_from_type(ty, &mut names);
+    !names.is_empty()
 }
 
 fn collect_typevars_from_type(ty: &Type, out: &mut BTreeSet<String>) {
@@ -16631,6 +16640,8 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "gpu.barrier",
         "alloc",
         "free",
+        "mem.freeze",
+        "mem.unfreeze",
         "close",
         "http.bind",
         "http.accept",
@@ -16969,7 +16980,7 @@ fn nearest_intrinsic_name(name: &str) -> Option<String> {
 fn builtin_namespace_hint(name: &str) -> Option<String> {
     let namespace = name.split('.').next()?;
     match namespace {
-        "env" | "str" | "json" | "list" | "map" | "route" | "gpu" => Some(format!(
+        "env" | "str" | "json" | "list" | "map" | "route" | "gpu" | "mem" => Some(format!(
             "`{namespace}.*` is a builtin namespace; call it directly and do not treat `core.{namespace}` as an ordinary imported module"
         )),
         "process" => Some(
@@ -17320,6 +17331,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "gpu.barrier" => (vec![], Type::Void),
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
+        "mem.freeze" | "mem.unfreeze" => (vec![], Type::Void),
         "close" => (vec![http_handle.clone()], Type::Void),
         "http.bind" | "http.accept" | "http.connect" | "http.poll_next" => {
             (vec![], http_handle.clone())
@@ -21151,6 +21163,24 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
+        assert!(!typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| detail.contains("frees non-linear value `p`")));
+    }
+
+    #[test]
+    fn alloc_accepts_integer_literals_for_usize_runtime_size() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
         assert!(!typed
             .linear_type_violations
             .iter()

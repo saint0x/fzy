@@ -1,0 +1,137 @@
+use model;
+
+fn peak_of(left: i32, right: i32) -> i32 {
+    if left >= right {
+        return left
+    }
+    return right
+}
+
+fn map_entry_json(key: str, value: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "key", json.str(key))
+    discard map.set(payload, "value", json.str(value))
+    return json.object(payload)
+}
+
+fn list_make(capacity: i32) -> model.BoundedList {
+    return model.bounded_list(capacity)
+}
+
+fn list_push_text(items: model.BoundedList, value: str) -> model.BoundedList {
+    if items.len >= items.capacity {
+        return model.bounded_list_full(items.capacity, items.len, items.peak_len, items.overflows + 1, items.items, "list capacity exceeded")
+    }
+    discard list.push(items.items, json.str(value))
+    let next_len = items.len + 1
+    return model.bounded_list_full(items.capacity, next_len, peak_of(items.peak_len, next_len), items.overflows, items.items, "")
+}
+
+fn list_len(items: model.BoundedList) -> i32 {
+    return items.len
+}
+
+fn map_make(capacity: i32) -> model.BoundedMap {
+    return model.bounded_map(capacity)
+}
+
+fn map_set_text(entries: model.BoundedMap, key: str, value: str) -> model.BoundedMap {
+    if entries.len >= entries.capacity {
+        return model.bounded_map_full(entries.capacity, entries.len, entries.peak_len, entries.overflows + 1, entries.entries, "map capacity exceeded")
+    }
+    discard list.push(entries.entries, map_entry_json(key, value))
+    let next_len = entries.len + 1
+    return model.bounded_map_full(entries.capacity, next_len, peak_of(entries.peak_len, next_len), entries.overflows, entries.entries, "")
+}
+
+fn map_get_text(entries: model.BoundedMap, key: str) -> str {
+    let mut idx = 0
+    while idx < entries.len {
+        let item = json.parse(list.get(entries.entries, idx))
+        if json.get_str(item, "key") == key {
+            return json.get_str(item, "value")
+        }
+        idx = idx + 1
+    }
+    return ""
+}
+
+fn queue_make(capacity: i32) -> model.BoundedQueue {
+    return model.bounded_queue(capacity)
+}
+
+fn queue_push_text(queue: model.BoundedQueue, value: str) -> model.BoundedQueue {
+    if queue.len >= queue.capacity {
+        return model.bounded_queue_full(queue.capacity, queue.len, queue.peak_len, queue.head, queue.overflows + 1, queue.items, "queue capacity exceeded")
+    }
+    discard list.push(queue.items, json.str(value))
+    let next_len = queue.len + 1
+    return model.bounded_queue_full(queue.capacity, next_len, peak_of(queue.peak_len, next_len), queue.head, queue.overflows, queue.items, "")
+}
+
+fn queue_peek_text(queue: model.BoundedQueue) -> str {
+    if queue.len <= 0 {
+        return ""
+    }
+    return list.get(queue.items, queue.head)
+}
+
+fn queue_pop(queue: model.BoundedQueue) -> model.BoundedQueue {
+    if queue.len <= 0 {
+        return queue
+    }
+    return model.bounded_queue_full(queue.capacity, queue.len - 1, queue.peak_len, queue.head + 1, queue.overflows, queue.items, "")
+}
+
+fn channel_make(capacity: i32) -> model.BoundedChannel {
+    return model.bounded_channel(capacity)
+}
+
+fn channel_send_text(channel: model.BoundedChannel, value: str) -> model.BoundedChannel {
+    if channel.len >= channel.capacity {
+        return model.bounded_channel_full(channel.capacity, channel.len, channel.peak_len, channel.head, channel.overflows + 1, channel.items, "channel capacity exceeded")
+    }
+    discard list.push(channel.items, json.str(value))
+    let next_len = channel.len + 1
+    return model.bounded_channel_full(channel.capacity, next_len, peak_of(channel.peak_len, next_len), channel.head, channel.overflows, channel.items, "")
+}
+
+fn channel_recv(channel: model.BoundedChannel) -> model.BoundedChannel {
+    if channel.len <= 0 {
+        return channel
+    }
+    return model.bounded_channel_full(channel.capacity, channel.len - 1, channel.peak_len, channel.head + 1, channel.overflows, channel.items, "")
+}
+
+fn buffer_make(capacity_bytes: i32) -> model.BoundedBuffer {
+    return model.bounded_buffer(capacity_bytes)
+}
+
+fn buffer_write_text(buffer: model.BoundedBuffer, value: str) -> model.BoundedBuffer {
+    let next_used = buffer.used_bytes + str.len(value)
+    if next_used > buffer.capacity_bytes {
+        return model.bounded_buffer_full(buffer.capacity_bytes, buffer.used_bytes, buffer.peak_bytes, buffer.overflows + 1, buffer.data, "buffer capacity exceeded")
+    }
+    let next_data = str.concat(buffer.data, value)
+    return model.bounded_buffer_full(buffer.capacity_bytes, next_used, peak_of(buffer.peak_bytes, next_used), buffer.overflows, next_data, "")
+}
+
+fn json_list(items: model.BoundedList) -> str {
+    return model.bounded_list_json(items)
+}
+
+fn json_map(items: model.BoundedMap) -> str {
+    return model.bounded_map_json(items)
+}
+
+fn json_queue(items: model.BoundedQueue) -> str {
+    return model.bounded_queue_json(items)
+}
+
+fn json_channel(items: model.BoundedChannel) -> str {
+    return model.bounded_channel_json(items)
+}
+
+fn json_buffer(items: model.BoundedBuffer) -> str {
+    return model.bounded_buffer_json(items)
+}

@@ -11,40 +11,41 @@ fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
 }
 
 fn bootstrap_metrics() -> i32 {
-    let telemetry_file_ref = fs.open();
-    discard telemetry_file_ref;
+    let telemetry_file_ref = fs.open("live_server.telemetry.log");
+    defer fs.close(telemetry_file_ref);
     log.info("telemetry.bootstrap", fields2("component", "telemetry", "phase", "bootstrap"));
-    fs.write();
+    discard fs.write(telemetry_file_ref, "telemetry.bootstrap\n");
     discard time.now();
     return 0;
 }
 
 fn log_latency_bucket() -> i32 {
-    let telemetry_file_ref = fs.open();
-    discard telemetry_file_ref;
+    let telemetry_file_ref = fs.open("live_server.telemetry.log");
+    defer fs.close(telemetry_file_ref);
     log.info("telemetry.latency", fields2("component", "telemetry", "phase", "latency"));
     discard time.now();
-    fs.write();
+    discard fs.write(telemetry_file_ref, "telemetry.latency\n");
     return 0;
 }
 
 fn log_perf_snapshot() -> i32 {
-    let telemetry_file_ref = fs.open();
-    discard telemetry_file_ref;
+    let telemetry_file_ref = fs.open("live_server.telemetry.log");
+    defer fs.close(telemetry_file_ref);
     let perf_proc_owned = proc.spawn("echo telemetry-perf");
     defer proc.close(perf_proc_owned);
     discard proc.exec_timeout(perf_proc_owned);
+    discard fs.write(telemetry_file_ref, "telemetry.perf\n");
     log.info("telemetry.perf", fields2("component", "telemetry", "phase", "perf"));
     discard time.now();
     return 0;
 }
 
 fn flush_runtime_stats() -> i32 {
-    let telemetry_file_ref = fs.open();
-    discard telemetry_file_ref;
+    let telemetry_file_ref = fs.open("live_server.telemetry.log");
+    defer fs.close(telemetry_file_ref);
     log.info("telemetry.flush", fields2("component", "telemetry", "phase", "flush"));
-    fs.write();
-    fs.flush();
-    fs.fsync();
+    discard fs.write(telemetry_file_ref, "telemetry.flush\n");
+    discard fs.flush(telemetry_file_ref);
+    discard fs.fsync(telemetry_file_ref);
     return 0;
 }

@@ -127,7 +127,8 @@ fn load_cached_project_manifest(path: &Path) -> Result<manifest::Manifest> {
     }
     let manifest_text = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("failed reading manifest: {}", manifest_path.display()))?;
-    let manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
+    let mut manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
+    manifest.infer_default_targets(path);
     manifest
         .validate()
         .map_err(|error| anyhow!("invalid fozzy.toml: {error}"))?;
@@ -153,7 +154,7 @@ pub(super) fn discover_nested_project_roots(path: &Path) -> Vec<PathBuf> {
         if !candidate.is_dir() {
             continue;
         }
-        if candidate.join("fozzy.toml").exists() {
+        if is_valid_project_root(&candidate) {
             out.push(candidate);
         }
     }

@@ -31,6 +31,16 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "mem.freeze",
+        symbol: "fz_native_mem_freeze",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "mem.unfreeze",
+        symbol: "fz_native_mem_unfreeze",
+        arity: 0,
+    },
+    NativeRuntimeImport {
         callee: "http.bind",
         symbol: "fz_native_net_bind",
         arity: 0,
@@ -1262,7 +1272,8 @@ pub(super) fn native_data_plane_import_for_callee(
 }
 
 fn required_capability_for_callee(callee: &str) -> &'static str {
-    if callee == "alloc" || callee == "free" {
+    if matches!(callee, "alloc" | "free" | "mem.freeze" | "mem.unfreeze")
+    {
         "mem"
     } else if callee.starts_with("http.") || callee.starts_with("route.") {
         "http"
@@ -1566,6 +1577,10 @@ pub(super) fn native_runtime_contract_for_callee(
         "alloc" => {
             contract.arg_ownership = "borrow_size";
             contract.return_ownership = "owned_allocation";
+        }
+        "mem.freeze" | "mem.unfreeze" => {
+            contract.arg_ownership = "none";
+            contract.return_ownership = "status";
         }
         "gpu.device_count" => {
             contract.arg_ownership = "none";

@@ -10,10 +10,6 @@ fn open(path: str) -> Store {
     }
 }
 
-fn close(store: Store) -> i32 {
-    return storage.kv_close(store.handle)
-}
-
 fn namespaced_key(namespace: str, key: str) -> str {
     return str.concat(namespace, ":", key)
 }
