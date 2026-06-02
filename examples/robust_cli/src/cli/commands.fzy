@@ -47,7 +47,6 @@ fn cmd_compact() -> i32 {
     defer fs.close(compact_file_ref);
     discard fs.write(compact_file_ref, "cmd=compact\n");
     discard fs.atomic_write("robust_cli.compact.log", "cmd=compact\n");
-    discard fs.rename_atomic();
     discard fs.fsync(compact_file_ref);
     return 0;
 }

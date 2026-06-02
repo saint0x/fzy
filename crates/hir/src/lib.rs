@@ -16879,7 +16879,6 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "fs.write",
         "fs.flush",
         "fs.atomic_write",
-        "fs.rename_atomic",
         "fs.fsync",
         "fs.lock",
         "fs.read",
@@ -17696,7 +17695,6 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "fs.write" => (vec![file_handle.clone(), str_ty.clone()], i32.clone()),
         "fs.read" => (vec![file_handle.clone(), i32.clone()], str_ty.clone()),
         "fs.atomic_write" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
-        "fs.rename_atomic" => (vec![], i32.clone()),
         "fs.read_file" => (vec![str_ty.clone()], str_ty.clone()),
         "fs.write_file" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "fs.mkdir" | "fs.exists" | "fs.is_file" | "fs.is_dir" | "fs.is_symlink"

@@ -611,11 +611,6 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
-        callee: "fs.rename_atomic",
-        symbol: "fz_native_fs_rename_atomic",
-        arity: 0,
-    },
-    NativeRuntimeImport {
         callee: "fs.read_file",
         symbol: "fz_native_fs_read_file",
         arity: 1,

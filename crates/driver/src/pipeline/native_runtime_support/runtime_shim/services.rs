@@ -471,14 +471,6 @@ int32_t fz_native_fs_atomic_write(int32_t path_id, int32_t body_id) {
   return 0;
 }
 
-int32_t fz_native_fs_rename_atomic(void) {
-  pthread_mutex_lock(&fz_fs_lock);
-  const char* path = fz_fs_path();
-  int rc = rename(fz_fs_tmp_path, path);
-  pthread_mutex_unlock(&fz_fs_lock);
-  return rc == 0 ? 0 : -1;
-}
-
 int32_t fz_native_fs_read_file(int32_t path_id) {
   const char* path = fz_lookup_string(path_id);
   if (path == NULL || path[0] == '\0') {

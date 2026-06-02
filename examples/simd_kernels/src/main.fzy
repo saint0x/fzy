@@ -1,4 +1,5 @@
 use core.simd;
+use core.thread;
 
 fn mix_audio_window(dry: [i32; 4], wet: [i32; 4]) -> [i32; 4] {
     let mixed = simd.i32x4_saturating_add(simd.i32x4_load(dry), simd.i32x4_load(wet))

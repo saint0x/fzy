@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpServerLimits {
     pub max_header_bytes: usize,
     pub max_body_bytes: usize,

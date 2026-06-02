@@ -14,7 +14,6 @@ fn write_user() -> i32 {
     defer fs.close(store_file_ref);
     discard fs.flush(store_file_ref);
     discard fs.atomic_write("live_server.store.kv", "{\"status\":\"updated\"}\n");
-    discard fs.rename_atomic();
     discard fs.write(store_file_ref, "{\"status\":\"updated\"}\n");
     discard fs.flush(store_file_ref);
     discard fs.fsync(store_file_ref);

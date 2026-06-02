@@ -14,7 +14,6 @@ fn rotate_segment() -> i32 {
     defer fs.close(segment_file_ref);
     discard fs.write(segment_file_ref, "segment-rotated\n");
     discard fs.atomic_write("robust_cli.segment", "segment-rotated\n");
-    discard fs.rename_atomic();
     discard fs.fsync(segment_file_ref);
     discard time.now();
     return 0;
