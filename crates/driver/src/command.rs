@@ -13695,6 +13695,71 @@ mod tests {
     }
 
     #[test]
+    fn build_lib_project_root_abi_manifest_includes_repr_c_return_field_metadata() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-build-lib-root-layout-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project src should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"reprc_root_layout\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"reprc_root_layout\"\npath=\"src/lib.fzy\"\n\n[ffi]\npanic_boundary=\"abort\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "#[repr(C)]\nstruct BridgeClickResult {\n    input_count: i32,\n    js_doubled: i32,\n    callback_total: i32,\n    handshake_score: i32,\n}\n\n#[ffi_panic(abort)]\npubext c fn bridge_click(count: i32) -> BridgeClickResult {\n    return BridgeClickResult {\n        input_count: count,\n        js_doubled: count,\n        callback_total: count,\n        handshake_score: count,\n    }\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Build {
+                path: root.clone(),
+                release: false,
+                strict: false,
+                lib: true,
+                threads: None,
+                backend: None,
+                pgo_generate: false,
+                pgo_use: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect("build --lib should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("build output should be valid json");
+        let abi_path = std::path::PathBuf::from(
+            payload["abiManifest"]
+                .as_str()
+                .expect("abi manifest path should be present"),
+        );
+        let abi_text = std::fs::read_to_string(&abi_path).expect("abi manifest should be readable");
+        let abi: serde_json::Value =
+            serde_json::from_str(&abi_text).expect("abi manifest should be valid json");
+        let layout = abi["reprCLayouts"]
+            .as_array()
+            .and_then(|items| {
+                items.iter()
+                    .find(|layout| layout["name"] == "BridgeClickResult")
+            })
+            .expect("BridgeClickResult layout should exist");
+        let fields = layout["fields"]
+            .as_array()
+            .expect("BridgeClickResult fields should be emitted");
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[0]["name"].as_str(), Some("input_count"));
+        assert_eq!(fields[1]["name"].as_str(), Some("js_doubled"));
+        assert_eq!(fields[2]["name"].as_str(), Some("callback_total"));
+        assert_eq!(fields[3]["name"].as_str(), Some("handshake_score"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn headers_command_collects_exports_from_declared_modules() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

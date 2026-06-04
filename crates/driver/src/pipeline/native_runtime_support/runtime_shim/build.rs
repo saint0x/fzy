@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use super::super::super::gpu_backend::fir_module_uses_gpu;
 use super::super::super::*;
-use super::super::ffi_exports::NativeAsyncExport;
+use super::super::ffi_exports::{NativeAsyncExport, NativeExportReturn, NativeFfiType, NativeSyncExport};
 use super::render::render_native_runtime_shim;
 
 pub(crate) fn ensure_native_runtime_shim(
@@ -13,6 +13,7 @@ pub(crate) fn ensure_native_runtime_shim(
     string_literals: &[String],
     task_symbols: &[String],
     async_exports: &[NativeAsyncExport],
+    sync_exports: &[NativeSyncExport],
 ) -> Result<PathBuf> {
     let mut hasher = Sha256::new();
     for literal in string_literals {
@@ -35,12 +36,29 @@ pub(crate) fn ensure_native_runtime_shim(
             hasher.update([0u8]);
         }
     }
+    for export in sync_exports {
+        hasher.update(export.public_symbol.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(export.impl_symbol.as_bytes());
+        hasher.update([0u8]);
+        match &export.return_type {
+            NativeExportReturn::Void => hasher.update(b"void"),
+            NativeExportReturn::Type(ty) => update_sync_export_type_hash(&mut hasher, ty),
+        }
+        hasher.update([0u8]);
+        for param in &export.params {
+            hasher.update(param.name.as_bytes());
+            hasher.update([0u8]);
+            update_sync_export_type_hash(&mut hasher, &param.ty);
+            hasher.update([0u8]);
+        }
+    }
     let digest = hasher.finalize();
     let tag = hex_encode(&digest[..8]);
     let runtime_shim_path = build_dir.join(format!("fz_native_runtime_{tag}.c"));
     std::fs::write(
         &runtime_shim_path,
-        render_native_runtime_shim(string_literals, task_symbols, async_exports),
+        render_native_runtime_shim(string_literals, task_symbols, async_exports, sync_exports),
     )
     .with_context(|| {
         format!(
@@ -49,6 +67,36 @@ pub(crate) fn ensure_native_runtime_shim(
         )
     })?;
     Ok(runtime_shim_path)
+}
+
+fn update_sync_export_type_hash(hasher: &mut Sha256, ty: &NativeFfiType) {
+    match ty {
+        NativeFfiType::Scalar { c_type } => {
+            hasher.update(b"scalar");
+            hasher.update(c_type.as_bytes());
+        }
+        NativeFfiType::ReprCStruct(layout) => {
+            hasher.update(b"struct");
+            hasher.update(layout.name.as_bytes());
+            hasher.update([0u8]);
+            for field in &layout.fields {
+                hasher.update(field.name.as_bytes());
+                hasher.update([0u8]);
+                hasher.update(field.c_type.as_bytes());
+                hasher.update([0u8]);
+            }
+        }
+        NativeFfiType::ReprCEnum(layout) => {
+            hasher.update(b"enum");
+            hasher.update(layout.name.as_bytes());
+            hasher.update([0u8]);
+            for variant in &layout.variants {
+                hasher.update(variant.name.as_bytes());
+                hasher.update([0u8]);
+                hasher.update(variant.value.to_le_bytes());
+            }
+        }
+    }
 }
 
 pub(crate) fn compile_runtime_shim_object(

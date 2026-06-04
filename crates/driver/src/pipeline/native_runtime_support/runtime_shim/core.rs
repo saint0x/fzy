@@ -682,6 +682,18 @@ uint64_t fz_native_agg_get_i64(uint64_t handle, int32_t index) {
   return value;
 }
 
+int32_t fz_native_agg_drop(uint64_t handle) {
+  pthread_mutex_lock(&fz_aggregate_lock);
+  fz_aggregate_state* aggregate = fz_aggregate_get(handle);
+  if (aggregate == NULL) {
+    pthread_mutex_unlock(&fz_aggregate_lock);
+    return -1;
+  }
+  memset(aggregate, 0, sizeof(*aggregate));
+  pthread_mutex_unlock(&fz_aggregate_lock);
+  return 0;
+}
+
 int32_t fz_native_agg_tag(uint64_t handle) {
   pthread_mutex_lock(&fz_aggregate_lock);
   fz_aggregate_state* aggregate = fz_aggregate_get(handle);

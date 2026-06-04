@@ -24,7 +24,7 @@ struct HeaderArtifactCache {
     exports: usize,
 }
 
-const HEADER_ARTIFACT_CACHE_SCHEMA: &str = "fozzylang.header_artifact_cache.v2";
+const HEADER_ARTIFACT_CACHE_SCHEMA: &str = "fozzylang.header_artifact_cache.v3";
 
 #[derive(Debug, Clone)]
 pub(super) struct RpcArtifacts {
@@ -616,11 +616,15 @@ fn header_cache_path(header_path: &Path) -> PathBuf {
 fn header_cache_fingerprint(resolved: &ResolvedSource) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(HEADER_ARTIFACT_CACHE_SCHEMA.as_bytes());
-    hasher.update(resolved.source_path.to_string_lossy().as_bytes());
-    hasher.update(
-        &std::fs::read(&resolved.source_path)
-            .with_context(|| format!("failed reading {}", resolved.source_path.display()))?,
-    );
+    let module_set = load_resolved_module_set(&resolved.source_path)?;
+    let mut modules = module_set.modules;
+    modules.sort_by(|a, b| a.path.cmp(&b.path));
+    for module in modules {
+        hasher.update(module.path.to_string_lossy().as_bytes());
+        hasher.update([0u8]);
+        hasher.update(module.source.as_bytes());
+        hasher.update([0u8]);
+    }
     if let Some(manifest) = resolved.manifest.as_ref() {
         hasher.update(manifest.package.name.as_bytes());
         hasher.update(manifest.package.version.as_bytes());

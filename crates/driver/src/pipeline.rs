@@ -65,9 +65,10 @@ use self::native_metadata::{
 };
 use self::parse_graph::{ModuleSourceText, ParsedProgram};
 use self::native_runtime_support::{
-    collect_async_c_exports, collect_extern_c_imports, collect_used_native_data_plane_imports,
-    collect_used_native_runtime_imports, compile_runtime_shim_object, ensure_native_runtime_shim,
-    is_extern_c_abi_function, is_extern_c_import_decl, native_link_symbol_for_function,
+    build_native_runtime_shim_plan, collect_async_c_exports, collect_extern_c_imports,
+    collect_used_native_data_plane_imports, collect_used_native_runtime_imports,
+    compile_runtime_shim_object, ensure_native_runtime_shim, is_extern_c_abi_function,
+    is_extern_c_import_decl, native_link_symbol_for_function,
     native_runtime_import_contract_errors, native_runtime_shim_uses_objc,
 };
 use self::native_runtime_tables::{
@@ -15619,24 +15620,26 @@ fn emit_native_libraries_llvm(
     let static_path = build_dir.join(format!("lib{artifact_stem}.a"));
     let shared_path = build_dir.join(format!("lib{artifact_stem}.{}", shared_lib_extension()));
 
-    let string_literals = collect_native_string_literals_with_gpu(fir);
-    let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let async_exports = collect_async_c_exports(fir);
+    let shim_plan = build_native_runtime_shim_plan(fir)?;
+    let lowered_fir = &shim_plan.lowered_fir;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir);
     let runtime_shim_path = ensure_native_runtime_shim(
         &build_dir,
         &string_literals,
         &spawn_task_symbols,
-        &async_exports,
+        &shim_plan.async_exports,
+        &shim_plan.sync_exports,
     )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
-    let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks)?;
+    let llvm_ir = lower_llvm_ir(lowered_fir, enforce_contract_checks)?;
     let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "ffi", "llvm");
     let cache_key = native_artifact_cache_key(
         "ffi",
         "llvm",
         artifact_stem,
         profile,
-        fir,
+        lowered_fir,
         manifest,
         &runtime_shim_path,
         &[llvm_ir.as_bytes()],
@@ -15685,7 +15688,7 @@ fn emit_native_libraries_llvm(
         let mut shim_cmd = Command::new(tool);
         shim_cmd
             .arg("-x")
-            .arg(runtime_shim_language_arg(fir))
+            .arg(runtime_shim_language_arg(lowered_fir))
             .arg(&runtime_shim_path)
             .arg("-c")
             .arg("-fPIC")
@@ -15719,11 +15722,11 @@ fn emit_native_libraries_llvm(
     }
 
     create_static_archive(&static_path, &[obj_path.as_path(), shim_obj_path.as_path()])?;
-    let allow_undefined = !collect_extern_c_imports(fir).is_empty();
+    let allow_undefined = !collect_extern_c_imports(lowered_fir).is_empty();
     link_shared_library(
         &shared_path,
         &[obj_path.as_path(), shim_obj_path.as_path()],
-        fir,
+        lowered_fir,
         manifest,
         allow_undefined,
     )?;
@@ -15746,13 +15749,17 @@ fn emit_native_libraries_cranelift(
     let static_path = build_dir.join(format!("lib{artifact_stem}.a"));
     let shared_path = build_dir.join(format!("lib{artifact_stem}.{}", shared_lib_extension()));
 
-    let string_literals = collect_native_string_literals_with_gpu(fir);
-    let spawn_task_symbols = collect_spawn_task_symbols(fir)
+    let shim_plan = build_native_runtime_shim_plan(fir)?;
+    let lowered_fir = &shim_plan.lowered_fir;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir)
         .into_iter()
         .filter(|symbol| symbol != "main")
         .collect::<Vec<_>>();
-    let plan = build_native_canonical_plan_with_task_symbols(fir, true, &spawn_task_symbols);
-    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir).unwrap_or_default();
+    let plan =
+        build_native_canonical_plan_with_task_symbols(lowered_fir, true, &spawn_task_symbols);
+    let gpu_kernel_launch_descriptors =
+        metal_kernel_launch_descriptors(lowered_fir).unwrap_or_default();
     let task_symbol_set = spawn_task_symbols.iter().cloned().collect::<HashSet<_>>();
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
@@ -15778,13 +15785,13 @@ fn emit_native_libraries_cranelift(
     let isa = isa_builder
         .finish(flags)
         .map_err(|error| anyhow!("failed finalizing cranelift isa: {error}"))?;
-    let object_builder = ObjectBuilder::new(isa, fir.name.clone(), default_libcall_names())
+    let object_builder = ObjectBuilder::new(isa, lowered_fir.name.clone(), default_libcall_names())
         .map_err(|error| anyhow!("failed creating cranelift object builder: {error}"))?;
     let mut module = ObjectModule::new(object_builder);
 
     let (mut function_ids, mut function_signatures) = declare_clif_functions(
         &mut module,
-        fir,
+        lowered_fir,
         |function| {
             if is_extern_c_import_decl(function) {
                 Linkage::Import
@@ -15819,7 +15826,7 @@ fn emit_native_libraries_cranelift(
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     declare_native_data_plane_imports(&mut module, &mut function_ids, &mut function_signatures)?;
-    for function in &fir.typed_functions {
+    for function in &lowered_fir.typed_functions {
         if matches!(
             function.execution_space,
             ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
@@ -15907,8 +15914,8 @@ fn emit_native_libraries_cranelift(
             &mutable_global_data_ids,
             &function.local_types,
             &gpu_kernel_launch_descriptors,
-            &fir.struct_defs,
-            &fir.enum_defs,
+            &lowered_fir.struct_defs,
+            &lowered_fir.enum_defs,
             signature.ret,
             signature.sret,
             current_return_ptr,
@@ -15941,12 +15948,12 @@ fn emit_native_libraries_cranelift(
         )
     })?;
 
-    let async_exports = collect_async_c_exports(fir);
     let runtime_shim_path = ensure_native_runtime_shim(
         &build_dir,
         &string_literals,
         &spawn_task_symbols,
-        &async_exports,
+        &shim_plan.async_exports,
+        &shim_plan.sync_exports,
     )?;
     let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "ffi", "cranelift");
     let cache_key = native_artifact_cache_key(
@@ -15954,7 +15961,7 @@ fn emit_native_libraries_cranelift(
         "cranelift",
         artifact_stem,
         profile,
-        fir,
+        lowered_fir,
         manifest,
         &runtime_shim_path,
         &[],
@@ -15967,17 +15974,17 @@ fn emit_native_libraries_cranelift(
         &shim_obj_path,
         profile,
         manifest,
-        native_runtime_shim_uses_objc(fir),
+        native_runtime_shim_uses_objc(lowered_fir),
     )?;
     create_static_archive(
         &static_path,
         &[object_path.as_path(), shim_obj_path.as_path()],
     )?;
-    let allow_undefined = !collect_extern_c_imports(fir).is_empty();
+    let allow_undefined = !collect_extern_c_imports(lowered_fir).is_empty();
     link_shared_library(
         &shared_path,
         &[object_path.as_path(), shim_obj_path.as_path()],
-        fir,
+        lowered_fir,
         manifest,
         allow_undefined,
     )?;
@@ -16119,24 +16126,26 @@ fn emit_native_artifact_llvm(
 
     let ll_path = build_dir.join(format!("{artifact_stem}.ll"));
     let bin_path = build_dir.join(artifact_stem);
-    let string_literals = collect_native_string_literals_with_gpu(fir);
-    let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let async_exports = collect_async_c_exports(fir);
+    let shim_plan = build_native_runtime_shim_plan(fir)?;
+    let lowered_fir = &shim_plan.lowered_fir;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir);
     let runtime_shim_path = ensure_native_runtime_shim(
         &build_dir,
         &string_literals,
         &spawn_task_symbols,
-        &async_exports,
+        &shim_plan.async_exports,
+        &shim_plan.sync_exports,
     )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
-    let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks)?;
+    let llvm_ir = lower_llvm_ir(lowered_fir, enforce_contract_checks)?;
     let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "bin", "llvm");
     let cache_key = native_artifact_cache_key(
         "bin",
         "llvm",
         artifact_stem,
         profile,
-        fir,
+        lowered_fir,
         manifest,
         &runtime_shim_path,
         &[llvm_ir.as_bytes()],
@@ -16155,12 +16164,12 @@ fn emit_native_artifact_llvm(
             .arg("ir")
             .arg(&ll_path)
             .arg("-x")
-            .arg(runtime_shim_language_arg(fir))
+            .arg(runtime_shim_language_arg(lowered_fir))
             .arg(&runtime_shim_path)
             .arg("-o")
             .arg(&bin_path);
         apply_target_link_flags(&mut cmd);
-        apply_gpu_backend_link_args(&mut cmd, fir);
+        apply_gpu_backend_link_args(&mut cmd, lowered_fir);
         apply_manifest_link_args(&mut cmd, manifest);
         apply_profile_optimization_flags(&mut cmd, profile, manifest);
         apply_extra_linker_args(&mut cmd);
@@ -16203,7 +16212,9 @@ fn emit_native_artifact_cranelift(
 
     let object_path = build_dir.join(format!("{artifact_stem}.o"));
     let bin_path = build_dir.join(artifact_stem);
-    let string_literals = collect_native_string_literals_with_gpu(fir);
+    let shim_plan = build_native_runtime_shim_plan(fir)?;
+    let lowered_fir = &shim_plan.lowered_fir;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -16229,16 +16240,17 @@ fn emit_native_artifact_cranelift(
         .finish(flags)
         .map_err(|error| anyhow!("failed finalizing cranelift isa: {error}"))?;
 
-    let object_builder = ObjectBuilder::new(isa, fir.name.clone(), default_libcall_names())
+    let object_builder = ObjectBuilder::new(isa, lowered_fir.name.clone(), default_libcall_names())
         .map_err(|error| anyhow!("failed creating cranelift object builder: {error}"))?;
     let mut module = ObjectModule::new(object_builder);
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
-    let plan = build_native_canonical_plan(fir, enforce_contract_checks);
-    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir).unwrap_or_default();
+    let plan = build_native_canonical_plan(lowered_fir, enforce_contract_checks);
+    let gpu_kernel_launch_descriptors =
+        metal_kernel_launch_descriptors(lowered_fir).unwrap_or_default();
 
     let (mut function_ids, mut function_signatures) = declare_clif_functions(
         &mut module,
-        fir,
+        lowered_fir,
         |function| {
             if is_extern_c_import_decl(function) {
                 Linkage::Import
@@ -16269,13 +16281,13 @@ fn emit_native_artifact_cranelift(
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     declare_native_data_plane_imports(&mut module, &mut function_ids, &mut function_signatures)?;
-    let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let async_exports = collect_async_c_exports(fir);
+    let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir);
     let runtime_shim_path = ensure_native_runtime_shim(
         &build_dir,
         &string_literals,
         &spawn_task_symbols,
-        &async_exports,
+        &shim_plan.async_exports,
+        &shim_plan.sync_exports,
     )?;
     let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "bin", "cranelift");
     let cache_key = native_artifact_cache_key(
@@ -16283,7 +16295,7 @@ fn emit_native_artifact_cranelift(
         "cranelift",
         artifact_stem,
         profile,
-        fir,
+        lowered_fir,
         manifest,
         &runtime_shim_path,
         &[],
@@ -16292,7 +16304,7 @@ fn emit_native_artifact_cranelift(
         return Ok(bin_path);
     }
 
-    for function in &fir.typed_functions {
+    for function in &lowered_fir.typed_functions {
         if matches!(
             function.execution_space,
             ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
@@ -16380,8 +16392,8 @@ fn emit_native_artifact_cranelift(
             &mutable_global_data_ids,
             &function.local_types,
             &gpu_kernel_launch_descriptors,
-            &fir.struct_defs,
-            &fir.enum_defs,
+            &lowered_fir.struct_defs,
+            &lowered_fir.enum_defs,
             signature.ret,
             signature.sret,
             current_return_ptr,
@@ -16393,7 +16405,7 @@ fn emit_native_artifact_cranelift(
             if function.name == "main" && signature.ret == Some(types::I32) {
                 Some(
                     plan.forced_main_return
-                        .or(fir.entry_return_const_i32)
+                        .or(lowered_fir.entry_return_const_i32)
                         .unwrap_or(0),
                 )
             } else {
@@ -16425,13 +16437,13 @@ fn emit_native_artifact_cranelift(
         let mut cmd = Command::new(&tool);
         cmd.arg(&object_path)
             .arg("-x")
-            .arg(runtime_shim_language_arg(fir))
+            .arg(runtime_shim_language_arg(lowered_fir))
             .arg(&runtime_shim_path)
             .arg("-o")
             .arg(&bin_path)
             .arg("-lpthread");
         apply_target_link_flags(&mut cmd);
-        apply_gpu_backend_link_args(&mut cmd, fir);
+        apply_gpu_backend_link_args(&mut cmd, lowered_fir);
         apply_manifest_link_args(&mut cmd, manifest);
         // Object code is already generated at selected Cranelift optimization level.
         apply_extra_linker_args(&mut cmd);

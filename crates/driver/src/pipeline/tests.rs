@@ -52,6 +52,29 @@ fn nm_symbols(path: &Path) -> Vec<String> {
         .collect()
 }
 
+fn compile_and_run_c_host(source: &str, static_lib: &Path, work_dir: &Path) {
+    let host_c = work_dir.join("host.c");
+    let host_bin = work_dir.join("host");
+    std::fs::write(&host_c, source).expect("host source should be written");
+    let status = Command::new("cc")
+        .arg(&host_c)
+        .arg(static_lib)
+        .arg("-lpthread")
+        .arg("-o")
+        .arg(&host_bin)
+        .status()
+        .expect("cc should be available");
+    assert!(status.success(), "c host build should succeed");
+    let run = Command::new(&host_bin)
+        .status()
+        .expect("c host should execute");
+    assert!(
+        run.success(),
+        "c host should exit successfully with {}",
+        run.code().unwrap_or(-1)
+    );
+}
+
 #[test]
 fn compile_file_runs_pipeline() {
     let file_name = format!(
@@ -7474,7 +7497,7 @@ fn native_runtime_import_table_is_boundary_only_and_unique() {
 
 #[test]
 fn native_runtime_documented_contract_surface_matches_shim_symbols() {
-    let shim = render_native_runtime_shim(&[], &[], &[]);
+    let shim = render_native_runtime_shim(&[], &[], &[], &[]);
     for (callee, expected_arg_ownership, expected_linearity, expected_snippet) in [
         (
             "http.stream_close",
@@ -7787,6 +7810,7 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
         ],
         &["worker.run".to_string()],
         &[],
+        &[],
     );
     assert!(shim.contains("int32_t fz_native_net_method(int32_t conn_fd)"));
     assert!(shim.contains("int32_t fz_native_net_path(int32_t conn_fd)"));
@@ -7933,7 +7957,7 @@ fn cross_backend_crypto_runtime_and_security_facade_execute_consistently() {
 
 #[test]
 fn native_runtime_shim_does_not_use_env_response_templates() {
-    let shim = render_native_runtime_shim(&[], &[], &[]);
+    let shim = render_native_runtime_shim(&[], &[], &[], &[]);
     assert!(!shim.contains("FZ_NET_WRITE_JSON_BODY"));
     assert!(!shim.contains("FZ_NET_WRITE_BODY"));
     assert!(!shim.contains("fz_env_or_default"));
@@ -7949,6 +7973,7 @@ fn native_runtime_shim_emits_async_export_handle_wrappers() {
             mangled_symbol: "flush".to_string(),
             params: vec![("int32_t".to_string(), "code".to_string())],
         }],
+        &[],
     );
     assert!(shim.contains("extern int32_t flush(int32_t code);"));
     assert!(shim.contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out)"));
@@ -7993,7 +8018,7 @@ fn async_c_exports_use_sanitized_link_symbols_not_qualified_module_paths() {
     assert_eq!(exports[0].name, "fz_bench_async");
     assert_eq!(exports[0].mangled_symbol, "fz_bench_async");
 
-    let shim = render_native_runtime_shim(&[], &[], &exports);
+    let shim = render_native_runtime_shim(&[], &[], &exports, &[]);
     assert!(shim.contains("extern int32_t fz_bench_async(int32_t seed);"));
     assert!(!shim.contains("extern int32_t api.ffi.fz_bench_async"));
 
@@ -8002,7 +8027,7 @@ fn async_c_exports_use_sanitized_link_symbols_not_qualified_module_paths() {
 
 #[test]
 fn native_runtime_shim_uses_documented_bind_defaults_and_visibility() {
-    let shim = render_native_runtime_shim(&[], &[], &[]);
+    let shim = render_native_runtime_shim(&[], &[], &[], &[]);
     assert!(shim.contains("int port = 8787;"));
     assert!(shim.contains("[fz-runtime] listen active addr=%s port=%d"));
     assert!(shim.contains("host_source=%s port_source=%s"));
@@ -8010,14 +8035,14 @@ fn native_runtime_shim_uses_documented_bind_defaults_and_visibility() {
 
 #[test]
 fn native_runtime_shim_sanitizes_invalid_json_http_bodies() {
-    let shim = render_native_runtime_shim(&[], &[], &[]);
+    let shim = render_native_runtime_shim(&[], &[], &[], &[]);
     assert!(shim.contains("invalid_json_payload"));
     assert!(shim.contains("http.write_json sanitized non-JSON body"));
 }
 
 #[test]
 fn native_runtime_shim_bootstraps_dotenv_for_env_and_http() {
-    let shim = render_native_runtime_shim(&[], &[], &[]);
+    let shim = render_native_runtime_shim(&[], &[], &[], &[]);
     assert!(shim.contains("FZ_DOTENV_PATH"));
     assert!(shim.contains("fz_http_header_upsert"));
     assert!(shim.contains("content-type"));
@@ -8028,7 +8053,7 @@ fn native_runtime_shim_bootstraps_dotenv_for_env_and_http() {
 
 #[test]
 fn native_runtime_shim_declares_shared_helpers_before_first_use() {
-    let shim = render_native_runtime_shim(&[], &[], &[]);
+    let shim = render_native_runtime_shim(&[], &[], &[], &[]);
 
     let bytes_init_decl = shim
         .find("static void fz_bytes_buf_init(fz_bytes_buf* buf);")
@@ -10706,6 +10731,80 @@ fn cross_backend_library_exports_remain_identical() {
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(llvm_public.len(), clif_public.len());
+
+    let _ = std::fs::remove_dir_all(llvm_root);
+    let _ = std::fs::remove_dir_all(clif_root);
+}
+
+#[test]
+fn cross_backend_repr_c_struct_exports_roundtrip_through_real_c_abi() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let llvm_root = std::env::temp_dir().join(format!("fozzylang-abi-struct-llvm-{suffix}"));
+    let clif_root = std::env::temp_dir().join(format!("fozzylang-abi-struct-clif-{suffix}"));
+
+    for root in [&llvm_root, &clif_root] {
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"abi_struct_roundtrip\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"abi_struct_roundtrip\"\npath=\"src/lib.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "#[repr(C)]\nstruct Packet {\n    left: i32,\n    right: i32,\n}\n\n#[ffi_panic(abort)]\npubext c fn echo(packet: Packet) -> Packet {\n    return packet\n}\n\n#[repr(C)]\nstruct Totals {\n    input_count: i32,\n    js_doubled: i32,\n    callback_total: i32,\n}\n\n#[ffi_panic(abort)]\npubext c fn bridge_click(count: i32) -> Totals {\n    return Totals {\n        input_count: count,\n        js_doubled: count * 2,\n        callback_total: count + 11,\n    }\n}\n",
+        )
+        .expect("source should be written");
+    }
+
+    let llvm = compile_library_with_backend(&llvm_root, BuildProfile::Release, Some("llvm"))
+        .expect("llvm library build should succeed");
+    let cranelift = compile_library_with_backend(&clif_root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift library build should succeed");
+    let host_source = r#"
+#include <stdint.h>
+
+typedef struct Packet {
+  int32_t left;
+  int32_t right;
+} Packet;
+
+typedef struct Totals {
+  int32_t input_count;
+  int32_t js_doubled;
+  int32_t callback_total;
+} Totals;
+
+Packet echo(Packet packet);
+Totals bridge_click(int32_t count);
+
+int main(void) {
+  Packet packet = {7, 9};
+  Packet echoed = echo(packet);
+  if (echoed.left != 7 || echoed.right != 9) return 11;
+  Totals totals = bridge_click(5);
+  if (totals.input_count != 5) return 13;
+  if (totals.js_doubled != 10) return 17;
+  if (totals.callback_total != 16) return 19;
+  return 0;
+}
+"#;
+
+    compile_and_run_c_host(
+        host_source,
+        llvm.static_lib.as_deref().expect("llvm static lib should exist"),
+        &llvm_root,
+    );
+    compile_and_run_c_host(
+        host_source,
+        cranelift
+            .static_lib
+            .as_deref()
+            .expect("cranelift static lib should exist"),
+        &clif_root,
+    );
 
     let _ = std::fs::remove_dir_all(llvm_root);
     let _ = std::fs::remove_dir_all(clif_root);
