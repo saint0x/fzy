@@ -15,6 +15,10 @@ pub struct CallbackBinding {
     pub context_id: u64,
 }
 
+pub fn bind_callback(slot: i32, context_id: u64) -> CallbackBinding {
+    CallbackBinding { slot, context_id }
+}
+
 pub fn borrowed_view(bytes: &[u8]) -> AbiSlice {
     AbiSlice {
         ptr: bytes.as_ptr(),
@@ -40,7 +44,7 @@ pub fn ownership_label(kind: OwnershipKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{borrowed_view, out_view, ownership_label, CallbackBinding, OwnershipKind};
+    use super::{bind_callback, borrowed_view, out_view, ownership_label, OwnershipKind};
 
     #[test]
     fn c_views_and_ownership_labels_are_stable() {
@@ -53,10 +57,7 @@ mod tests {
         assert_eq!(ownership_label(OwnershipKind::Borrowed), "borrowed");
         assert_eq!(ownership_label(OwnershipKind::Out), "out");
         assert_eq!(ownership_label(OwnershipKind::InOut), "inout");
-        let binding = CallbackBinding {
-            slot: 7,
-            context_id: 42,
-        };
+        let binding = bind_callback(7, 42);
         assert_eq!(binding.slot, 7);
         assert_eq!(binding.context_id, 42);
     }

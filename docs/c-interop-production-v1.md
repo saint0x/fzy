@@ -112,6 +112,13 @@ Generated headers expose lifecycle and callback ABI:
 
 Callback signature is validated by C type contract (`fz_callback_i32_v0`).
 
+On the Fozzy-facing stdlib surface, `core.c.bind_callback(slot, context_id)` constructs the
+stable callback binding record passed through higher-level interop helpers. It maps directly to:
+
+```text
+CallbackBinding { slot, context_id }
+```
+
 Embedding contract:
 - Call `fz_host_init()` before invoking exported Fozzy functions from an in-process host.
 - Call `fz_host_shutdown()` when the host is done issuing calls.
