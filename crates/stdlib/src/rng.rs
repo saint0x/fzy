@@ -1,6 +1,7 @@
 use core::{Capability, CapabilityToken};
 use rand::RngCore;
 use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use rand_distr::{Distribution, Exp, Normal};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
@@ -33,16 +34,30 @@ pub trait RngBackend {
 
 #[derive(Debug, Clone)]
 pub struct HostRng {
-    inner: Xoshiro256PlusPlus,
+    inner: ChaCha20Rng,
 }
 
 impl Default for HostRng {
     fn default() -> Self {
-        let mut seed = <Xoshiro256PlusPlus as SeedableRng>::Seed::default();
+        let mut seed = <ChaCha20Rng as SeedableRng>::Seed::default();
         let mut os = rand::rngs::OsRng;
         os.fill_bytes(&mut seed);
         Self {
-            inner: Xoshiro256PlusPlus::from_seed(seed),
+            inner: ChaCha20Rng::from_seed(seed),
+        }
+    }
+}
+
+fn uniform_u64_unbiased<R: RngCore>(rng: &mut R, low: u64, high: u64) -> u64 {
+    if low >= high {
+        return low;
+    }
+    let span = high - low;
+    let threshold = span.wrapping_neg() % span;
+    loop {
+        let value = rng.next_u64();
+        if value >= threshold {
+            return low + (value % span);
         }
     }
 }
@@ -53,11 +68,7 @@ impl RngBackend for HostRng {
     }
 
     fn uniform_u64(&mut self, low: u64, high: u64) -> u64 {
-        if low >= high {
-            return low;
-        }
-        let span = high - low;
-        low + (self.next_u64() % span)
+        uniform_u64_unbiased(&mut self.inner, low, high)
     }
 
     fn normal_f64(&mut self, mean: f64, std_dev: f64) -> f64 {
@@ -96,11 +107,7 @@ impl RngBackend for DeterministicRng {
     }
 
     fn uniform_u64(&mut self, low: u64, high: u64) -> u64 {
-        if low >= high {
-            return low;
-        }
-        let span = high - low;
-        low + (self.next_u64() % span)
+        uniform_u64_unbiased(&mut self.inner, low, high)
     }
 
     fn normal_f64(&mut self, mean: f64, std_dev: f64) -> f64 {

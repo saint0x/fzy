@@ -284,6 +284,7 @@ mod tests {
         secure_zeroize_in_place, sha256, sha512, AuditLogger, AuditSink, PrivilegedOperation,
         RequestThrottler, Secret,
     };
+    use crate::encoding::hex_encode;
 
     #[test]
     fn secret_debug_is_redacted() {
@@ -295,15 +296,37 @@ mod tests {
 
     #[test]
     fn cryptographic_primitives_work() {
-        assert_eq!(sha256(b"abc").len(), 32);
-        assert_eq!(sha512(b"abc").len(), 64);
-        assert_eq!(hmac_sha256(b"k", b"m").len(), 32);
+        assert_eq!(
+            hex_encode(&sha256(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            hex_encode(&sha512(b"abc")),
+            concat!(
+                "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a",
+                "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+            )
+        );
+        assert_eq!(
+            hex_encode(&hmac_sha256(
+                b"key",
+                b"The quick brown fox jumps over the lazy dog"
+            )),
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
 
         let key = [7_u8; 32];
         let nonce = [3_u8; 12];
         let cipher = aes_gcm_encrypt(&key, &nonce, b"hello").expect("encrypt");
         let plain = aes_gcm_decrypt(&key, &nonce, &cipher).expect("decrypt");
         assert_eq!(plain, b"hello");
+
+        let mut tampered = cipher.clone();
+        tampered[0] ^= 0x80;
+        assert_eq!(
+            aes_gcm_decrypt(&key, &nonce, &tampered),
+            Err(super::CryptoError::DecryptFailed)
+        );
     }
 
     #[test]

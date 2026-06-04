@@ -111,6 +111,14 @@ pub fn base64_decode(text: &str) -> Result<Vec<u8>, EncodingError> {
         let c1 = chars[idx + 1];
         let c2 = chars[idx + 2];
         let c3 = chars[idx + 3];
+        let is_last = idx + 4 == chars.len();
+
+        if !is_last && (c2 == '=' || c3 == '=') {
+            return Err(EncodingError::InvalidBase64Length);
+        }
+        if c2 == '=' && c3 != '=' {
+            return Err(EncodingError::InvalidBase64Length);
+        }
 
         let v0 = decode_base64(c0)?;
         let v1 = decode_base64(c1)?;
@@ -188,5 +196,12 @@ mod tests {
         assert_eq!(b64, "aW50ZXJvcA==");
         let decoded = base64_decode(&b64).expect("decode");
         assert_eq!(decoded, bytes);
+    }
+
+    #[test]
+    fn base64_decode_rejects_non_canonical_padding() {
+        assert!(base64_decode("A===").is_err());
+        assert!(base64_decode("AA=A").is_err());
+        assert!(base64_decode("AA==AAAA").is_err());
     }
 }

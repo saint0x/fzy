@@ -108,26 +108,11 @@ fn base64_decode(data: str) -> str {
 }
 
 fn base64_url_encode(data: str) -> str {
-    let standard = base64_encode(data)
-    let no_pad = str.replace(standard, "=", "")
-    let step1 = str.replace(no_pad, "+", "-")
-    return str.replace(step1, "/", "_")
+    return crypto.base64_url_encode(data)
 }
 
 fn base64_url_decode(data: str) -> str {
-    let step1 = str.replace(data, "-", "+")
-    let standard = str.replace(step1, "_", "/")
-    let rem = str.len(standard) % 4
-    if rem == 0 {
-        return base64_decode(standard)
-    }
-    if rem == 2 {
-        return base64_decode(str.concat(standard, "=="))
-    }
-    if rem == 3 {
-        return base64_decode(str.concat(standard, "="))
-    }
-    return ""
+    return crypto.base64_url_decode(data)
 }
 
 fn sample() -> i32 {

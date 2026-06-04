@@ -746,7 +746,11 @@ fn strict_compile_rejects_allocation_after_mem_freeze() {
     let diagnostic = artifact
         .diagnostic_details
         .iter()
-        .find(|diagnostic| diagnostic.message.contains("allocation `alloc` after `mem.freeze()`"))
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("allocation `alloc` after `mem.freeze()`")
+        })
         .expect("strict memory-freeze diagnostic should be present");
     assert_eq!(diagnostic.code.as_deref(), Some("E-DRV-MEM-FREEZE-PHASE"));
 
@@ -766,9 +770,9 @@ fn strict_compile_rejects_allocation_after_mem_freeze() {
         .as_array()
         .is_some_and(|items| items.iter().any(|item| {
             item["kind"] == "freeze_phase"
-                && item["detail"]
-                    .as_str()
-                    .is_some_and(|detail| detail.contains("allocation `alloc` after `mem.freeze()`"))
+                && item["detail"].as_str().is_some_and(|detail| {
+                    detail.contains("allocation `alloc` after `mem.freeze()`")
+                })
         })));
 
     let _ = std::fs::remove_dir_all(root);
@@ -797,9 +801,12 @@ fn strict_compile_rejects_helper_call_from_frozen_memory_phase() {
 
     let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
     assert_eq!(artifact.status, "error");
-    assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
-        .message
-        .contains("calls `allocate_more` from a frozen memory phase")));
+    assert!(artifact
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| diagnostic
+            .message
+            .contains("calls `allocate_more` from a frozen memory phase")));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -7822,6 +7829,8 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
         .contains("int32_t fz_native_crypto_constant_time_eq(int32_t left_id, int32_t right_id)"));
     assert!(shim.contains("int32_t fz_native_crypto_base64_encode(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_crypto_base64_decode(int32_t input_id)"));
+    assert!(shim.contains("int32_t fz_native_crypto_base64_url_encode(int32_t input_id)"));
+    assert!(shim.contains("int32_t fz_native_crypto_base64_url_decode(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_json_escape(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_json_str(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_json_raw(int32_t input_id)"));
@@ -7895,7 +7904,7 @@ fn cross_backend_crypto_runtime_and_security_facade_execute_consistently() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "use core.crypto;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" { return 11 }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" { return 13 }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" { return 17 }\n    if url != \"b2s\" || roundtrip != \"ok\" { return 19 }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 { return 23 }\n    if crypto.constant_time_eq(digest, digest) != 1 { return 29 }\n    if crypto.constant_time_eq(digest, mac) != 0 { return 31 }\n    if security.verify_value(\"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 1 { return 37 }\n    return 0\n}\n",
+        "use core.crypto;\nuse core.error;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let crypto_url = crypto.base64_url_encode(\"ok\")\n    let crypto_roundtrip = crypto.base64_url_decode(crypto_url)\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" { return 11 }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" { return 13 }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" { return 17 }\n    if crypto_url != \"b2s\" || crypto_roundtrip != \"ok\" { return 18 }\n    if url != \"b2s\" || roundtrip != \"ok\" { return 19 }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 { return 23 }\n    if crypto.constant_time_eq(digest, digest) != 1 { return 29 }\n    if crypto.constant_time_eq(digest, mac) != 0 { return 31 }\n    if security.verify_value(\"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 1 { return 37 }\n    if crypto.base64_decode(\"A===\") != \"\" { return 41 }\n    if error.code() == 0 || error.message() == \"\" { return 43 }\n    if security.base64_url_decode(\"A\") != \"\" { return 47 }\n    if error.code() == 0 || error.message() == \"\" { return 49 }\n    if crypto.base64_decode(encoded) != \"fozzy\" { return 53 }\n    if error.code() != 0 || error.message() != \"\" { return 59 }\n    return 0\n}\n",
     )
     .expect("source should be written");
 

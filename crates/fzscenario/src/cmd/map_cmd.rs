@@ -940,16 +940,11 @@ fn discover_scenarios(root: &Path) -> FozzyResult<Vec<PathBuf>> {
 }
 
 fn preferred_repo_scan_roots(root: &Path) -> Vec<PathBuf> {
-    let preferred = ["apps", "crates", "examples", "scripts", "tests"]
-        .into_iter()
-        .map(|segment| root.join(segment))
-        .filter(|path| path.exists())
-        .collect::<Vec<_>>();
-    if preferred.is_empty() {
-        vec![root.to_path_buf()]
-    } else {
-        preferred
-    }
+    // Favor complete repository coverage over layout assumptions. Production repos
+    // often keep hot paths in directories like `services/`, `cmd/`, or `runtime/`
+    // that sit outside the historical shortlist, and missing them makes mapping
+    // reports silently undercount risk.
+    vec![root.to_path_buf()]
 }
 
 fn hotspot_hints(h: &MapHotspot) -> Vec<String> {

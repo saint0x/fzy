@@ -295,10 +295,13 @@ static void fz_env_bootstrap(void);
 static const char* fz_env_get_bootstrapped(const char* key);
 static int fz_has_env_value(const char* key);
 static void fz_log_bind_target(int listener_fd);
+static void fz_crypto_memzero(void* ptr, size_t len);
 static int fz_crypto_fill_random(void* out, size_t len);
 static char* fz_crypto_hex_encode(const uint8_t* data, size_t len);
 static char* fz_crypto_base64_encode_alloc(const uint8_t* data, size_t len);
+static char* fz_crypto_base64_url_encode_alloc(const uint8_t* data, size_t len);
 static int fz_crypto_base64_decode_alloc(const char* input, uint8_t** out, size_t* out_len);
+static int fz_crypto_base64_url_decode_alloc(const char* input, uint8_t** out, size_t* out_len);
 static int fz_json_parse_string(const char** cursor, char** out);
 static int fz_parse_json_string_array(const char* raw, char*** out_items, int* out_count);
 static int fz_parse_json_env_object(const char* raw, char*** out_items, int* out_count);
@@ -471,6 +474,17 @@ static void fz_set_last_error(int32_t code, int32_t class_id, const char* messag
   const char* debug_errors = getenv("FZ_NATIVE_DEBUG_ERRORS");
   if (debug_errors != NULL && debug_errors[0] != '\0' && !(debug_errors[0] == '0' && debug_errors[1] == '\0')) {
     fprintf(stderr, "[fz-native-error] code=%d class=%d message=%s\n", code, class_id, message);
+  }
+}
+
+static void fz_crypto_memzero(void* ptr, size_t len) {
+  if (ptr == NULL || len == 0) {
+    return;
+  }
+  volatile uint8_t* bytes = (volatile uint8_t*)ptr;
+  while (len > 0) {
+    *bytes++ = 0;
+    len--;
   }
 }
 
@@ -1140,6 +1154,10 @@ static void fz_hmac_sha256_hash(
   fz_sha256_update(&ctx, opad, sizeof(opad));
   fz_sha256_update(&ctx, inner, sizeof(inner));
   fz_sha256_final(&ctx, out);
+  fz_crypto_memzero(key_block, sizeof(key_block));
+  fz_crypto_memzero(ipad, sizeof(ipad));
+  fz_crypto_memzero(opad, sizeof(opad));
+  fz_crypto_memzero(inner, sizeof(inner));
 }
 
 static int fz_crypto_fill_random(void* out, size_t len) {
@@ -1147,14 +1165,42 @@ static int fz_crypto_fill_random(void* out, size_t len) {
     return 0;
   }
   if (out == NULL) {
+    errno = EINVAL;
     return -1;
   }
+#if defined(__APPLE__)
+  arc4random_buf(out, len);
+  return 0;
+#elif defined(__linux__)
+  uint8_t* cursor = (uint8_t*)out;
+  size_t remaining = len;
+  while (remaining > 0) {
+    size_t chunk = remaining > 256 ? 256 : remaining;
+    if (getentropy(cursor, chunk) == 0) {
+      cursor += chunk;
+      remaining -= chunk;
+      continue;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    if (errno != ENOSYS) {
+      return -1;
+    }
+    break;
+  }
+  if (remaining == 0) {
+    return 0;
+  }
+#endif
   int fd = open("/dev/urandom", O_RDONLY);
   if (fd < 0) {
     return -1;
   }
+#if !defined(__linux__)
   uint8_t* cursor = (uint8_t*)out;
   size_t remaining = len;
+#endif
   while (remaining > 0) {
     ssize_t got = read(fd, cursor, remaining);
     if (got < 0) {
@@ -1214,6 +1260,28 @@ static char* fz_crypto_base64_encode_alloc(const uint8_t* data, size_t len) {
   return out;
 }
 
+static char* fz_crypto_base64_url_encode_alloc(const uint8_t* data, size_t len) {
+  char* out = fz_crypto_base64_encode_alloc(data, len);
+  if (out == NULL) {
+    return NULL;
+  }
+  size_t write_index = 0;
+  for (size_t read_index = 0; out[read_index] != '\0'; read_index++) {
+    char ch = out[read_index];
+    if (ch == '=') {
+      continue;
+    }
+    if (ch == '+') {
+      ch = '-';
+    } else if (ch == '/') {
+      ch = '_';
+    }
+    out[write_index++] = ch;
+  }
+  out[write_index] = '\0';
+  return out;
+}
+
 static int fz_crypto_base64_value(int ch) {
   if (ch >= 'A' && ch <= 'Z') return ch - 'A';
   if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
@@ -1225,6 +1293,7 @@ static int fz_crypto_base64_value(int ch) {
 
 static int fz_crypto_base64_decode_alloc(const char* input, uint8_t** out, size_t* out_len) {
   if (out == NULL || out_len == NULL) {
+    errno = EINVAL;
     return -1;
   }
   *out = NULL;
@@ -1238,6 +1307,7 @@ static int fz_crypto_base64_decode_alloc(const char* input, uint8_t** out, size_
     return *out == NULL ? -1 : 0;
   }
   if ((len % 4) != 0) {
+    errno = EINVAL;
     return -1;
   }
   size_t padding = 0;
@@ -1250,18 +1320,35 @@ static int fz_crypto_base64_decode_alloc(const char* input, uint8_t** out, size_
   }
   size_t out_index = 0;
   for (size_t i = 0; i < len; i += 4) {
+    int is_last_block = (i + 4) == len ? 1 : 0;
     int vals[4];
     for (int j = 0; j < 4; j++) {
       int ch = (unsigned char)input[i + (size_t)j];
       if (ch == '=') {
+        if (!is_last_block || j < 2) {
+          free(buf);
+          errno = EINVAL;
+          return -1;
+        }
+        if (j == 2 && input[i + 3] != '=') {
+          free(buf);
+          errno = EINVAL;
+          return -1;
+        }
         vals[j] = 0;
         continue;
       }
       vals[j] = fz_crypto_base64_value(ch);
       if (vals[j] < 0) {
         free(buf);
+        errno = EINVAL;
         return -1;
       }
+    }
+    if (input[i + 2] == '=' && input[i + 3] != '=') {
+      free(buf);
+      errno = EINVAL;
+      return -1;
     }
     uint32_t triple =
         ((uint32_t)vals[0] << 18) | ((uint32_t)vals[1] << 12) | ((uint32_t)vals[2] << 6)
@@ -1273,6 +1360,78 @@ static int fz_crypto_base64_decode_alloc(const char* input, uint8_t** out, size_
   *out = buf;
   *out_len = decoded_len;
   return 0;
+}
+
+static int fz_crypto_base64_url_decode_alloc(const char* input, uint8_t** out, size_t* out_len) {
+  if (out == NULL || out_len == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  *out = NULL;
+  *out_len = 0;
+  if (input == NULL) {
+    return 0;
+  }
+  size_t len = strlen(input);
+  if (len == 0) {
+    return fz_crypto_base64_decode_alloc("", out, out_len);
+  }
+  int saw_padding = 0;
+  for (size_t i = 0; i < len; i++) {
+    char ch = input[i];
+    if (ch == '=') {
+      saw_padding = 1;
+      continue;
+    }
+    if (saw_padding) {
+      errno = EINVAL;
+      return -1;
+    }
+    if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')
+          || ch == '-' || ch == '_')) {
+      errno = EINVAL;
+      return -1;
+    }
+  }
+
+  size_t rem = len % 4;
+  size_t padded_len = len;
+  if (!saw_padding) {
+    if (rem == 1) {
+      errno = EINVAL;
+      return -1;
+    }
+    if (rem != 0) {
+      padded_len += 4 - rem;
+    }
+  } else if (rem != 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  char* standard = (char*)malloc(padded_len + 1);
+  if (standard == NULL) {
+    errno = ENOMEM;
+    return -1;
+  }
+  for (size_t i = 0; i < len; i++) {
+    char ch = input[i];
+    if (ch == '-') {
+      standard[i] = '+';
+    } else if (ch == '_') {
+      standard[i] = '/';
+    } else {
+      standard[i] = ch;
+    }
+  }
+  for (size_t i = len; i < padded_len; i++) {
+    standard[i] = '=';
+  }
+  standard[padded_len] = '\0';
+  int rc = fz_crypto_base64_decode_alloc(standard, out, out_len);
+  fz_crypto_memzero(standard, padded_len);
+  free(standard);
+  return rc;
 }
 
 static int32_t fz_exit_class_from_status(int timed_out, int status, int spawn_error) {

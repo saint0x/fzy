@@ -1,4 +1,5 @@
 use core.crypto;
+use core.error;
 use core.security;
 
 fn main() -> i32 {
@@ -6,6 +7,8 @@ fn main() -> i32 {
     let mac = crypto.hmac_sha256("key", "The quick brown fox jumps over the lazy dog")
     let encoded = crypto.base64_encode("fozzy")
     let decoded = crypto.base64_decode(encoded)
+    let crypto_url = crypto.base64_url_encode("ok")
+    let crypto_roundtrip = crypto.base64_url_decode(crypto_url)
     let url = security.base64_url_encode("ok")
     let roundtrip = security.base64_url_decode(url)
     let hex_token = crypto.random_hex(16)
@@ -18,6 +21,9 @@ fn main() -> i32 {
     }
     if encoded != "Zm96enk=" || decoded != "fozzy" {
         return 17
+    }
+    if crypto_url != "b2s" || crypto_roundtrip != "ok" {
+        return 18
     }
     if url != "b2s" || roundtrip != "ok" {
         return 19
@@ -33,6 +39,24 @@ fn main() -> i32 {
     }
     if security.verify_value("key", "The quick brown fox jumps over the lazy dog", mac) != 1 {
         return 37
+    }
+    if crypto.base64_decode("A===") != "" {
+        return 41
+    }
+    if error.code() == 0 || error.message() == "" {
+        return 43
+    }
+    if security.base64_url_decode("A") != "" {
+        return 47
+    }
+    if error.code() == 0 || error.message() == "" {
+        return 49
+    }
+    if crypto.base64_decode(encoded) != "fozzy" {
+        return 53
+    }
+    if error.code() != 0 || error.message() != "" {
+        return 59
     }
     return 0
 }

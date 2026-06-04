@@ -184,6 +184,9 @@ pub(crate) fn render_native_runtime_shim(
 #include <string.h>
 #include <strings.h>
 #include <sys/poll.h>
+#if defined(__linux__) || defined(__APPLE__)
+#include <sys/random.h>
+#endif
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/types.h>

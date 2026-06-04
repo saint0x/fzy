@@ -16702,6 +16702,8 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "crypto.constant_time_eq",
         "crypto.base64_encode",
         "crypto.base64_decode",
+        "crypto.base64_url_encode",
+        "crypto.base64_url_decode",
         "simd.__i32x4",
         "simd.__u32x4",
         "simd.__f32x4",
@@ -17396,9 +17398,11 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             i32.clone(),
         ),
         "crypto.random_hex" | "crypto.random_base64" => (vec![i32.clone()], str_ty.clone()),
-        "crypto.sha256" | "crypto.base64_encode" | "crypto.base64_decode" => {
-            (vec![str_ty.clone()], str_ty.clone())
-        }
+        "crypto.sha256"
+        | "crypto.base64_encode"
+        | "crypto.base64_decode"
+        | "crypto.base64_url_encode"
+        | "crypto.base64_url_decode" => (vec![str_ty.clone()], str_ty.clone()),
         "crypto.hmac_sha256" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "crypto.constant_time_eq" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "simd.__i32x4" => (

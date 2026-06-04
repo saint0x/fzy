@@ -1047,6 +1047,12 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn trace_pretty_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
     use crate::{ExitStatus, RunIdentity, RunSummary};
     use uuid::Uuid;
 
@@ -1449,6 +1455,7 @@ mod tests {
 
     #[test]
     fn pretty_trace_write_round_trips_with_valid_checksum() {
+        let _guard = trace_pretty_env_lock().lock().expect("lock pretty env");
         let path = temp_file("pretty.fozzy");
         unsafe {
             std::env::set_var("FOZZY_TRACE_PRETTY", "1");
@@ -1476,7 +1483,11 @@ mod tests {
 
     #[test]
     fn trace_write_json_streams_valid_compact_payload() {
+        let _guard = trace_pretty_env_lock().lock().expect("lock pretty env");
         let path = temp_file("compact.fozzy");
+        unsafe {
+            std::env::remove_var("FOZZY_TRACE_PRETTY");
+        }
         let trace = TraceFile::new(
             RunMode::Run,
             Some("tests/compact.fozzy.json".to_string()),

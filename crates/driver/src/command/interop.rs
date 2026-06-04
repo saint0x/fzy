@@ -256,12 +256,14 @@ pub(super) fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<H
             })
         }).collect::<Vec<_>>(),
     });
-    write_if_changed(&abi_manifest, &serde_json::to_vec_pretty(&abi_payload)?).with_context(|| {
-        format!(
-            "failed writing ffi abi manifest: {}",
-            abi_manifest.display()
-        )
-    })?;
+    write_if_changed(&abi_manifest, &serde_json::to_vec_pretty(&abi_payload)?).with_context(
+        || {
+            format!(
+                "failed writing ffi abi manifest: {}",
+                abi_manifest.display()
+            )
+        },
+    )?;
 
     let artifact = HeaderArtifact {
         path: header_path,

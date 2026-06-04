@@ -326,6 +326,16 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "crypto.base64_url_encode",
+        symbol: "fz_native_crypto_base64_url_encode",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "crypto.base64_url_decode",
+        symbol: "fz_native_crypto_base64_url_decode",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "json.escape",
         symbol: "fz_native_json_escape",
         arity: 1,
@@ -1267,8 +1277,7 @@ pub(super) fn native_data_plane_import_for_callee(
 }
 
 fn required_capability_for_callee(callee: &str) -> &'static str {
-    if matches!(callee, "alloc" | "free" | "mem.freeze" | "mem.unfreeze")
-    {
+    if matches!(callee, "alloc" | "free" | "mem.freeze" | "mem.unfreeze") {
         "mem"
     } else if callee.starts_with("http.") || callee.starts_with("route.") {
         "http"

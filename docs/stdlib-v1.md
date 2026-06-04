@@ -357,6 +357,8 @@ Transcript guidance:
   - `crypto.constant_time_eq(a, b)`
   - `crypto.base64_encode(data)`
   - `crypto.base64_decode(data)`
+  - `crypto.base64_url_encode(data)`
+  - `crypto.base64_url_decode(data)`
 - `use core.security;` is the higher-level web/security helper facade on top of `core.crypto`.
 - Common `core.security` helpers:
   - `security.random_hex(bytes)`
@@ -371,7 +373,7 @@ Transcript guidance:
   - `security.base64_decode(data)`
   - `security.base64_url_encode(data)`
   - `security.base64_url_decode(data)`
-- This checkout intentionally exposes textual crypto encodings rather than raw binary string APIs; native Fzy strings are NUL-terminated, so `hex`/`base64` are the production-safe surface for random output and digest transport.
+- This checkout intentionally exposes textual crypto encodings rather than raw binary string APIs; native Fzy strings are NUL-terminated, so `hex`/`base64`/`base64url` are the production-safe surface for random output, token transport, and digest transport.
 
 ### `thread`
 

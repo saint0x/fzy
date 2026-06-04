@@ -22,8 +22,7 @@ struct ModuleSetCacheEntry {
 }
 
 static MANIFEST_CACHE: OnceLock<RwLock<HashMap<PathBuf, ManifestCacheEntry>>> = OnceLock::new();
-static MODULE_SET_CACHE: OnceLock<RwLock<HashMap<PathBuf, ModuleSetCacheEntry>>> =
-    OnceLock::new();
+static MODULE_SET_CACHE: OnceLock<RwLock<HashMap<PathBuf, ModuleSetCacheEntry>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedSource {
@@ -67,9 +66,10 @@ pub(super) fn resolve_source(path: &Path) -> Result<ResolvedSource> {
     let manifest_path = path.join("fozzy.toml");
     let manifest = match load_cached_project_manifest(path) {
         Ok(manifest) => manifest,
-        Err(error) if error
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|err| err.kind() == std::io::ErrorKind::NotFound) =>
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|err| err.kind() == std::io::ErrorKind::NotFound) =>
         {
             let suggestions = discover_nested_project_roots(path);
             let guidance = if suggestions.is_empty() {
@@ -241,9 +241,7 @@ pub(super) fn default_header_path(resolved: &ResolvedSource) -> PathBuf {
 }
 
 pub(super) fn load_resolved_module_set(path: &Path) -> Result<ResolvedModuleSet> {
-    let cache_key = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let cache_key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if let Some(cached) = cached_module_set(&cache_key)? {
         return Ok(cached);
     }
@@ -398,11 +396,17 @@ fn collect_path_stamps(
     _root: &Path,
     modules: &[ResolvedModuleSource],
 ) -> Result<Vec<(PathBuf, FileStamp)>> {
-    collect_stamps_for_paths(&modules.iter().map(|module| module.path.clone()).collect::<Vec<_>>())
+    collect_stamps_for_paths(
+        &modules
+            .iter()
+            .map(|module| module.path.clone())
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn collect_stamps_for_paths(paths: &[PathBuf]) -> Result<Vec<(PathBuf, FileStamp)>> {
-    paths.iter()
+    paths
+        .iter()
         .map(|path| {
             let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
             let stamp = file_stamp(&canonical)
@@ -445,10 +449,16 @@ mod tests {
             "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
         )
         .expect("manifest should be written");
-        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
-            .expect("main source should be written");
-        std::fs::write(root.join("src/alt_main.fzy"), "fn main() -> i32 {\n    return 1\n}\n")
-            .expect("alternate source should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(
+            root.join("src/alt_main.fzy"),
+            "fn main() -> i32 {\n    return 1\n}\n",
+        )
+        .expect("alternate source should be written");
 
         let first = resolve_source(&root).expect("initial source resolution should succeed");
         assert_eq!(first.source_path, root.join("src/main.fzy"));

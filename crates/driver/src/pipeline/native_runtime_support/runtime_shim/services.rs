@@ -130,16 +130,23 @@ int32_t fz_native_crypto_random_hex(int32_t len_bytes) {
     return fz_intern_slice("", 0);
   }
   if (fz_crypto_fill_random(raw, len) != 0) {
+    if (raw != NULL) {
+      fz_crypto_memzero(raw, len);
+    }
     free(raw);
     fz_set_last_error(errno == 0 ? EIO : errno, 3, "crypto.random_hex failed: entropy unavailable");
     return fz_intern_slice("", 0);
   }
   char* encoded = fz_crypto_hex_encode(raw == NULL ? (const uint8_t*)"" : raw, len);
+  if (raw != NULL) {
+    fz_crypto_memzero(raw, len);
+  }
   free(raw);
   if (encoded == NULL) {
     fz_set_last_error(ENOMEM, 3, "crypto.random_hex failed: hex encode alloc failed");
     return fz_intern_slice("", 0);
   }
+  fz_set_last_error(0, 0, "");
   return fz_intern_owned(encoded);
 }
 
@@ -155,16 +162,23 @@ int32_t fz_native_crypto_random_base64(int32_t len_bytes) {
     return fz_intern_slice("", 0);
   }
   if (fz_crypto_fill_random(raw, len) != 0) {
+    if (raw != NULL) {
+      fz_crypto_memzero(raw, len);
+    }
     free(raw);
     fz_set_last_error(errno == 0 ? EIO : errno, 3, "crypto.random_base64 failed: entropy unavailable");
     return fz_intern_slice("", 0);
   }
   char* encoded = fz_crypto_base64_encode_alloc(raw == NULL ? (const uint8_t*)"" : raw, len);
+  if (raw != NULL) {
+    fz_crypto_memzero(raw, len);
+  }
   free(raw);
   if (encoded == NULL) {
     fz_set_last_error(ENOMEM, 3, "crypto.random_base64 failed: base64 encode alloc failed");
     return fz_intern_slice("", 0);
   }
+  fz_set_last_error(0, 0, "");
   return fz_intern_owned(encoded);
 }
 
@@ -174,10 +188,12 @@ int32_t fz_native_crypto_sha256(int32_t input_id) {
   uint8_t digest[32];
   fz_sha256_hash((const uint8_t*)(input == NULL ? "" : input), len, digest);
   char* encoded = fz_crypto_hex_encode(digest, sizeof(digest));
+  fz_crypto_memzero(digest, sizeof(digest));
   if (encoded == NULL) {
     fz_set_last_error(ENOMEM, 3, "crypto.sha256 failed: hex encode alloc failed");
     return fz_intern_slice("", 0);
   }
+  fz_set_last_error(0, 0, "");
   return fz_intern_owned(encoded);
 }
 
@@ -192,10 +208,12 @@ int32_t fz_native_crypto_hmac_sha256(int32_t key_id, int32_t data_id) {
       data == NULL ? 0 : strlen(data),
       digest);
   char* encoded = fz_crypto_hex_encode(digest, sizeof(digest));
+  fz_crypto_memzero(digest, sizeof(digest));
   if (encoded == NULL) {
     fz_set_last_error(ENOMEM, 3, "crypto.hmac_sha256 failed: hex encode alloc failed");
     return fz_intern_slice("", 0);
   }
+  fz_set_last_error(0, 0, "");
   return fz_intern_owned(encoded);
 }
 
@@ -211,6 +229,7 @@ int32_t fz_native_crypto_constant_time_eq(int32_t left_id, int32_t right_id) {
     unsigned char b = i < right_len ? (unsigned char)right[i] : 0;
     diff |= (unsigned char)(a ^ b);
   }
+  fz_set_last_error(0, 0, "");
   return diff == 0 ? 1 : 0;
 }
 
@@ -222,6 +241,7 @@ int32_t fz_native_crypto_base64_encode(int32_t input_id) {
     fz_set_last_error(ENOMEM, 3, "crypto.base64_encode failed: alloc failed");
     return fz_intern_slice("", 0);
   }
+  fz_set_last_error(0, 0, "");
   return fz_intern_owned(encoded);
 }
 
@@ -234,12 +254,53 @@ int32_t fz_native_crypto_base64_decode(int32_t input_id) {
     return fz_intern_slice("", 0);
   }
   if (decoded != NULL && memchr(decoded, '\0', decoded_len) != NULL) {
+    fz_crypto_memzero(decoded, decoded_len);
     free(decoded);
     fz_set_last_error(EINVAL, 3, "crypto.base64_decode failed: decoded bytes are not text-safe");
     return fz_intern_slice("", 0);
   }
   int32_t out = fz_intern_slice((const char*)(decoded == NULL ? (const uint8_t*)"" : decoded), decoded_len);
+  if (decoded != NULL) {
+    fz_crypto_memzero(decoded, decoded_len);
+  }
   free(decoded);
+  fz_set_last_error(0, 0, "");
+  return out;
+}
+
+int32_t fz_native_crypto_base64_url_encode(int32_t input_id) {
+  const char* input = fz_lookup_string(input_id);
+  size_t len = input == NULL ? 0 : strlen(input);
+  char* encoded =
+      fz_crypto_base64_url_encode_alloc((const uint8_t*)(input == NULL ? "" : input), len);
+  if (encoded == NULL) {
+    fz_set_last_error(ENOMEM, 3, "crypto.base64_url_encode failed: alloc failed");
+    return fz_intern_slice("", 0);
+  }
+  fz_set_last_error(0, 0, "");
+  return fz_intern_owned(encoded);
+}
+
+int32_t fz_native_crypto_base64_url_decode(int32_t input_id) {
+  const char* input = fz_lookup_string(input_id);
+  uint8_t* decoded = NULL;
+  size_t decoded_len = 0;
+  if (fz_crypto_base64_url_decode_alloc(input == NULL ? "" : input, &decoded, &decoded_len) != 0) {
+    fz_set_last_error(EINVAL, 3, "crypto.base64_url_decode failed: invalid base64url input");
+    return fz_intern_slice("", 0);
+  }
+  if (decoded != NULL && memchr(decoded, '\0', decoded_len) != NULL) {
+    fz_crypto_memzero(decoded, decoded_len);
+    free(decoded);
+    fz_set_last_error(EINVAL, 3, "crypto.base64_url_decode failed: decoded bytes are not text-safe");
+    return fz_intern_slice("", 0);
+  }
+  int32_t out = fz_intern_slice((const char*)(decoded == NULL ? (const uint8_t*)"" : decoded), decoded_len);
+  if (decoded != NULL) {
+    fz_crypto_memzero(decoded, decoded_len);
+  }
+  free(decoded);
+  fz_set_last_error(0, 0, "");
   return out;
 }
 
