@@ -18,8 +18,9 @@ use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
     check_file, compile_file_with_backend, compile_library_with_backend, emit_ir,
-    lower_fir_cached_with_metadata, parse_program, parse_program_with_metadata, refresh_lockfile,
-    gpu_backend_report_json, verify_file, BuildArtifact, BuildProfile, LibraryArtifact, Output,
+    embedded_core_stdlib_module_source, gpu_backend_report_json, lower_fir_cached_with_metadata,
+    parse_program, parse_program_with_metadata, refresh_lockfile, verify_file, BuildArtifact,
+    BuildProfile, LibraryArtifact, Output,
 };
 
 mod interop;
@@ -297,6 +298,9 @@ pub enum Command {
     },
     InspectEmbedding {
         path: PathBuf,
+    },
+    InspectStdlib {
+        module: String,
     },
     Version,
 }
@@ -1148,7 +1152,47 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             backend,
         } => inspect_artifacts_command(&path, release, backend.as_deref(), format),
         Command::InspectEmbedding { path } => inspect_embedding_command(&path, format),
-        Command::Version => Ok(render(format, env!("CARGO_PKG_VERSION"))),
+        Command::InspectStdlib { module } => inspect_stdlib_command(&module, format),
+        Command::Version => {
+            let version = fzscenario::version_info();
+            match format {
+                Format::Json => Ok(serde_json::to_string(&version)?),
+                Format::Text => {
+                    let mut fields = vec![("version", version.version)];
+                    if let Some(commit) = version.commit {
+                        fields.push(("commit", commit));
+                    }
+                    if let Some(build_date) = version.build_date {
+                        fields.push(("build_date", build_date));
+                    }
+                    fields.push((
+                        "language_version",
+                        version.compatibility.language_version,
+                    ));
+                    fields.push((
+                        "trace_schema_version",
+                        version.compatibility.trace_schema_version,
+                    ));
+                    fields.push((
+                        "manifest_schema_version",
+                        version.compatibility.manifest_schema_version,
+                    ));
+                    fields.push((
+                        "runtime_abi_version",
+                        version.compatibility.runtime_abi_version,
+                    ));
+                    fields.push((
+                        "native_import_table_version",
+                        version.compatibility.native_import_table_version,
+                    ));
+                    fields.push((
+                        "diagnostic_catalog_version",
+                        version.compatibility.diagnostic_catalog_version,
+                    ));
+                    Ok(render_text_fields(&fields))
+                }
+            }
+        }
     }
 }
 
@@ -2195,8 +2239,14 @@ fn render_output(format: Format, output: Output) -> String {
                 ("backend_ms", output.telemetry.backend_ms.to_string()),
                 ("contract_ms", output.telemetry.contract_ms.to_string()),
                 ("total_ms", output.telemetry.total_ms.to_string()),
-                ("parse_cache_hit", output.telemetry.parse_cache_hit.to_string()),
-                ("lower_cache_hit", output.telemetry.lower_cache_hit.to_string()),
+                (
+                    "parse_cache_hit",
+                    output.telemetry.parse_cache_hit.to_string(),
+                ),
+                (
+                    "lower_cache_hit",
+                    output.telemetry.lower_cache_hit.to_string(),
+                ),
                 ("input_bytes", output.telemetry.input_bytes.to_string()),
             ]);
             let details = render_diagnostics_text(&output.diagnostic_details);
@@ -11306,6 +11356,11 @@ fn native_usage_doc() -> serde_json::Value {
                 "command": "fz inspect surface | artifacts | embedding",
                 "when": "Explain what is builtin vs `use core.*`, inspect emitted interop artifacts, and read the embedding contract without spelunking generated files.",
                 "how": "fz inspect surface --json && fz inspect artifacts examples/fullstack --release --json && fz inspect embedding examples/fullstack --json"
+            },
+            {
+                "command": "fz inspect stdlib <module>",
+                "when": "Dump the embedded core stdlib source the compiler merges for `use core.*` facades and confirm it parses on the active toolchain.",
+                "how": "fz inspect stdlib process --json"
             }
         ]
     })
@@ -11365,30 +11420,35 @@ fn render_host_bridge_test_result(
     format: Format,
     source: &Path,
     scenario: &Path,
-    trace_path: &Path,
+    prepare_trace_path: &Path,
     requested_record: Option<&Path>,
     run: fzscenario::RunResult,
     strict: bool,
 ) -> Result<String> {
-    materialize_requested_bridge_record(requested_record, trace_path)?;
+    materialize_requested_bridge_record(requested_record, prepare_trace_path)?;
     let status = run.summary.status;
     let strict_failure = strict && strict_checker_failure(&run.summary);
+    let recorded_trace = run.summary.identity.trace_path.clone();
     let rendered = match format {
         Format::Text => {
             let mut out = run.summary.pretty();
             out.push_str(&format!(
-                "\nbridge_source={}\nbridge_scenario={}\nbridge_trace={}",
+                "\nbridge_source={}\nbridge_scenario={}\nbridge_prepare_trace={}",
                 source.display(),
                 scenario.display(),
-                trace_path.display()
+                prepare_trace_path.display()
             ));
+            if let Some(recorded_trace) = &recorded_trace {
+                out.push_str(&format!("\nbridge_recorded_trace={recorded_trace}"));
+            }
             out
         }
         Format::Json => serde_json::to_string(&serde_json::json!({
             "bridge": {
                 "source": source.display().to_string(),
                 "scenario": scenario.display().to_string(),
-                "trace": trace_path.display().to_string(),
+                "prepareTrace": prepare_trace_path.display().to_string(),
+                "recordedTrace": recorded_trace,
             },
             "summary": &run.summary,
         }))?,
@@ -11411,32 +11471,37 @@ fn render_host_bridge_run_result(
     format: Format,
     source: &Path,
     scenario: &Path,
-    trace_path: &Path,
+    prepare_trace_path: &Path,
     requested_record: Option<&Path>,
     run: fzscenario::RunResult,
     strict: bool,
     deterministic_requested: bool,
 ) -> Result<String> {
-    materialize_requested_bridge_record(requested_record, trace_path)?;
+    materialize_requested_bridge_record(requested_record, prepare_trace_path)?;
     let status = run.summary.status;
     let strict_failure = strict && strict_checker_failure(&run.summary);
+    let recorded_trace = run.summary.identity.trace_path.clone();
     let rendered = match format {
         Format::Text => {
             let mut out = run.summary.pretty();
             out.push_str(&format!(
-                "\nbridge_source={}\nbridge_scenario={}\nbridge_trace={}\nrouting=host-backed-scenario-bridge\ndeterministic_requested={}",
+                "\nbridge_source={}\nbridge_scenario={}\nbridge_prepare_trace={}\nrouting=host-backed-scenario-bridge\ndeterministic_requested={}",
                 source.display(),
                 scenario.display(),
-                trace_path.display(),
+                prepare_trace_path.display(),
                 deterministic_requested
             ));
+            if let Some(recorded_trace) = &recorded_trace {
+                out.push_str(&format!("\nbridge_recorded_trace={recorded_trace}"));
+            }
             out
         }
         Format::Json => serde_json::to_string(&serde_json::json!({
             "bridge": {
                 "source": source.display().to_string(),
                 "scenario": scenario.display().to_string(),
-                "trace": trace_path.display().to_string(),
+                "prepareTrace": prepare_trace_path.display().to_string(),
+                "recordedTrace": recorded_trace,
                 "routing": "host-backed-scenario-bridge",
                 "deterministicRequested": deterministic_requested,
             },
@@ -12030,6 +12095,50 @@ fn render_surface_inspection(format: Format) -> String {
             ],
         })
         .to_string(),
+    }
+}
+
+fn inspect_stdlib_command(module: &str, format: Format) -> Result<String> {
+    let Some(source) = embedded_core_stdlib_module_source(module) else {
+        let available = surface_core_modules()
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .filter(|name| embedded_core_stdlib_module_source(name).is_some())
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "unknown embedded core stdlib module `{module}` (available: {available})"
+        );
+    };
+    let parsed =
+        parser::parse(source, module).map_err(|diagnostics| anyhow!("{}", render_diagnostics_text(&diagnostics)))?;
+    let line_count = source.lines().count();
+    let source_path = format!("<embedded-core-stdlib:{module}>");
+    match format {
+        Format::Text => {
+            let mut out = render_text_fields(&[
+                ("status", "ok".to_string()),
+                ("mode", "inspect-stdlib".to_string()),
+                ("module", module.to_string()),
+                ("source_path", source_path),
+                ("lines", line_count.to_string()),
+                ("nodes", parsed.items.len().to_string()),
+                ("parse", "ok".to_string()),
+            ]);
+            out.push_str("\nsource:\n");
+            out.push_str(source);
+            Ok(out)
+        }
+        Format::Json => Ok(serde_json::json!({
+            "status": "ok",
+            "mode": "inspect-stdlib",
+            "module": module,
+            "sourcePath": source_path,
+            "lines": line_count,
+            "nodes": parsed.items.len(),
+            "parse": "ok",
+            "source": source,
+        }).to_string()),
     }
 }
 
@@ -12630,9 +12739,38 @@ mod tests {
     }
 
     #[test]
-    fn version_command_returns_semver() {
+    fn version_command_reports_identity_and_compatibility() {
         let output = run(Command::Version, Format::Text).expect("version command should run");
-        assert!(output.contains('.'));
+        assert!(output.contains("version:"));
+        assert!(output.contains("trace_schema_version:"));
+    }
+
+    #[test]
+    fn version_command_json_includes_compatibility() {
+        let output = run(Command::Version, Format::Json).expect("version command should run");
+        let value: serde_json::Value = serde_json::from_str(&output).expect("json should parse");
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            value["compatibility"]["traceSchemaVersion"],
+            "fozzy-trace.v4"
+        );
+    }
+
+    #[test]
+    fn inspect_stdlib_process_reports_embedded_source() {
+        let output = run(
+            Command::InspectStdlib {
+                module: "process".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("inspect stdlib should run");
+        let value: serde_json::Value = serde_json::from_str(&output).expect("json should parse");
+        assert_eq!(value["module"], "process");
+        assert_eq!(value["parse"], "ok");
+        assert!(value["source"]
+            .as_str()
+            .is_some_and(|source| source.contains("fn argv_or")));
     }
 
     #[test]
@@ -14814,7 +14952,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "use core.crypto;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" {\n        return 11\n    }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" {\n        return 13\n    }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" {\n        return 17\n    }\n    if url != \"b2s\" || roundtrip != \"ok\" {\n        return 19\n    }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 {\n        return 23\n    }\n    if crypto.constant_time_eq(digest, digest) != 1 {\n        return 29\n    }\n    if crypto.constant_time_eq(digest, mac) != 0 {\n        return 31\n    }\n    if security.verify_value(\"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 1 {\n        return 37\n    }\n    return 0\n}\n",
+            "use core.crypto;\nuse core.error;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let crypto_url = crypto.base64_url_encode(\"ok\")\n    let crypto_roundtrip = crypto.base64_url_decode(crypto_url)\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" {\n        return 11\n    }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" {\n        return 13\n    }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" {\n        return 17\n    }\n    if crypto_url != \"b2s\" || crypto_roundtrip != \"ok\" {\n        return 18\n    }\n    if url != \"b2s\" || roundtrip != \"ok\" {\n        return 19\n    }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 {\n        return 23\n    }\n    if crypto.constant_time_eq(digest, digest) != 1 {\n        return 29\n    }\n    if crypto.constant_time_eq(digest, mac) != 0 {\n        return 31\n    }\n    if security.verify_value(\"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 1 {\n        return 37\n    }\n    if crypto.base64_decode(\"A===\") != \"\" {\n        return 41\n    }\n    if error.code() == 0 || error.message() == \"\" {\n        return 43\n    }\n    if security.base64_url_decode(\"A\") != \"\" {\n        return 47\n    }\n    if error.code() == 0 || error.message() == \"\" {\n        return 49\n    }\n    if crypto.base64_decode(encoded) != \"fozzy\" {\n        return 53\n    }\n    if error.code() != 0 || error.message() != \"\" {\n        return 59\n    }\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -17614,6 +17752,61 @@ fn main() -> i32 {
         .expect("host-backed native test should materialize requested record path");
         assert!(output.contains("\"bridge\""));
         assert!(record.exists(), "requested record path should exist");
+        let verify = fzscenario::verify_trace_file(&record).expect("trace should verify");
+        assert!(verify.ok, "recorded trace should round-trip through current CLI");
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(record);
+    }
+
+    #[test]
+    fn host_backed_run_reports_prepare_and_recorded_trace_paths() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-host-run-{suffix}.fzy"));
+        let record =
+            std::env::temp_dir().join(format!("fozzylang-host-run-{suffix}.trace.fozzy"));
+        std::fs::write(
+            &source,
+            "test \"probe\" {}\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&record);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: true,
+                strict_verify: true,
+                safe_profile: false,
+                seed: Some(4242),
+                record: Some(record.clone()),
+                host_backends: true,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("host-backed native run should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("host-backed run json should parse");
+        assert_eq!(
+            payload["bridge"]["recordedTrace"].as_str(),
+            Some(record.to_string_lossy().as_ref())
+        );
+        assert!(
+            payload["bridge"]["prepareTrace"]
+                .as_str()
+                .is_some_and(|path| path != record.to_string_lossy()),
+            "prepare trace should refer to the bridge preflight artifact"
+        );
+        let verify = fzscenario::verify_trace_file(&record).expect("trace should verify");
+        assert!(verify.ok, "recorded trace should verify");
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(record);

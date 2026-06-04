@@ -102,6 +102,8 @@ fz run tests/run.pass.fozzy.json --det --record artifacts/trace.fozzy --json
 fz trace verify artifacts/trace.fozzy --strict --json
 fz replay artifacts/trace.fozzy --json
 fz ci artifacts/trace.fozzy --json
+fz version --json
+fz inspect stdlib process --json
 ```
 
 ### 3.4 Run the live GPU example on Apple/Metal
@@ -607,8 +609,11 @@ For meaningful changes, run at least:
    - `fz trace verify ... --strict --json`
    - `fz replay ... --json`
    - `fz ci ... --json`
+   - `fz version --json` when handing traces across machines or CI jobs
 6. one host-backed run when feasible:
    - `fz run ... --host-backends --json`
+7. compiler-facing stdlib failures:
+   - `fz inspect stdlib process --json`
 
 ## 13. Common Pitfalls and Fixes
 

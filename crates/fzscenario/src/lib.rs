@@ -95,7 +95,7 @@ pub use engine::{
     RecordCollisionPolicy, ReplayOptions, RunOptions, RunResult, ShrinkMinimize, ShrinkOptions,
 };
 pub use clock::VirtualClock;
-pub use envinfo::{compatibility_info, env_info};
+pub use envinfo::{compatibility_info, env_info, version_info};
 pub use explore::{ExploreOptions, ScheduleStrategy, explore};
 pub use fsutil::find_matching_files;
 pub use fuzz::{FuzzMode, FuzzOptions, FuzzTarget, fuzz};

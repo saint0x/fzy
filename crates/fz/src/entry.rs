@@ -440,6 +440,12 @@ fn parse_command(args: &[String]) -> Result<Command> {
         },
         Some("inspect") => match args.get(1).map(String::as_str) {
             Some("surface") => Ok(Command::InspectSurface),
+            Some("stdlib") => Ok(Command::InspectStdlib {
+                module: args
+                    .get(2)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("missing <module> for `inspect stdlib`"))?,
+            }),
             Some("artifacts") => Ok(Command::InspectArtifacts {
                 path: arg_path_or_cwd(args, 2)?,
                 release: has_flag(args, "--release"),
@@ -542,6 +548,7 @@ commands:\n\
   rpc gen [path] [--out-dir dir]\n\
   doc gen [path] [--format json|html|markdown] [--out path] [--reference path]\n\
   inspect surface\n\
+  inspect stdlib <module>\n\
   inspect artifacts [path] [--release] [--backend llvm|cranelift]\n\
   inspect embedding [path]\n\
   fuzz <scenario>\n\
@@ -725,6 +732,20 @@ mod tests {
         let args = vec!["version".to_string()];
         let command = parse_command(&args).expect("`version` should parse");
         assert!(matches!(command, Command::Version));
+    }
+
+    #[test]
+    fn parse_command_accepts_inspect_stdlib_module() {
+        let args = vec![
+            "inspect".to_string(),
+            "stdlib".to_string(),
+            "process".to_string(),
+        ];
+        let command = parse_command(&args).expect("`inspect stdlib` should parse");
+        match command {
+            Command::InspectStdlib { module } => assert_eq!(module, "process"),
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

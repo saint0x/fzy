@@ -11017,11 +11017,8 @@ fn merge_imported_core_stdlib_modules(root: &mut ast::Module) -> Result<()> {
         }
         let mut module = parser::parse(source, &module_name).map_err(|diagnostics| {
             anyhow!(
-                "failed parsing embedded core stdlib module `{module_name}`: {}",
-                diagnostics
-                    .first()
-                    .map(|diag| diag.message.clone())
-                    .unwrap_or_else(|| "unknown parse failure".to_string())
+                "{}",
+                format_embedded_stdlib_parse_failure(&module_name, source, &diagnostics)
             )
         })?;
         if matches!(module_name.as_str(), "log" | "thread" | "http")
@@ -11035,7 +11032,74 @@ fn merge_imported_core_stdlib_modules(root: &mut ast::Module) -> Result<()> {
     Ok(())
 }
 
-fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str> {
+fn format_embedded_stdlib_parse_failure(
+    module_name: &str,
+    source: &str,
+    diagnostics: &[diagnostics::Diagnostic],
+) -> String {
+    let mut lines = vec![format!(
+        "failed parsing embedded core stdlib module `{module_name}` during `parse-embedded-stdlib`"
+    )];
+    if diagnostics.is_empty() {
+        lines.push("  error: unknown parse failure".to_string());
+        return lines.join("\n");
+    }
+    let virtual_path = format!("<embedded-core-stdlib:{module_name}>");
+    for diagnostic in diagnostics {
+        let code = diagnostic.code.as_deref().unwrap_or("E-PAR-UNKNOWN");
+        lines.push(format!("  error[{code}]: {}", diagnostic.message));
+        if let Some(span) = &diagnostic.span {
+            lines.push(format!(
+                "    at {virtual_path}:{}:{}",
+                span.start_line, span.start_col
+            ));
+            if let Some(snippet) = embedded_stdlib_snippet(source, span.start_line) {
+                lines.push(format!("    snippet: {snippet}"));
+            }
+        }
+        if let Some(help) = &diagnostic.help {
+            lines.push(format!("    help: {help}"));
+        }
+        for note in &diagnostic.notes {
+            lines.push(format!("    note: {note}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn embedded_stdlib_snippet(source: &str, line: usize) -> Option<String> {
+    source
+        .lines()
+        .nth(line.saturating_sub(1))
+        .map(|snippet| snippet.trim_end().to_string())
+}
+
+#[cfg(test)]
+mod embedded_stdlib_dx_tests {
+    use super::format_embedded_stdlib_parse_failure;
+
+    #[test]
+    fn embedded_stdlib_parse_failure_includes_phase_span_and_help() {
+        let diagnostics = vec![diagnostics::Diagnostic::new(
+            diagnostics::Severity::Error,
+            "unexpected token in expression",
+            Some("finish the current expression".to_string()),
+        )
+        .with_code("E-PAR-12345678")
+        .with_span(2, 9, 2, 10)];
+        let rendered = format_embedded_stdlib_parse_failure(
+            "process",
+            "fn ok() -> i32 {\n    let x = )\n}\n",
+            &diagnostics,
+        );
+        assert!(rendered.contains("parse-embedded-stdlib"));
+        assert!(rendered.contains("<embedded-core-stdlib:process>:2:9"));
+        assert!(rendered.contains("snippet:     let x = )"));
+        assert!(rendered.contains("help: finish the current expression"));
+    }
+}
+
+pub(crate) fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str> {
     match module_name {
         "process" => Some(include_str!("../../../corelib/src/process.fzy")),
         "term" => Some(include_str!("../../../corelib/src/term.fzy")),
