@@ -277,6 +277,11 @@ fn collect_expr_capabilities(expr: &kernel_ir::KernelExpr, out: &mut BTreeSet<St
             collect_expr_capabilities(base, out);
             collect_expr_capabilities(index, out);
         }
+        kernel_ir::KernelExpr::ArrayLiteral(items) => {
+            for item in items {
+                collect_expr_capabilities(item, out);
+            }
+        }
         kernel_ir::KernelExpr::Int(_)
         | kernel_ir::KernelExpr::Float { .. }
         | kernel_ir::KernelExpr::Bool(_)

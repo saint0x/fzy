@@ -96,7 +96,7 @@ fn main() -> i32 {
     )
     let stored_uints = simd.u32x4_store(alias_roundtrip)
     let floats = simd.f32x4_min(
-        simd.f32x4_mul(simd.f32x4_splat(1.5), simd.f32x4_load(float_source)),
+        simd.f32x4_mul(simd.f32x4_splat(1.5f32), simd.f32x4_load(float_source)),
         simd.f32x4_max(
             simd.f32x4_new(1.0, 3.0, 4.0, 5.0),
             simd.f32x4_new(1.5, 2.5, 4.5, 6.0),

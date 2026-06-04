@@ -248,6 +248,17 @@ fn llvm_emit_array_argument_parts(
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
 ) -> Result<Option<(LlvmValue, LlvmValue)>> {
+    fn sibling_len_binding_name(name: &str) -> Option<String> {
+        for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
+            if let Some(stem) = name.strip_suffix(suffix) {
+                return Some(format!("{stem}_len"));
+            }
+        }
+        if let Some(stem) = name.strip_suffix("_ptr") {
+            return Some(format!("{stem}_len"));
+        }
+        Some(format!("{name}_len"))
+    }
     match arg {
         ast::Expr::Ident(name) => {
             if let Some(binding) = ctx.array_slots.get(name).cloned() {
@@ -266,6 +277,27 @@ fn llvm_emit_array_argument_parts(
                         ty: "i32".to_string(),
                     },
                 )));
+            }
+            if matches!(ctx.local_types.get(name), Some(ast::Type::Ptr { .. })) {
+                if let Some(len_name) = sibling_len_binding_name(name) {
+                    if ctx.local_types.contains_key(&len_name) {
+                        let ptr = llvm_emit_expr_as(
+                            arg,
+                            ctx,
+                            string_literal_ids,
+                            task_ref_ids,
+                            llvm_pointer_int_type(),
+                        )?;
+                        let len = llvm_emit_expr_as(
+                            &ast::Expr::Ident(len_name),
+                            ctx,
+                            string_literal_ids,
+                            task_ref_ids,
+                            "i32",
+                        )?;
+                        return Ok(Some((ptr, len)));
+                    }
+                }
             }
             Ok(None)
         }
@@ -334,6 +366,17 @@ fn llvm_vec_element_type(expr: &ast::Expr, ctx: &LlvmFuncCtx) -> Option<&'static
             "gpu.download_u32" => Some("u32"),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+fn llvm_ptr_element_type(expr: &ast::Expr, ctx: &LlvmFuncCtx) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(name) => match ctx.local_types.get(name) {
+            Some(ast::Type::Ptr { to, .. }) => Some(llvm_ir_type_for_ast_type(to)),
+            _ => None,
+        },
+        ast::Expr::Group(inner) | ast::Expr::Discard(inner) => llvm_ptr_element_type(inner, ctx),
         _ => None,
     }
 }
@@ -763,6 +806,88 @@ fn llvm_emit_array_index_from_binding(
         value: selected,
         ty: binding.element_ty,
     })
+}
+
+fn llvm_emit_index_assign(
+    base: &ast::Expr,
+    index: &ast::Expr,
+    value: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<()> {
+    if let ast::Expr::Ident(name) = base {
+        if let Some(binding) = ctx.array_slots.get(name).cloned() {
+            let index_value =
+                llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?;
+            let stored_value = llvm_emit_expr_as(
+                value,
+                ctx,
+                string_literal_ids,
+                task_ref_ids,
+                &binding.element_ty,
+            )?;
+            let idx64 = ctx.value();
+            let elem_ptr = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {idx64} = sext i32 {} to i64\n",
+                index_value.value
+            ));
+            ctx.code.push_str(&format!(
+                "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
+                binding.len, binding.element_ty, binding.storage
+            ));
+            ctx.code.push_str(&format!(
+                "  store {} {}, ptr {elem_ptr}\n",
+                binding.element_ty, stored_value.value
+            ));
+            return Ok(());
+        }
+    }
+    if let Some(element_ty) = llvm_ptr_element_type(base, ctx) {
+        let index_value =
+            llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?.value;
+        let base_ptr = llvm_emit_expr_as(
+            base,
+            ctx,
+            string_literal_ids,
+            task_ref_ids,
+            llvm_pointer_int_type(),
+        )?;
+        let base_ptr = if base_ptr.ty == "ptr" {
+            base_ptr.value
+        } else {
+            let ptr = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {ptr} = inttoptr {} {} to ptr\n",
+                base_ptr.ty, base_ptr.value
+            ));
+            ptr
+        };
+        let stored_value =
+            llvm_emit_expr_as(value, ctx, string_literal_ids, task_ref_ids, &element_ty)?;
+        let index_ptr = if llvm_pointer_int_type() == "i32" {
+            index_value
+        } else {
+            let widened = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {widened} = sext i32 {index_value} to {}\n",
+                llvm_pointer_int_type()
+            ));
+            widened
+        };
+        let element_ptr = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {element_ptr} = getelementptr inbounds {element_ty}, ptr {base_ptr}, {} {index_ptr}\n",
+            llvm_pointer_int_type()
+        ));
+        ctx.code.push_str(&format!(
+            "  store {element_ty} {}, ptr {element_ptr}\n",
+            stored_value.value
+        ));
+        return Ok(());
+    }
+    bail!("native backend cannot lower indexed assignment target")
 }
 
 fn llvm_emit_simd_saturating_int_binop(
@@ -2590,6 +2715,19 @@ pub(super) fn llvm_emit_linear_stmts(
                 deferred.push(expr.clone());
             }
             ast::Stmt::Expr(expr) | ast::Stmt::Requires(expr) | ast::Stmt::Ensures(expr) => {
+                if let ast::Expr::Call { callee, args } = expr {
+                    if callee == "__index_assign" && args.len() == 3 {
+                        llvm_emit_index_assign(
+                            &args[0],
+                            &args[1],
+                            &args[2],
+                            ctx,
+                            string_literal_ids,
+                            task_ref_ids,
+                        )?;
+                        continue;
+                    }
+                }
                 let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
             }
             ast::Stmt::Return(value) => {
@@ -2697,82 +2835,118 @@ pub(super) fn llvm_emit_binary_expr(
     let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids)?;
     Ok(match op {
         ast::BinaryOp::Add => {
-            let rhs = llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+            let rhs_raw = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids)?;
+            let result_ty = if llvm_is_float_ty(&lhs.ty) {
+                lhs.ty.clone()
+            } else if llvm_is_float_ty(&rhs_raw.ty) {
+                rhs_raw.ty.clone()
+            } else {
+                lhs.ty.clone()
+            };
+            let lhs = llvm_cast_value(ctx, lhs, &result_ty)?;
+            let rhs = llvm_cast_value(ctx, rhs_raw, &result_ty)?;
             let out = ctx.value();
-            let op = if llvm_is_float_ty(&lhs.ty) {
+            let op = if llvm_is_float_ty(&result_ty) {
                 "fadd"
             } else {
                 "add"
             };
             ctx.code.push_str(&format!(
                 "  {out} = {op} {} {}, {}\n",
-                lhs.ty, lhs.value, rhs.value
+                result_ty, lhs.value, rhs.value
             ));
             llvm_assert_finite(
                 ctx,
                 LlvmValue {
                     value: out,
-                    ty: lhs.ty,
+                    ty: result_ty,
                 },
             )?
         }
         ast::BinaryOp::Sub => {
-            let rhs = llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+            let rhs_raw = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids)?;
+            let result_ty = if llvm_is_float_ty(&lhs.ty) {
+                lhs.ty.clone()
+            } else if llvm_is_float_ty(&rhs_raw.ty) {
+                rhs_raw.ty.clone()
+            } else {
+                lhs.ty.clone()
+            };
+            let lhs = llvm_cast_value(ctx, lhs, &result_ty)?;
+            let rhs = llvm_cast_value(ctx, rhs_raw, &result_ty)?;
             let out = ctx.value();
-            let op = if llvm_is_float_ty(&lhs.ty) {
+            let op = if llvm_is_float_ty(&result_ty) {
                 "fsub"
             } else {
                 "sub"
             };
             ctx.code.push_str(&format!(
                 "  {out} = {op} {} {}, {}\n",
-                lhs.ty, lhs.value, rhs.value
+                result_ty, lhs.value, rhs.value
             ));
             llvm_assert_finite(
                 ctx,
                 LlvmValue {
                     value: out,
-                    ty: lhs.ty,
+                    ty: result_ty,
                 },
             )?
         }
         ast::BinaryOp::Mul => {
-            let rhs = llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+            let rhs_raw = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids)?;
+            let result_ty = if llvm_is_float_ty(&lhs.ty) {
+                lhs.ty.clone()
+            } else if llvm_is_float_ty(&rhs_raw.ty) {
+                rhs_raw.ty.clone()
+            } else {
+                lhs.ty.clone()
+            };
+            let lhs = llvm_cast_value(ctx, lhs, &result_ty)?;
+            let rhs = llvm_cast_value(ctx, rhs_raw, &result_ty)?;
             let out = ctx.value();
-            let op = if llvm_is_float_ty(&lhs.ty) {
+            let op = if llvm_is_float_ty(&result_ty) {
                 "fmul"
             } else {
                 "mul"
             };
             ctx.code.push_str(&format!(
                 "  {out} = {op} {} {}, {}\n",
-                lhs.ty, lhs.value, rhs.value
+                result_ty, lhs.value, rhs.value
             ));
             llvm_assert_finite(
                 ctx,
                 LlvmValue {
                     value: out,
-                    ty: lhs.ty,
+                    ty: result_ty,
                 },
             )?
         }
         ast::BinaryOp::Div => {
-            let rhs = llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+            let rhs_raw = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids)?;
+            let result_ty = if llvm_is_float_ty(&lhs.ty) {
+                lhs.ty.clone()
+            } else if llvm_is_float_ty(&rhs_raw.ty) {
+                rhs_raw.ty.clone()
+            } else {
+                lhs.ty.clone()
+            };
+            let lhs = llvm_cast_value(ctx, lhs, &result_ty)?;
+            let rhs = llvm_cast_value(ctx, rhs_raw, &result_ty)?;
             let out = ctx.value();
-            let op = if llvm_is_float_ty(&lhs.ty) {
+            let op = if llvm_is_float_ty(&result_ty) {
                 "fdiv"
             } else {
                 "sdiv"
             };
             ctx.code.push_str(&format!(
                 "  {out} = {op} {} {}, {}\n",
-                lhs.ty, lhs.value, rhs.value
+                result_ty, lhs.value, rhs.value
             ));
             llvm_assert_finite(
                 ctx,
                 LlvmValue {
                     value: out,
-                    ty: lhs.ty,
+                    ty: result_ty,
                 },
             )?
         }
@@ -3059,6 +3233,45 @@ pub(super) fn llvm_emit_complex_expr(
                 if let Some(binding) = ctx.array_slots.get(name).cloned() {
                     return llvm_emit_array_index_from_binding(binding, index, &index_value, ctx);
                 }
+            }
+            if let Some(element_ty) = llvm_ptr_element_type(base, ctx) {
+                let base_ptr = llvm_emit_expr_as(
+                    base,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                    llvm_pointer_int_type(),
+                )?;
+                let base_ptr = if base_ptr.ty == "ptr" {
+                    base_ptr.value
+                } else {
+                    let ptr = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {ptr} = inttoptr {} {} to ptr\n",
+                        base_ptr.ty, base_ptr.value
+                    ));
+                    ptr
+                };
+                let index_ptr = if llvm_pointer_int_type() == "i32" {
+                    index_value.clone()
+                } else {
+                    let widened = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {widened} = sext i32 {index_value} to {}\n",
+                        llvm_pointer_int_type()
+                    ));
+                    widened
+                };
+                let element_ptr = ctx.value();
+                let loaded = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {element_ptr} = getelementptr inbounds {element_ty}, ptr {base_ptr}, {} {index_ptr}\n  {loaded} = load {element_ty}, ptr {element_ptr}\n",
+                    llvm_pointer_int_type()
+                ));
+                return Ok(LlvmValue {
+                    value: loaded,
+                    ty: element_ty,
+                });
             }
             let base_value = llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?;
             let temp_array_slot = format!("%slot_array_index_{}", ctx.next_value);
@@ -3817,7 +4030,7 @@ pub(super) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Res
 
 pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String> {
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
-    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir).unwrap_or_default();
+    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir)?;
     if fir.typed_functions.is_empty() {
         let ret = plan
             .forced_main_return

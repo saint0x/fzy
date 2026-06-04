@@ -230,7 +230,7 @@ fn u32x4_scatter(value: u32x4, lanes: [i32; 4], base: [u32; 4]) -> [u32; 4] {
     ]
 }
 
-fn f32x4_splat(value: f64) -> f32x4 {
+fn f32x4_splat(value: f32) -> f32x4 {
     return simd.__f32x4_splat(value)
 }
 
@@ -263,7 +263,7 @@ unsafe fn f32x4_store_ptr_unaligned(ptr: *mut u8, value: f32x4) -> void {
     discard simd.__f32x4_store_unaligned_ptr(ptr, value)
 }
 
-fn f32x4_load_masked(values: [f32; 4], mask: mask32x4, fill: f64) -> f32x4 {
+fn f32x4_load_masked(values: [f32; 4], mask: mask32x4, fill: f32) -> f32x4 {
     let fill_lanes = f32x4_store(f32x4_splat(fill))
     let bits = mask32x4_bitmask(mask)
     return f32x4_load([
@@ -274,7 +274,7 @@ fn f32x4_load_masked(values: [f32; 4], mask: mask32x4, fill: f64) -> f32x4 {
     ])
 }
 
-fn f32x4_load_prefix(values: [f32; 4], active_lanes: i32, fill: f64) -> f32x4 {
+fn f32x4_load_prefix(values: [f32; 4], active_lanes: i32, fill: f32) -> f32x4 {
     return f32x4_select(prefix_mask32x4(active_lanes), f32x4_load(values), f32x4_splat(fill))
 }
 

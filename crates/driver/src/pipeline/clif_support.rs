@@ -228,6 +228,17 @@ fn clif_local_type<'a>(ctx: &'a ClifLoweringCtx<'_>, name: &str) -> Option<&'a a
         .or_else(|| ctx.local_types.get(name))
 }
 
+fn clif_ptr_element_type(expr: &ast::Expr, ctx: &ClifLoweringCtx<'_>) -> Option<ClifType> {
+    match expr {
+        ast::Expr::Ident(name) => match clif_local_type(ctx, name) {
+            Some(ast::Type::Ptr { to, .. }) => ast_signature_type_to_clif_type(to),
+            _ => None,
+        },
+        ast::Expr::Group(inner) | ast::Expr::Discard(inner) => clif_ptr_element_type(inner, ctx),
+        _ => None,
+    }
+}
+
 fn clif_emit_cfg(
     builder: &mut FunctionBuilder,
     ctx: &mut ClifLoweringCtx<'_>,
@@ -1697,6 +1708,17 @@ fn clif_emit_array_argument_parts(
     locals: &mut HashMap<String, LocalBinding>,
     next_var: &mut usize,
 ) -> Result<Option<(ClifValue, ClifValue)>> {
+    fn sibling_len_binding_name(name: &str) -> Option<String> {
+        for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
+            if let Some(stem) = name.strip_suffix(suffix) {
+                return Some(format!("{stem}_len"));
+            }
+        }
+        if let Some(stem) = name.strip_suffix("_ptr") {
+            return Some(format!("{stem}_len"));
+        }
+        Some(format!("{name}_len"))
+    }
     match arg {
         ast::Expr::Ident(name) => {
             if let Some(binding) = ctx.array_bindings.get(name) {
@@ -1730,6 +1752,23 @@ fn clif_emit_array_argument_parts(
                             ty: types::I32,
                         },
                     )));
+                }
+            }
+            if matches!(clif_local_type(ctx, name), Some(ast::Type::Ptr { .. })) {
+                if let Some(len_name) = sibling_len_binding_name(name) {
+                    if clif_local_type(ctx, &len_name).is_some() {
+                        let ptr = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+                        let ptr = cast_clif_value(builder, ptr, pointer_sized_clif_type())?;
+                        let len = clif_emit_expr(
+                            builder,
+                            ctx,
+                            &ast::Expr::Ident(len_name),
+                            locals,
+                            next_var,
+                        )?;
+                        let len = cast_clif_value(builder, len, types::I32)?;
+                        return Ok(Some((ptr, len)));
+                    }
                 }
             }
             Ok(None)
@@ -1952,6 +1991,70 @@ fn clif_emit_array_expr_to_ptr(
     Ok(())
 }
 
+fn clif_emit_index_assign(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    base: &ast::Expr,
+    index: &ast::Expr,
+    value: &ast::Expr,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<()> {
+    let raw_index = clif_emit_expr(builder, ctx, index, locals, next_var)?;
+    let index_value = cast_clif_value(builder, raw_index, default_int_clif_type())?;
+    if let ast::Expr::Ident(name) = base {
+        if let Some(binding) = ctx.array_bindings.get(name).cloned() {
+            let idx_ptr = if pointer_sized_clif_type() == index_value.ty {
+                index_value.value
+            } else {
+                builder
+                    .ins()
+                    .uextend(pointer_sized_clif_type(), index_value.value)
+            };
+            let byte_offset = if binding.element_stride == 1 {
+                idx_ptr
+            } else {
+                builder
+                    .ins()
+                    .imul_imm(idx_ptr, i64::from(binding.element_stride))
+            };
+            let base_ptr =
+                builder
+                    .ins()
+                    .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0);
+            let addr = builder.ins().iadd(base_ptr, byte_offset);
+            let raw_value = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+            let stored = cast_clif_value(builder, raw_value, binding.element_ty)?;
+            builder.ins().store(MemFlags::new(), stored.value, addr, 0);
+            return Ok(());
+        }
+    }
+    if let Some(element_ty) = clif_ptr_element_type(base, ctx) {
+        let raw_base = clif_emit_expr(builder, ctx, base, locals, next_var)?;
+        let base_ptr = cast_clif_value(builder, raw_base, pointer_sized_clif_type())?;
+        let idx_ptr = if pointer_sized_clif_type() == index_value.ty {
+            index_value.value
+        } else {
+            builder
+                .ins()
+                .uextend(pointer_sized_clif_type(), index_value.value)
+        };
+        let addr = if element_ty.bytes() == 1 {
+            builder.ins().iadd(base_ptr.value, idx_ptr)
+        } else {
+            let byte_offset = builder
+                .ins()
+                .imul_imm(idx_ptr, i64::from(element_ty.bytes()));
+            builder.ins().iadd(base_ptr.value, byte_offset)
+        };
+        let raw_value = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+        let stored = cast_clif_value(builder, raw_value, element_ty)?;
+        builder.ins().store(MemFlags::new(), stored.value, addr, 0);
+        return Ok(());
+    }
+    bail!("native backend cannot lower indexed assignment target")
+}
+
 fn clif_emit_aggregate_handle(
     builder: &mut FunctionBuilder,
     ctx: &mut ClifLoweringCtx<'_>,
@@ -2097,10 +2200,7 @@ fn clif_struct_field_binding_for_local(
     field: &str,
     ctx: &ClifLoweringCtx<'_>,
 ) -> Option<ClifAggregateItemBinding> {
-    let ast::Type::Named {
-        name: ty_name, ..
-    } = clif_local_type(ctx, name)?
-    else {
+    let ast::Type::Named { name: ty_name, .. } = clif_local_type(ctx, name)? else {
         return None;
     };
     let struct_def = ctx.struct_defs.get(ty_name.as_str())?;
@@ -2122,10 +2222,7 @@ fn clif_enum_payload_binding_for_local(
     index: usize,
     ctx: &ClifLoweringCtx<'_>,
 ) -> Option<ClifAggregateItemBinding> {
-    let ast::Type::Named {
-        name: ty_name, ..
-    } = clif_local_type(ctx, name)?
-    else {
+    let ast::Type::Named { name: ty_name, .. } = clif_local_type(ctx, name)? else {
         return None;
     };
     if ty_name != enum_name {
@@ -2147,10 +2244,7 @@ fn clif_enum_named_binding_for_local(
     field: &str,
     ctx: &ClifLoweringCtx<'_>,
 ) -> Option<ClifAggregateItemBinding> {
-    let ast::Type::Named {
-        name: ty_name, ..
-    } = clif_local_type(ctx, name)?
-    else {
+    let ast::Type::Named { name: ty_name, .. } = clif_local_type(ctx, name)? else {
         return None;
     };
     if ty_name != enum_name {
@@ -3088,6 +3182,14 @@ pub(super) fn clif_emit_linear_stmts(
                 deferred.push(expr.clone());
             }
             ast::Stmt::Expr(expr) | ast::Stmt::Requires(expr) | ast::Stmt::Ensures(expr) => {
+                if let ast::Expr::Call { callee, args } = expr {
+                    if callee == "__index_assign" && args.len() == 3 {
+                        clif_emit_index_assign(
+                            builder, ctx, &args[0], &args[1], &args[2], locals, next_var,
+                        )?;
+                        continue;
+                    }
+                }
                 let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
             }
             ast::Stmt::Return(value) => {
@@ -3554,6 +3656,29 @@ pub(super) fn clif_emit_expr(
                     ty: helper_sig.ret.unwrap_or(default_int_clif_type()),
                 });
             }
+            if let Some(element_ty) = clif_ptr_element_type(base, ctx) {
+                let base_ptr = clif_emit_expr(builder, ctx, base, locals, next_var)?;
+                let base_ptr = cast_clif_value(builder, base_ptr, pointer_sized_clif_type())?;
+                let idx_ptr = if pointer_sized_clif_type() == index_value.ty {
+                    index_value.value
+                } else {
+                    builder
+                        .ins()
+                        .uextend(pointer_sized_clif_type(), index_value.value)
+                };
+                let bytes = u32::from(element_ty.bytes());
+                let addr = if bytes == 1 {
+                    builder.ins().iadd(base_ptr.value, idx_ptr)
+                } else {
+                    let byte_offset = builder.ins().imul_imm(idx_ptr, i64::from(bytes));
+                    builder.ins().iadd(base_ptr.value, byte_offset)
+                };
+                let loaded = builder.ins().load(element_ty, MemFlags::new(), addr, 0);
+                return Ok(ClifValue {
+                    value: loaded,
+                    ty: element_ty,
+                });
+            }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_bindings.get(name) {
                     if binding.len == 0 {
@@ -3735,78 +3860,110 @@ pub(super) fn clif_emit_expr(
             let lhs = clif_emit_expr(builder, ctx, left, locals, next_var)?;
             match op {
                 ast::BinaryOp::Add => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
-                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                    let rhs_raw = clif_emit_expr(builder, ctx, right, locals, next_var)?;
+                    let result_ty = if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        lhs.ty
+                    } else if rhs_raw.ty == types::F32 || rhs_raw.ty == types::F64 {
+                        rhs_raw.ty
+                    } else {
+                        lhs.ty
+                    };
+                    let lhs = cast_clif_value(builder, lhs, result_ty)?;
+                    let rhs = cast_clif_value(builder, rhs_raw, result_ty)?;
+                    if result_ty == types::F32 || result_ty == types::F64 {
                         let lowered = builder.ins().fadd(lhs.value, rhs.value);
                         clif_assert_finite(
                             builder,
                             ClifValue {
                                 value: lowered,
-                                ty: lhs.ty,
+                                ty: result_ty,
                             },
                         )
                     } else {
                         ClifValue {
                             value: builder.ins().iadd(lhs.value, rhs.value),
-                            ty: lhs.ty,
+                            ty: result_ty,
                         }
                     }
                 }
                 ast::BinaryOp::Sub => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
-                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                    let rhs_raw = clif_emit_expr(builder, ctx, right, locals, next_var)?;
+                    let result_ty = if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        lhs.ty
+                    } else if rhs_raw.ty == types::F32 || rhs_raw.ty == types::F64 {
+                        rhs_raw.ty
+                    } else {
+                        lhs.ty
+                    };
+                    let lhs = cast_clif_value(builder, lhs, result_ty)?;
+                    let rhs = cast_clif_value(builder, rhs_raw, result_ty)?;
+                    if result_ty == types::F32 || result_ty == types::F64 {
                         let lowered = builder.ins().fsub(lhs.value, rhs.value);
                         clif_assert_finite(
                             builder,
                             ClifValue {
                                 value: lowered,
-                                ty: lhs.ty,
+                                ty: result_ty,
                             },
                         )
                     } else {
                         ClifValue {
                             value: builder.ins().isub(lhs.value, rhs.value),
-                            ty: lhs.ty,
+                            ty: result_ty,
                         }
                     }
                 }
                 ast::BinaryOp::Mul => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
-                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                    let rhs_raw = clif_emit_expr(builder, ctx, right, locals, next_var)?;
+                    let result_ty = if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        lhs.ty
+                    } else if rhs_raw.ty == types::F32 || rhs_raw.ty == types::F64 {
+                        rhs_raw.ty
+                    } else {
+                        lhs.ty
+                    };
+                    let lhs = cast_clif_value(builder, lhs, result_ty)?;
+                    let rhs = cast_clif_value(builder, rhs_raw, result_ty)?;
+                    if result_ty == types::F32 || result_ty == types::F64 {
                         let lowered = builder.ins().fmul(lhs.value, rhs.value);
                         clif_assert_finite(
                             builder,
                             ClifValue {
                                 value: lowered,
-                                ty: lhs.ty,
+                                ty: result_ty,
                             },
                         )
                     } else {
                         ClifValue {
                             value: builder.ins().imul(lhs.value, rhs.value),
-                            ty: lhs.ty,
+                            ty: result_ty,
                         }
                     }
                 }
                 ast::BinaryOp::Div => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
-                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                    let rhs_raw = clif_emit_expr(builder, ctx, right, locals, next_var)?;
+                    let result_ty = if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        lhs.ty
+                    } else if rhs_raw.ty == types::F32 || rhs_raw.ty == types::F64 {
+                        rhs_raw.ty
+                    } else {
+                        lhs.ty
+                    };
+                    let lhs = cast_clif_value(builder, lhs, result_ty)?;
+                    let rhs = cast_clif_value(builder, rhs_raw, result_ty)?;
+                    if result_ty == types::F32 || result_ty == types::F64 {
                         let lowered = builder.ins().fdiv(lhs.value, rhs.value);
                         clif_assert_finite(
                             builder,
                             ClifValue {
                                 value: lowered,
-                                ty: lhs.ty,
+                                ty: result_ty,
                             },
                         )
                     } else {
                         ClifValue {
                             value: builder.ins().sdiv(lhs.value, rhs.value),
-                            ty: lhs.ty,
+                            ty: result_ty,
                         }
                     }
                 }

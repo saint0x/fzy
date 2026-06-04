@@ -217,6 +217,10 @@ fn render_param_parts(
                 out.push(format!("uint {}_len", param.name));
             }
         }
+        ast::Type::Ptr { to, .. } => {
+            let rendered = render_scalar_type(to)?;
+            out.push(format!("thread {rendered}* {}", param.name));
+        }
         _ => {
             let rendered = render_scalar_type(&param.ty)?;
             if is_kernel {
@@ -267,6 +271,17 @@ fn render_stmts(
                 out.push_str(&pad);
                 if let Some(ty) = ty {
                     scope.insert(name.clone(), ty.clone());
+                    if let ast::Type::Array { elem, len } = ty {
+                        out.push_str(render_scalar_type(elem)?);
+                        out.push(' ');
+                        out.push_str(name);
+                        out.push('[');
+                        out.push_str(&len.to_string());
+                        out.push_str("] = ");
+                        out.push_str(&render_expr(value, scope, function_map)?);
+                        out.push_str(";\n");
+                        continue;
+                    }
                     out.push_str(render_scalar_type(ty)?);
                 } else {
                     out.push_str("auto");
@@ -376,6 +391,14 @@ fn render_expr(
         kernel_ir::KernelExpr::Bool(value) => value.to_string(),
         kernel_ir::KernelExpr::Char(value) => format!("'{}'", value),
         kernel_ir::KernelExpr::Ident(name) => name.clone(),
+        kernel_ir::KernelExpr::ArrayLiteral(items) => format!(
+            "{{{}}}",
+            items
+                .iter()
+                .map(|item| render_expr(item, scope, function_map))
+                .collect::<Result<Vec<_>>>()?
+                .join(", ")
+        ),
         kernel_ir::KernelExpr::Unary { op, expr } => {
             format!(
                 "({}{})",
@@ -427,6 +450,8 @@ fn render_call_arg(
     if is_gpu_slice_type(param_ty) {
         let name = slice_ident(expr)?;
         Ok(vec![format!("{name}_data"), format!("{name}_len")])
+    } else if matches!(param_ty, ast::Type::Ptr { .. }) {
+        Ok(vec![render_expr(expr, scope, function_map)?])
     } else {
         Ok(vec![render_expr(expr, scope, function_map)?])
     }
@@ -476,6 +501,55 @@ fn render_intrinsic(
             render_slice_access(&args[0], &args[1], scope, function_map)?,
             render_expr(&args[2], scope, function_map)?
         ),
+        kernel_ir::KernelIntrinsic::SimdF32x4Splat => {
+            format!("float4({})", render_expr(&args[0], scope, function_map)?)
+        }
+        kernel_ir::KernelIntrinsic::SimdF32x4Load => {
+            let kernel_ir::KernelExpr::ArrayLiteral(items) = &args[0] else {
+                bail!("Metal GPU kernel lowering expected `simd.f32x4_load` to receive a 4-lane array literal");
+            };
+            if items.len() != 4 {
+                bail!("Metal GPU kernel lowering expected `simd.f32x4_load` to receive exactly 4 lanes");
+            }
+            format!(
+                "float4({})",
+                items
+                    .iter()
+                    .map(|item| render_expr(item, scope, function_map))
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ")
+            )
+        }
+        kernel_ir::KernelIntrinsic::SimdF32x4Store => {
+            let value = render_expr(&args[0], scope, function_map)?;
+            format!("{{{value}[0], {value}[1], {value}[2], {value}[3]}}")
+        }
+        kernel_ir::KernelIntrinsic::SimdF32x4Add => format!(
+            "({} + {})",
+            render_expr(&args[0], scope, function_map)?,
+            render_expr(&args[1], scope, function_map)?
+        ),
+        kernel_ir::KernelIntrinsic::SimdF32x4Mul => format!(
+            "({} * {})",
+            render_expr(&args[0], scope, function_map)?,
+            render_expr(&args[1], scope, function_map)?
+        ),
+        kernel_ir::KernelIntrinsic::SimdF32x4ReduceAdd => {
+            let value = render_expr(&args[0], scope, function_map)?;
+            format!("(({value}[0] + {value}[1]) + ({value}[2] + {value}[3]))")
+        }
+        kernel_ir::KernelIntrinsic::SimdF32x4Lane0 => {
+            format!("({}[0])", render_expr(&args[0], scope, function_map)?)
+        }
+        kernel_ir::KernelIntrinsic::SimdF32x4Lane1 => {
+            format!("({}[1])", render_expr(&args[0], scope, function_map)?)
+        }
+        kernel_ir::KernelIntrinsic::SimdF32x4Lane2 => {
+            format!("({}[2])", render_expr(&args[0], scope, function_map)?)
+        }
+        kernel_ir::KernelIntrinsic::SimdF32x4Lane3 => {
+            format!("({}[3])", render_expr(&args[0], scope, function_map)?)
+        }
     })
 }
 
@@ -485,21 +559,29 @@ fn render_slice_access(
     scope: &HashMap<String, ast::Type>,
     function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
 ) -> Result<String> {
-    let name = slice_ident(base)?;
-    if !scope.get(&name).is_some_and(is_gpu_slice_type) {
-        bail!("Metal GPU kernel lowering expected `{name}` to be a GpuSlice value");
+    let name = ident_name(base)?;
+    let rendered_index = render_expr(index, scope, function_map)?;
+    let Some(base_ty) = scope.get(&name) else {
+        bail!("Metal GPU kernel lowering could not resolve indexed base `{name}`");
+    };
+    if is_gpu_slice_type(base_ty) {
+        return Ok(format!("{name}_data[(uint)({rendered_index})]"));
     }
-    Ok(format!(
-        "{name}_data[(uint)({})]",
-        render_expr(index, scope, function_map)?
-    ))
+    if matches!(base_ty, ast::Type::Array { .. } | ast::Type::Ptr { .. }) {
+        return Ok(format!("{name}[((int)({rendered_index}))]"));
+    }
+    bail!("Metal GPU kernel lowering does not support indexed access on type `{base_ty}`")
+}
+
+fn ident_name(expr: &kernel_ir::KernelExpr) -> Result<String> {
+    match expr {
+        kernel_ir::KernelExpr::Ident(name) => Ok(name.clone()),
+        _ => bail!("Metal GPU kernel lowering currently requires direct identifiers for by-reference values"),
+    }
 }
 
 fn slice_ident(expr: &kernel_ir::KernelExpr) -> Result<String> {
-    match expr {
-        kernel_ir::KernelExpr::Ident(name) => Ok(name.clone()),
-        _ => bail!("Metal GPU kernel lowering currently requires direct GpuSlice identifiers"),
-    }
+    ident_name(expr)
 }
 
 fn is_gpu_slice_type(ty: &ast::Type) -> bool {
@@ -511,6 +593,10 @@ fn render_scalar_type(ty: &ast::Type) -> Result<&'static str> {
         ast::Type::Void => Ok("void"),
         ast::Type::Bool => Ok("bool"),
         ast::Type::Float { bits: 32 } => Ok("float"),
+        ast::Type::SimdVector(ast::SimdVectorType {
+            element: ast::SimdElement::F32,
+            lanes: 4,
+        }) => Ok("float4"),
         ast::Type::Int {
             signed: true,
             bits: 32,

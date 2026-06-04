@@ -27,9 +27,9 @@ mod linker_support;
 mod llvm_support;
 mod native_backend_support;
 mod native_metadata;
-mod parse_graph;
 mod native_runtime_support;
 mod native_runtime_tables;
+mod parse_graph;
 #[path = "pipeline/policy_artifacts.rs"]
 mod policy_artifacts;
 
@@ -63,7 +63,6 @@ use self::native_metadata::{
     collect_pattern_source_function_map_from_typed, collect_spawn_task_symbols,
     collect_variant_keys_from_stmt, llvm_static_symbol_name, PatternSourceFunction,
 };
-use self::parse_graph::{ModuleSourceText, ParsedProgram};
 use self::native_runtime_support::{
     build_native_runtime_shim_plan, collect_async_c_exports, collect_extern_c_imports,
     collect_used_native_data_plane_imports, collect_used_native_runtime_imports,
@@ -76,6 +75,7 @@ use self::native_runtime_tables::{
     native_runtime_import_for_callee, NativeRuntimeImport, NATIVE_DATA_PLANE_IMPORTS,
     NATIVE_RUNTIME_IMPORTS,
 };
+use self::parse_graph::{ModuleSourceText, ParsedProgram};
 
 #[derive(Clone, Copy)]
 struct LocalBinding {
@@ -169,7 +169,12 @@ where
         let symbol_name = native_link_symbol_for_function(function);
         let id = module
             .declare_function(symbol_name.as_str(), linkage_for(function), &sig)
-            .map_err(|error| anyhow!("failed declaring {error_label} `{}`: {error}", function.name))?;
+            .map_err(|error| {
+                anyhow!(
+                    "failed declaring {error_label} `{}`: {error}",
+                    function.name
+                )
+            })?;
         function_ids.insert(function.name.clone(), id);
         function_signatures.insert(
             function.name.clone(),
@@ -638,49 +643,53 @@ fn validate_file_with_root_source(
         .and_then(|v| v.to_str())
         .ok_or_else(|| anyhow!("invalid module filename"))?;
     let parse_started = Instant::now();
-    let (parsed, parse_cache_hit) =
-        match parse_program_shared_with_root_source_telemetry(&resolved.source_path, root_source_override) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                let mut diagnostics = collect_parse_diagnostics_with_root_source(
-                    &resolved.source_path,
-                    root_source_override,
-                )
-                .unwrap_or_else(|_| {
-                    vec![diagnostics::Diagnostic::new(
-                        diagnostics::Severity::Error,
-                        error.to_string(),
-                        None,
-                    )]
-                });
-                for diagnostic in &mut diagnostics {
-                    if diagnostic.path.is_none() {
-                        diagnostic.path = Some(resolved.source_path.display().to_string());
-                    }
+    let (parsed, parse_cache_hit) = match parse_program_shared_with_root_source_telemetry(
+        &resolved.source_path,
+        root_source_override,
+    ) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let mut diagnostics = collect_parse_diagnostics_with_root_source(
+                &resolved.source_path,
+                root_source_override,
+            )
+            .unwrap_or_else(|_| {
+                vec![diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Error,
+                    error.to_string(),
+                    None,
+                )]
+            });
+            for diagnostic in &mut diagnostics {
+                if diagnostic.path.is_none() {
+                    diagnostic.path = Some(resolved.source_path.display().to_string());
                 }
-                enrich_diagnostics_context(&mut diagnostics);
-                diagnostics::assign_stable_codes(
-                    &mut diagnostics,
-                    diagnostics::DiagnosticDomain::Driver,
-                );
-                return Ok(Output {
-                    module: module_name.to_string(),
-                    nodes: 0,
-                    diagnostics: diagnostics.len(),
-                    diagnostic_details: diagnostics,
-                    backend_ir: None,
-                    validation_tier: tier,
-                    telemetry: ValidationTelemetry {
-                        total_ms: started.elapsed().as_millis() as u64,
-                        parse_ms: parse_started.elapsed().as_millis() as u64,
-                        input_bytes: root_source_override
-                            .map(str::len)
-                            .unwrap_or_else(|| std::fs::metadata(&resolved.source_path).map(|m| m.len() as usize).unwrap_or(0)),
-                        ..ValidationTelemetry::default()
-                    },
-                });
             }
-        };
+            enrich_diagnostics_context(&mut diagnostics);
+            diagnostics::assign_stable_codes(
+                &mut diagnostics,
+                diagnostics::DiagnosticDomain::Driver,
+            );
+            return Ok(Output {
+                module: module_name.to_string(),
+                nodes: 0,
+                diagnostics: diagnostics.len(),
+                diagnostic_details: diagnostics,
+                backend_ir: None,
+                validation_tier: tier,
+                telemetry: ValidationTelemetry {
+                    total_ms: started.elapsed().as_millis() as u64,
+                    parse_ms: parse_started.elapsed().as_millis() as u64,
+                    input_bytes: root_source_override.map(str::len).unwrap_or_else(|| {
+                        std::fs::metadata(&resolved.source_path)
+                            .map(|m| m.len() as usize)
+                            .unwrap_or(0)
+                    }),
+                    ..ValidationTelemetry::default()
+                },
+            });
+        }
+    };
     let parse_ms = parse_started.elapsed().as_millis() as u64;
     let mut diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
@@ -917,11 +926,7 @@ fn parse_program_shared_with_root_source(
     source_path: &Path,
     root_source_override: Option<&str>,
 ) -> Result<Arc<ParsedProgram>> {
-    Ok(parse_program_shared_with_root_source_telemetry(
-        source_path,
-        root_source_override,
-    )?
-    .0)
+    Ok(parse_program_shared_with_root_source_telemetry(source_path, root_source_override)?.0)
 }
 
 fn parse_program_shared_with_root_source_telemetry(
@@ -938,8 +943,8 @@ fn parse_program_shared_with_root_source_telemetry(
             Some(source_override),
             parse_context.as_ref(),
         )
-            .map(Arc::new)
-            .map(|parsed| (parsed, false));
+        .map(Arc::new)
+        .map(|parsed| (parsed, false));
     }
     if let Some(cached) = cached_parsed_program(&canonical) {
         return Ok((cached, true));
@@ -1079,9 +1084,7 @@ fn is_memory_phase_alloc_like_callee(callee: &str) -> bool {
     callee == "alloc" || callee.ends_with(".alloc") || callee.starts_with("gpu.alloc_")
 }
 
-fn build_freeze_phase_summaries(
-    fir: &fir::FirModule,
-) -> HashMap<String, FreezeFunctionSummary> {
+fn build_freeze_phase_summaries(fir: &fir::FirModule) -> HashMap<String, FreezeFunctionSummary> {
     fn scan_expr_states(
         expr: &ast::Expr,
         states: FreezeStateSet,
@@ -1131,14 +1134,12 @@ fn build_freeze_phase_summaries(
             ast::Expr::FieldAccess { base, .. } => scan_expr_states(base, states, summaries),
             ast::Expr::Index { base, index } => {
                 let (after_base, base_violation) = scan_expr_states(base, states, summaries);
-                let (after_index, index_violation) =
-                    scan_expr_states(index, after_base, summaries);
+                let (after_index, index_violation) = scan_expr_states(index, after_base, summaries);
                 (after_index, base_violation || index_violation)
             }
             ast::Expr::Binary { left, right, .. } => {
                 let (after_left, left_violation) = scan_expr_states(left, states, summaries);
-                let (after_right, right_violation) =
-                    scan_expr_states(right, after_left, summaries);
+                let (after_right, right_violation) = scan_expr_states(right, after_left, summaries);
                 (after_right, left_violation || right_violation)
             }
             ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
@@ -1188,7 +1189,10 @@ fn build_freeze_phase_summaries(
                 let (after_try, try_violation) = scan_expr_states(try_expr, states, summaries);
                 let (after_catch, catch_violation) =
                     scan_expr_states(catch_expr, states, summaries);
-                (after_try.union(after_catch), try_violation || catch_violation)
+                (
+                    after_try.union(after_catch),
+                    try_violation || catch_violation,
+                )
             }
             ast::Expr::If {
                 condition,
@@ -1222,7 +1226,8 @@ fn build_freeze_phase_summaries(
             ast::Expr::While { condition, body } => {
                 let (after_condition, condition_violation) =
                     scan_expr_states(condition, states, summaries);
-                let (after_body, body_violation) = scan_stmt_states(body, after_condition, summaries);
+                let (after_body, body_violation) =
+                    scan_stmt_states(body, after_condition, summaries);
                 (
                     after_condition.union(after_body),
                     condition_violation || body_violation,
@@ -1234,16 +1239,20 @@ fn build_freeze_phase_summaries(
                 step,
                 body,
             } => {
-                let (after_init, init_violation) = init.as_deref().map_or((states, false), |stmt| {
-                    scan_stmt_state(stmt, states, summaries)
-                });
-                let (after_condition, condition_violation) = condition
-                    .as_deref()
-                    .map_or((after_init, false), |expr| scan_expr_states(expr, after_init, summaries));
-                let (after_body, body_violation) = scan_stmt_states(body, after_condition, summaries);
-                let (after_step, step_violation) = step
-                    .as_deref()
-                    .map_or((after_body, false), |stmt| scan_stmt_state(stmt, after_body, summaries));
+                let (after_init, init_violation) =
+                    init.as_deref().map_or((states, false), |stmt| {
+                        scan_stmt_state(stmt, states, summaries)
+                    });
+                let (after_condition, condition_violation) =
+                    condition.as_deref().map_or((after_init, false), |expr| {
+                        scan_expr_states(expr, after_init, summaries)
+                    });
+                let (after_body, body_violation) =
+                    scan_stmt_states(body, after_condition, summaries);
+                let (after_step, step_violation) =
+                    step.as_deref().map_or((after_body, false), |stmt| {
+                        scan_stmt_state(stmt, after_body, summaries)
+                    });
                 (
                     after_condition.union(after_step),
                     init_violation || condition_violation || body_violation || step_violation,
@@ -1252,16 +1261,22 @@ fn build_freeze_phase_summaries(
             ast::Expr::ForIn { iterable, body, .. } => {
                 let (after_iterable, iterable_violation) =
                     scan_expr_states(iterable, states, summaries);
-                let (after_body, body_violation) = scan_stmt_states(body, after_iterable, summaries);
-                (after_iterable.union(after_body), iterable_violation || body_violation)
+                let (after_body, body_violation) =
+                    scan_stmt_states(body, after_iterable, summaries);
+                (
+                    after_iterable.union(after_body),
+                    iterable_violation || body_violation,
+                )
             }
             ast::Expr::Loop { body } => {
                 let (after_body, body_violation) = scan_stmt_states(body, states, summaries);
                 (states.union(after_body), body_violation)
             }
-            ast::Expr::Break(value) | ast::Expr::Return(value) => value
-                .as_deref()
-                .map_or((states, false), |expr| scan_expr_states(expr, states, summaries)),
+            ast::Expr::Break(value) | ast::Expr::Return(value) => {
+                value.as_deref().map_or((states, false), |expr| {
+                    scan_expr_states(expr, states, summaries)
+                })
+            }
             ast::Expr::Range { start, end, .. } => {
                 let (after_start, start_violation) = scan_expr_states(start, states, summaries);
                 let (after_end, end_violation) = scan_expr_states(end, after_start, summaries);
@@ -1316,7 +1331,8 @@ fn build_freeze_phase_summaries(
             ast::Stmt::While { condition, body } => {
                 let (after_condition, condition_violation) =
                     scan_expr_states(condition, states, summaries);
-                let (after_body, body_violation) = scan_stmt_states(body, after_condition, summaries);
+                let (after_body, body_violation) =
+                    scan_stmt_states(body, after_condition, summaries);
                 (
                     after_condition.union(after_body),
                     condition_violation || body_violation,
@@ -1328,16 +1344,20 @@ fn build_freeze_phase_summaries(
                 step,
                 body,
             } => {
-                let (after_init, init_violation) = init.as_deref().map_or((states, false), |stmt| {
-                    scan_stmt_state(stmt, states, summaries)
-                });
-                let (after_condition, condition_violation) = condition
-                    .as_ref()
-                    .map_or((after_init, false), |expr| scan_expr_states(expr, after_init, summaries));
-                let (after_body, body_violation) = scan_stmt_states(body, after_condition, summaries);
-                let (after_step, step_violation) = step
-                    .as_deref()
-                    .map_or((after_body, false), |stmt| scan_stmt_state(stmt, after_body, summaries));
+                let (after_init, init_violation) =
+                    init.as_deref().map_or((states, false), |stmt| {
+                        scan_stmt_state(stmt, states, summaries)
+                    });
+                let (after_condition, condition_violation) =
+                    condition.as_ref().map_or((after_init, false), |expr| {
+                        scan_expr_states(expr, after_init, summaries)
+                    });
+                let (after_body, body_violation) =
+                    scan_stmt_states(body, after_condition, summaries);
+                let (after_step, step_violation) =
+                    step.as_deref().map_or((after_body, false), |stmt| {
+                        scan_stmt_state(stmt, after_body, summaries)
+                    });
                 (
                     after_condition.union(after_step),
                     init_violation || condition_violation || body_violation || step_violation,
@@ -1346,8 +1366,12 @@ fn build_freeze_phase_summaries(
             ast::Stmt::ForIn { iterable, body, .. } => {
                 let (after_iterable, iterable_violation) =
                     scan_expr_states(iterable, states, summaries);
-                let (after_body, body_violation) = scan_stmt_states(body, after_iterable, summaries);
-                (after_iterable.union(after_body), iterable_violation || body_violation)
+                let (after_body, body_violation) =
+                    scan_stmt_states(body, after_iterable, summaries);
+                (
+                    after_iterable.union(after_body),
+                    iterable_violation || body_violation,
+                )
             }
             ast::Stmt::Loop { body } => {
                 let (after_body, body_violation) = scan_stmt_states(body, states, summaries);
@@ -1529,8 +1553,7 @@ fn collect_freeze_phase_findings(
             ast::Expr::Tuple(items) | ast::Expr::ArrayLiteral(items) => {
                 let mut current = states;
                 for item in items {
-                    current =
-                        scan_expr_findings(function_name, item, current, summaries, findings);
+                    current = scan_expr_findings(function_name, item, current, summaries, findings);
                 }
                 current
             }
@@ -1620,10 +1643,11 @@ fn collect_freeze_phase_findings(
                     scan_stmt_findings(function_name, body, states, summaries, findings);
                 states.union(after_body)
             }
-            ast::Expr::Break(value) | ast::Expr::Return(value) => value.as_deref().map_or(
-                states,
-                |value| scan_expr_findings(function_name, value, states, summaries, findings),
-            ),
+            ast::Expr::Break(value) | ast::Expr::Return(value) => {
+                value.as_deref().map_or(states, |value| {
+                    scan_expr_findings(function_name, value, states, summaries, findings)
+                })
+            }
             ast::Expr::Range { start, end, .. } => {
                 let after_start =
                     scan_expr_findings(function_name, start, states, summaries, findings);
@@ -1668,10 +1692,20 @@ fn collect_freeze_phase_findings(
             } => {
                 let after_condition =
                     scan_expr_findings(function_name, condition, states, summaries, findings);
-                let after_then =
-                    scan_stmt_findings(function_name, then_body, after_condition, summaries, findings);
-                let after_else =
-                    scan_stmt_findings(function_name, else_body, after_condition, summaries, findings);
+                let after_then = scan_stmt_findings(
+                    function_name,
+                    then_body,
+                    after_condition,
+                    summaries,
+                    findings,
+                );
+                let after_else = scan_stmt_findings(
+                    function_name,
+                    else_body,
+                    after_condition,
+                    summaries,
+                    findings,
+                );
                 after_then.union(after_else)
             }
             ast::Stmt::While { condition, body } => {
@@ -8413,13 +8447,16 @@ fn parse_project_context_for_source(source_path: &Path) -> Result<Option<ParsePr
             continue;
         };
         roots.push(ParseRoot {
-            source_path: dep_root.join(&lib_target.path).canonicalize().with_context(|| {
-                format!(
-                    "failed resolving library target for path dependency `{}` at {}",
-                    alias,
-                    dep_root.display()
-                )
-            })?,
+            source_path: dep_root
+                .join(&lib_target.path)
+                .canonicalize()
+                .with_context(|| {
+                    format!(
+                        "failed resolving library target for path dependency `{}` at {}",
+                        alias,
+                        dep_root.display()
+                    )
+                })?,
             namespace_prefix: alias.clone(),
         });
         extra_stamp_paths.push(dep_root.join("fozzy.toml"));
@@ -8531,21 +8568,15 @@ fn parse_and_qualify_module(
         )
     })?;
     let mut ast = discovered_module.ast.clone();
-    let root_module_aliases = visible_root_module_aliases(
-        &discovered_module.root_namespace_prefix,
-        discovered,
-    );
+    let root_module_aliases =
+        visible_root_module_aliases(&discovered_module.root_namespace_prefix, discovered);
     expand_wildcard_imports(
         &mut ast,
         &discovered_module.namespace,
         &root_module_aliases,
         discovered,
     )?;
-    qualify_module_symbols(
-        &mut ast,
-        &discovered_module.namespace,
-        &root_module_aliases,
-    );
+    qualify_module_symbols(&mut ast, &discovered_module.namespace, &root_module_aliases);
     ast.modules.clear();
     Ok((
         module_path.to_path_buf(),
@@ -13942,9 +13973,7 @@ fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::D
     diagnostics
 }
 
-fn strict_memory_phase_contract_diagnostics(
-    fir: &fir::FirModule,
-) -> Vec<diagnostics::Diagnostic> {
+fn strict_memory_phase_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::Diagnostic> {
     let summaries = build_freeze_phase_summaries(fir);
     collect_freeze_phase_findings(fir, &summaries)
         .into_iter()
@@ -15502,8 +15531,12 @@ fn read_native_artifact_cache_key(marker: &Path) -> Option<String> {
 }
 
 fn write_native_artifact_cache_key(marker: &Path, key: &str) -> Result<()> {
-    std::fs::write(marker, key)
-        .with_context(|| format!("failed writing native artifact cache marker: {}", marker.display()))
+    std::fs::write(marker, key).with_context(|| {
+        format!(
+            "failed writing native artifact cache marker: {}",
+            marker.display()
+        )
+    })
 }
 
 fn native_artifact_cache_hit(marker: &Path, key: &str, outputs: &[&Path]) -> bool {
@@ -15528,8 +15561,9 @@ fn native_artifact_cache_key(
     hasher.update(format!("{profile:?}").as_bytes());
     hasher.update(format!("{fir:?}").as_bytes());
     let manifest_bytes = match manifest {
-        Some(manifest) => serde_json::to_vec(manifest)
-            .map_err(|error| anyhow!("failed serializing manifest for native cache key: {error}"))?,
+        Some(manifest) => serde_json::to_vec(manifest).map_err(|error| {
+            anyhow!("failed serializing manifest for native cache key: {error}")
+        })?,
         None => Vec::new(),
     };
     hasher.update(&manifest_bytes);
@@ -15758,8 +15792,7 @@ fn emit_native_libraries_cranelift(
         .collect::<Vec<_>>();
     let plan =
         build_native_canonical_plan_with_task_symbols(lowered_fir, true, &spawn_task_symbols);
-    let gpu_kernel_launch_descriptors =
-        metal_kernel_launch_descriptors(lowered_fir).unwrap_or_default();
+    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(lowered_fir)?;
     let task_symbol_set = spawn_task_symbols.iter().cloned().collect::<HashSet<_>>();
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
@@ -16245,8 +16278,7 @@ fn emit_native_artifact_cranelift(
     let mut module = ObjectModule::new(object_builder);
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let plan = build_native_canonical_plan(lowered_fir, enforce_contract_checks);
-    let gpu_kernel_launch_descriptors =
-        metal_kernel_launch_descriptors(lowered_fir).unwrap_or_default();
+    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(lowered_fir)?;
 
     let (mut function_ids, mut function_signatures) = declare_clif_functions(
         &mut module,

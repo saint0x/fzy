@@ -113,6 +113,7 @@ pub enum KernelExpr {
     Bool(bool),
     Char(char),
     Ident(String),
+    ArrayLiteral(Vec<KernelExpr>),
     Unary {
         op: UnaryOp,
         expr: Box<KernelExpr>,
@@ -162,6 +163,16 @@ pub enum KernelIntrinsic {
     StoreF32,
     StoreI32,
     StoreU32,
+    SimdF32x4Splat,
+    SimdF32x4Load,
+    SimdF32x4Store,
+    SimdF32x4Add,
+    SimdF32x4Mul,
+    SimdF32x4ReduceAdd,
+    SimdF32x4Lane0,
+    SimdF32x4Lane1,
+    SimdF32x4Lane2,
+    SimdF32x4Lane3,
 }
 
 impl KernelIntrinsic {
@@ -190,6 +201,21 @@ impl KernelIntrinsic {
             "gpu.store_f32" => Self::StoreF32,
             "gpu.store_i32" => Self::StoreI32,
             "gpu.store_u32" => Self::StoreU32,
+            "simd.f32x4_splat" => Self::SimdF32x4Splat,
+            "simd.__f32x4_splat" => Self::SimdF32x4Splat,
+            "simd.f32x4_load" => Self::SimdF32x4Load,
+            "simd.__f32x4_load" => Self::SimdF32x4Load,
+            "simd.f32x4_store" => Self::SimdF32x4Store,
+            "simd.f32x4_add" => Self::SimdF32x4Add,
+            "simd.__f32x4_add" => Self::SimdF32x4Add,
+            "simd.f32x4_mul" => Self::SimdF32x4Mul,
+            "simd.__f32x4_mul" => Self::SimdF32x4Mul,
+            "simd.f32x4_reduce_add" => Self::SimdF32x4ReduceAdd,
+            "simd.__f32x4_reduce_add" => Self::SimdF32x4ReduceAdd,
+            "simd.__f32x4_lane0" => Self::SimdF32x4Lane0,
+            "simd.__f32x4_lane1" => Self::SimdF32x4Lane1,
+            "simd.__f32x4_lane2" => Self::SimdF32x4Lane2,
+            "simd.__f32x4_lane3" => Self::SimdF32x4Lane3,
             _ => return None,
         })
     }
@@ -219,6 +245,16 @@ impl KernelIntrinsic {
             Self::StoreF32 => "store_f32",
             Self::StoreI32 => "store_i32",
             Self::StoreU32 => "store_u32",
+            Self::SimdF32x4Splat => "simd_f32x4_splat",
+            Self::SimdF32x4Load => "simd_f32x4_load",
+            Self::SimdF32x4Store => "simd_f32x4_store",
+            Self::SimdF32x4Add => "simd_f32x4_add",
+            Self::SimdF32x4Mul => "simd_f32x4_mul",
+            Self::SimdF32x4ReduceAdd => "simd_f32x4_reduce_add",
+            Self::SimdF32x4Lane0 => "simd_f32x4_lane0",
+            Self::SimdF32x4Lane1 => "simd_f32x4_lane1",
+            Self::SimdF32x4Lane2 => "simd_f32x4_lane2",
+            Self::SimdF32x4Lane3 => "simd_f32x4_lane3",
         }
     }
 }
@@ -420,6 +456,16 @@ fn render_expr(expr: &KernelExpr, out: &mut String) {
             out.push('\'');
         }
         KernelExpr::Ident(name) => out.push_str(name),
+        KernelExpr::ArrayLiteral(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                render_expr(item, out);
+            }
+            out.push(']');
+        }
         KernelExpr::Unary { op, expr } => {
             out.push_str(match op {
                 UnaryOp::Not => "!",
@@ -876,6 +922,18 @@ fn collect_expr_slice_access(
         | KernelExpr::Bool(_)
         | KernelExpr::Char(_)
         | KernelExpr::Ident(_) => {}
+        KernelExpr::ArrayLiteral(items) => {
+            for item in items {
+                collect_expr_slice_access(
+                    item,
+                    aliases,
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
+            }
+        }
     }
 }
 
@@ -904,6 +962,9 @@ fn infer_slice_alias_source(
             }
             None
         }
+        KernelExpr::ArrayLiteral(items) => items
+            .first()
+            .and_then(|item| infer_slice_alias_source(item, aliases, summaries, param_orders)),
         _ => None,
     }
 }
@@ -967,7 +1028,9 @@ fn lower_stmt(
             name, ty, value, ..
         } => Some(KernelStmt::Let {
             name: name.clone(),
-            ty: ty.clone(),
+            ty: ty
+                .clone()
+                .or_else(|| function.local_types.get(name).cloned()),
             value: lower_expr(function, value, function_map, scope, diagnostics)?,
         }),
         Stmt::Assign { target, value } => Some(KernelStmt::Assign {
@@ -1094,6 +1157,16 @@ fn lower_expr(
         Expr::Bool(value) => Some(KernelExpr::Bool(*value)),
         Expr::Char(value) => Some(KernelExpr::Char(*value)),
         Expr::Ident(name) => Some(KernelExpr::Ident(name.clone())),
+        Expr::ArrayLiteral(items) => {
+            let lowered = items
+                .iter()
+                .filter_map(|item| lower_expr(function, item, function_map, scope, diagnostics))
+                .collect::<Vec<_>>();
+            if lowered.len() != items.len() {
+                return None;
+            }
+            Some(KernelExpr::ArrayLiteral(lowered))
+        }
         Expr::Group(inner) => Some(KernelExpr::Group(Box::new(lower_expr(
             function,
             inner,
@@ -1215,7 +1288,6 @@ fn lower_expr(
         | Expr::Continue
         | Expr::Return(_)
         | Expr::Range { .. }
-        | Expr::ArrayLiteral(_)
         | Expr::ObjectLiteral(_) => {
             diagnostics.push(lowering_error(
                 function,
@@ -1241,6 +1313,15 @@ fn infer_expr_type(expr: &Expr, scope: &BTreeMap<String, Type>) -> Option<Type> 
         Expr::Bool(_) => Some(Type::Bool),
         Expr::Char(_) => Some(Type::Char),
         Expr::Ident(name) => scope.get(name).cloned(),
+        Expr::ArrayLiteral(items) => Some(Type::Array {
+            elem: Box::new(
+                items
+                    .first()
+                    .and_then(|item| infer_expr_type(item, scope))
+                    .unwrap_or(Type::Never),
+            ),
+            len: items.len(),
+        }),
         Expr::Group(inner) | Expr::Discard(inner) => infer_expr_type(inner, scope),
         Expr::Index { base, .. } => infer_expr_type(base, scope).and_then(index_element_type),
         Expr::Unary { expr, .. } => infer_expr_type(expr, scope),
@@ -1261,7 +1342,10 @@ fn infer_expr_type(expr: &Expr, scope: &BTreeMap<String, Type>) -> Option<Type> 
 
 fn index_element_type(ty: Type) -> Option<Type> {
     match ty {
-        Type::Array { elem, .. } | Type::Slice(elem) | Type::Vec(elem) => Some(*elem),
+        Type::Array { elem, .. }
+        | Type::Slice(elem)
+        | Type::Vec(elem)
+        | Type::Ptr { to: elem, .. } => Some(*elem),
         Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
             Some(args[0].clone())
         }
@@ -1271,7 +1355,7 @@ fn index_element_type(ty: Type) -> Option<Type> {
 
 fn is_kernel_indexable_type(ty: &Type) -> bool {
     match ty {
-        Type::Array { .. } | Type::Slice(_) | Type::Vec(_) => true,
+        Type::Array { .. } | Type::Slice(_) | Type::Vec(_) | Type::Ptr { .. } => true,
         Type::Named { name, args } => name == "GpuSlice" && args.len() == 1,
         _ => false,
     }

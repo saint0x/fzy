@@ -493,7 +493,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     },
                 );
                 if let Some(actual) = inferred {
-                    if !type_compatible(&declared_ty, &actual) {
+                    if !expr_type_compatible(&declared_ty, &actual, &item.value) {
                         record_type_error(
                             &mut type_errors,
                             &mut type_error_details,
@@ -554,7 +554,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     },
                 );
                 if let Some(actual) = inferred {
-                    if !type_compatible(&declared_ty, &actual) {
+                    if !expr_type_compatible(&declared_ty, &actual, &item.value) {
                         record_type_error(
                             &mut type_errors,
                             &mut type_error_details,
@@ -836,6 +836,7 @@ pub fn lower(module: &Module) -> TypedModule {
             function.required_capabilities = entry.required.clone();
         }
     }
+    infer_default_pure_functions(&mut typed_functions, &struct_defs, &enum_defs);
     for detail in analyze_execution_spaces(&typed_functions) {
         record_type_error(&mut type_errors, &mut type_error_details, detail);
     }
@@ -6828,6 +6829,242 @@ fn collect_function_caps_and_calls(
     }
 }
 
+fn infer_default_pure_functions(
+    functions: &mut [TypedFunction],
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) {
+    loop {
+        let function_map = functions
+            .iter()
+            .map(|function| (function.name.as_str(), function))
+            .collect::<BTreeMap<_, _>>();
+        let candidates = functions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, function)| {
+                if function.execution_space != ast::ExecutionSpace::Host
+                    || function.is_async
+                    || function.is_extern
+                    || function.name.starts_with("simd.")
+                    || !is_pure_safe_type(&function.return_type, struct_defs, enum_defs)
+                    || function
+                        .params
+                        .iter()
+                        .any(|param| !is_pure_safe_type(&param.ty, struct_defs, enum_defs))
+                    || function
+                        .local_types
+                        .values()
+                        .any(|ty| !is_pure_safe_type(ty, struct_defs, enum_defs))
+                {
+                    return None;
+                }
+                function
+                    .body
+                    .iter()
+                    .all(|stmt| {
+                        stmt_is_default_pure_candidate(stmt, function.name.as_str(), &function_map)
+                    })
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            break;
+        }
+        for index in candidates {
+            functions[index].execution_space = ast::ExecutionSpace::Pure;
+        }
+    }
+}
+
+fn stmt_is_default_pure_candidate(
+    stmt: &Stmt,
+    function_name: &str,
+    function_map: &BTreeMap<&str, &TypedFunction>,
+) -> bool {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => expr_is_default_pure_candidate(value, function_name, function_map),
+        Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => true,
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_is_default_pure_candidate(condition, function_name, function_map)
+                && then_body
+                    .iter()
+                    .all(|stmt| stmt_is_default_pure_candidate(stmt, function_name, function_map))
+                && else_body
+                    .iter()
+                    .all(|stmt| stmt_is_default_pure_candidate(stmt, function_name, function_map))
+        }
+        Stmt::While { condition, body } => {
+            expr_is_default_pure_candidate(condition, function_name, function_map)
+                && body
+                    .iter()
+                    .all(|stmt| stmt_is_default_pure_candidate(stmt, function_name, function_map))
+        }
+        Stmt::Loop { body } => body
+            .iter()
+            .all(|stmt| stmt_is_default_pure_candidate(stmt, function_name, function_map)),
+        Stmt::ForIn { iterable, body, .. } => {
+            expr_is_default_pure_candidate(iterable, function_name, function_map)
+                && body
+                    .iter()
+                    .all(|stmt| stmt_is_default_pure_candidate(stmt, function_name, function_map))
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().is_none_or(|stmt| {
+                stmt_is_default_pure_candidate(stmt, function_name, function_map)
+            }) && condition.as_ref().is_none_or(|expr| {
+                expr_is_default_pure_candidate(expr, function_name, function_map)
+            }) && step.as_deref().is_none_or(|stmt| {
+                stmt_is_default_pure_candidate(stmt, function_name, function_map)
+            }) && body
+                .iter()
+                .all(|stmt| stmt_is_default_pure_candidate(stmt, function_name, function_map))
+        }
+        Stmt::Match { scrutinee, arms } => {
+            expr_is_default_pure_candidate(scrutinee, function_name, function_map)
+                && arms.iter().all(|arm| {
+                    arm.guard.as_ref().is_none_or(|guard| {
+                        expr_is_default_pure_candidate(guard, function_name, function_map)
+                    }) && expr_is_default_pure_candidate(&arm.value, function_name, function_map)
+                })
+        }
+    }
+}
+
+fn expr_is_default_pure_candidate(
+    expr: &Expr,
+    function_name: &str,
+    function_map: &BTreeMap<&str, &TypedFunction>,
+) -> bool {
+    match expr {
+        Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Bool(_)
+        | Expr::Char(_)
+        | Expr::Str(_)
+        | Expr::Ident(_) => true,
+        Expr::Group(inner) | Expr::Discard(inner) | Expr::Await(inner) => {
+            expr_is_default_pure_candidate(inner, function_name, function_map)
+        }
+        Expr::Unary { expr, .. } => {
+            expr_is_default_pure_candidate(expr, function_name, function_map)
+        }
+        Expr::Binary { left, right, .. } => {
+            expr_is_default_pure_candidate(left, function_name, function_map)
+                && expr_is_default_pure_candidate(right, function_name, function_map)
+        }
+        Expr::Tuple(items) | Expr::ArrayLiteral(items) => items
+            .iter()
+            .all(|item| expr_is_default_pure_candidate(item, function_name, function_map)),
+        Expr::Index { base, index } => {
+            expr_is_default_pure_candidate(base, function_name, function_map)
+                && expr_is_default_pure_candidate(index, function_name, function_map)
+        }
+        Expr::FieldAccess { base, .. } => {
+            expr_is_default_pure_candidate(base, function_name, function_map)
+        }
+        Expr::StructInit { fields, .. } => fields
+            .iter()
+            .all(|(_, value)| expr_is_default_pure_candidate(value, function_name, function_map)),
+        Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            payload
+                .iter()
+                .all(|value| expr_is_default_pure_candidate(value, function_name, function_map))
+                && named_payload.iter().all(|(_, value)| {
+                    expr_is_default_pure_candidate(value, function_name, function_map)
+                })
+        }
+        Expr::UnsafeBlock { body, .. } => body
+            .iter()
+            .all(|stmt| stmt_is_default_pure_candidate(stmt, function_name, function_map)),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            expr_is_default_pure_candidate(try_expr, function_name, function_map)
+                && expr_is_default_pure_candidate(catch_expr, function_name, function_map)
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_is_default_pure_candidate(condition, function_name, function_map)
+                && expr_is_default_pure_candidate(then_expr, function_name, function_map)
+                && expr_is_default_pure_candidate(else_expr, function_name, function_map)
+        }
+        Expr::Match { scrutinee, arms } => {
+            expr_is_default_pure_candidate(scrutinee, function_name, function_map)
+                && arms.iter().all(|arm| {
+                    arm.guard.as_ref().is_none_or(|guard| {
+                        expr_is_default_pure_candidate(guard, function_name, function_map)
+                    }) && expr_is_default_pure_candidate(&arm.value, function_name, function_map)
+                })
+        }
+        Expr::While { condition, body } => {
+            expr_is_default_pure_candidate(condition, function_name, function_map)
+                && body
+                    .iter()
+                    .all(|stmt| stmt_is_default_pure_candidate(stmt, function_name, function_map))
+        }
+        Expr::For { .. }
+        | Expr::ForIn { .. }
+        | Expr::Loop { .. }
+        | Expr::Break(_)
+        | Expr::Continue
+        | Expr::Return(_)
+        | Expr::Range { .. }
+        | Expr::ObjectLiteral(_)
+        | Expr::Closure { .. } => false,
+        Expr::Call { callee, args } => {
+            let resolved = callee.split('<').next().unwrap_or(callee);
+            if resolved == "__index_assign" {
+                return args
+                    .iter()
+                    .all(|arg| expr_is_default_pure_candidate(arg, function_name, function_map));
+            }
+            if !args
+                .iter()
+                .all(|arg| expr_is_default_pure_candidate(arg, function_name, function_map))
+            {
+                return false;
+            }
+            if resolved.starts_with("simd.") {
+                return true;
+            }
+            if let Some(target) = function_map.get(resolved) {
+                return target.name == function_name
+                    || matches!(
+                        target.execution_space,
+                        ast::ExecutionSpace::Pure | ast::ExecutionSpace::Device
+                    );
+            }
+            false
+        }
+    }
+}
+
 fn analyze_execution_spaces(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let function_map = functions
@@ -7116,6 +7353,9 @@ fn validate_execution_space_call(
     }
 
     if let Some(target) = function_map.get(callee) {
+        if callee.starts_with("simd.") {
+            return;
+        }
         let allowed = match caller_space {
             ast::ExecutionSpace::Pure => target.execution_space == ast::ExecutionSpace::Pure,
             ast::ExecutionSpace::Device => matches!(
@@ -7297,6 +7537,7 @@ fn is_pure_safe_type(
     enum_defs: &HashMap<String, ast::Enum>,
 ) -> bool {
     is_device_scalar_type(ty)
+        || matches!(ty, Type::Ptr { to, .. } if is_pure_safe_type(to, struct_defs, enum_defs))
         || matches!(ty, Type::Array { elem, .. } if is_pure_safe_type(elem, struct_defs, enum_defs))
         || matches!(ty, Type::Named { name, .. } if is_named_device_aggregate(name, struct_defs, enum_defs, true))
 }
@@ -7310,6 +7551,7 @@ fn is_device_safe_type(
         return true;
     }
     match ty {
+        Type::Ptr { to, .. } => is_device_safe_type(to, struct_defs, enum_defs),
         Type::Array { elem, .. } => is_device_safe_type(elem, struct_defs, enum_defs),
         Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
             is_pure_safe_type(&args[0], struct_defs, enum_defs)
@@ -7359,6 +7601,8 @@ fn is_device_scalar_type(ty: &Type) -> bool {
         ty,
         Type::Void
             | Type::Bool
+            | Type::SimdVector(_)
+            | Type::SimdMask(_)
             | Type::TypeVar(_)
             | Type::Int {
                 signed: true,
@@ -10088,7 +10332,10 @@ fn is_partial_move_expr(
         Expr::Group(inner) => is_partial_move_expr(function, inner, owners, struct_defs, enum_defs),
         Expr::FieldAccess { .. } | Expr::Index { .. } => expr_root_binding_name(expr)
             .and_then(|name| binding_partial_move_root_type(function, name))
-            .is_some_and(|ty| type_contains_linear_members(ty, struct_defs, enum_defs)),
+            .is_some_and(|ty| {
+                !matches!(ty, Type::Ptr { .. } | Type::Ref { .. })
+                    && type_contains_linear_members(ty, struct_defs, enum_defs)
+            }),
         Expr::Tuple(items) | Expr::ArrayLiteral(items) => items
             .iter()
             .any(|item| is_partial_move_expr(function, item, owners, struct_defs, enum_defs)),
@@ -13484,7 +13731,7 @@ fn type_check_stmt(
         }
         Stmt::Return(Some(expr)) => {
             if let Some(actual) = infer_expr_type(expr, scopes, env, state) {
-                if !type_compatible(expected_return, &actual) {
+                if !expr_type_compatible(expected_return, &actual, expr) {
                     record_type_error(
                         state.errors,
                         state.type_error_details,
@@ -13747,6 +13994,80 @@ fn ffi_borrowed_str_arg_compatible(
         }
         _ => false,
     }
+}
+
+fn sibling_len_binding_name(name: &str) -> Option<String> {
+    for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
+        if let Some(stem) = name.strip_suffix(suffix) {
+            return Some(format!("{stem}_len"));
+        }
+    }
+    if let Some(stem) = name.strip_suffix("_ptr") {
+        return Some(format!("{stem}_len"));
+    }
+    Some(format!("{name}_len"))
+}
+
+fn gpu_upload_ptr_arg_compatible(
+    scopes: &SymbolScopes,
+    callee: &str,
+    index: usize,
+    expected: &Type,
+    actual: &Type,
+    arg: &Expr,
+) -> bool {
+    let is_upload = callee.ends_with("gpu.upload_f32")
+        || callee.ends_with("gpu.upload_i32")
+        || callee.ends_with("gpu.upload_u32")
+        || matches!(
+            callee,
+            "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32"
+        );
+    if !is_upload || index != 1 {
+        return false;
+    }
+    let (Type::Slice(expected_inner), Type::Ptr { to, .. }) = (expected, actual) else {
+        return false;
+    };
+    if !type_compatible(expected_inner, to) {
+        return false;
+    }
+    let Expr::Ident(name) = arg else {
+        return false;
+    };
+    let Some(len_name) = sibling_len_binding_name(name) else {
+        return false;
+    };
+    scopes.get(&len_name).is_some_and(|ty| is_integer_type(&ty))
+}
+
+fn coerce_gpu_upload_arg_types(
+    scopes: &SymbolScopes,
+    callee: &str,
+    params: &[Type],
+    args: &[Expr],
+    arg_types: &[Option<Type>],
+) -> Vec<Option<Type>> {
+    arg_types
+        .iter()
+        .enumerate()
+        .map(|(index, actual)| {
+            let Some(actual) = actual else {
+                return None;
+            };
+            let Some(expected) = params.get(index) else {
+                return Some(actual.clone());
+            };
+            let Some(arg) = args.get(index) else {
+                return Some(actual.clone());
+            };
+            if gpu_upload_ptr_arg_compatible(scopes, callee, index, expected, actual, arg) {
+                Some(expected.clone())
+            } else {
+                Some(actual.clone())
+            }
+        })
+        .collect()
 }
 
 fn coerce_ffi_borrowed_str_arg_types(
@@ -14051,7 +14372,8 @@ fn infer_expr_type(
                 match base_ty {
                     Some(Type::Array { elem, .. })
                     | Some(Type::Slice(elem))
-                    | Some(Type::Vec(elem)) => {
+                    | Some(Type::Vec(elem))
+                    | Some(Type::Ptr { to: elem, .. }) => {
                         if let Some(actual) = value_ty.as_ref() {
                             if !expr_type_compatible(&elem, actual, &args[2]) {
                                 record_type_error(
@@ -14132,6 +14454,14 @@ fn infer_expr_type(
                         if !expr_type_compatible(expected, actual, &args[index])
                             && !ffi_borrowed_str_arg_compatible(
                                 env,
+                                base_callee,
+                                index,
+                                expected,
+                                actual,
+                                &args[index],
+                            )
+                            && !gpu_upload_ptr_arg_compatible(
+                                scopes,
                                 base_callee,
                                 index,
                                 expected,
@@ -14264,8 +14594,13 @@ fn infer_expr_type(
             for arg in args {
                 arg_types.push(infer_expr_type(arg, scopes, env, state));
             }
-            let signature_arg_types =
-                coerce_ffi_borrowed_str_arg_types(env, base_callee, &params, args, &arg_types);
+            let signature_arg_types = coerce_gpu_upload_arg_types(
+                scopes,
+                base_callee,
+                &params,
+                args,
+                &coerce_ffi_borrowed_str_arg_types(env, base_callee, &params, args, &arg_types),
+            );
             let (
                 resolved_params,
                 resolved_ret,
@@ -14376,6 +14711,14 @@ fn infer_expr_type(
                             actual,
                             &args[index],
                         )
+                        && !gpu_upload_ptr_arg_compatible(
+                            scopes,
+                            base_callee,
+                            index,
+                            expected,
+                            actual,
+                            &args[index],
+                        )
                     {
                         record_type_error(
                             state.errors,
@@ -14444,7 +14787,24 @@ fn infer_expr_type(
                 }
                 for (index, arg_ty) in post_check_arg_types.into_iter().enumerate() {
                     if let (Some(expected), Some(actual)) = (resolved_params.get(index), arg_ty) {
-                        if !expr_type_compatible(expected, &actual, &args[index]) {
+                        if !expr_type_compatible(expected, &actual, &args[index])
+                            && !ffi_borrowed_str_arg_compatible(
+                                env,
+                                base_callee,
+                                index,
+                                expected,
+                                &actual,
+                                &args[index],
+                            )
+                            && !gpu_upload_ptr_arg_compatible(
+                                scopes,
+                                base_callee,
+                                index,
+                                expected,
+                                &actual,
+                                &args[index],
+                            )
+                        {
                             record_type_error(
                                 state.errors,
                                 state.type_error_details,
@@ -15143,6 +15503,7 @@ fn infer_expr_type(
                 Some(Type::Array { elem, .. }) => Some(*elem),
                 Some(Type::Slice(elem)) => Some(*elem),
                 Some(Type::Vec(elem)) => Some(*elem),
+                Some(Type::Ptr { to, .. }) => Some(*to),
                 Some(Type::Named { name, args }) if name == "GpuSlice" && args.len() == 1 => {
                     Some(args[0].clone())
                 }
@@ -15185,6 +15546,14 @@ fn infer_expr_type(
                         && right_ty.as_ref().is_some_and(is_float_type)
                     {
                         left_ty
+                    } else if left_ty.as_ref().is_some_and(is_float_type)
+                        && right_ty.as_ref().is_some_and(is_integer_type)
+                    {
+                        left_ty
+                    } else if left_ty.as_ref().is_some_and(is_integer_type)
+                        && right_ty.as_ref().is_some_and(is_float_type)
+                    {
+                        right_ty
                     } else {
                         let left = left_ty
                             .as_ref()
@@ -15278,7 +15647,11 @@ fn infer_expr_type(
                 | BinaryOp::Gt
                 | BinaryOp::Gte => {
                     if let (Some(l), Some(r)) = (&left_ty, &right_ty) {
-                        if !type_compatible(l, r) {
+                        let numeric_compatible = (is_integer_type(l) && is_integer_type(r))
+                            || (is_float_type(l) && is_float_type(r))
+                            || (is_float_type(l) && is_integer_type(r))
+                            || (is_integer_type(l) && is_float_type(r));
+                        if !numeric_compatible && !type_compatible(l, r) {
                             record_type_error(
                                 state.errors,
                                 state.type_error_details,
@@ -17454,7 +17827,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "simd.__u32x4_store_aligned_ptr" | "simd.__u32x4_store_unaligned_ptr" => {
             (vec![ptr_u8.clone(), u32x4.clone()], Type::Void)
         }
-        "simd.__f32x4_splat" => (vec![Type::Float { bits: 64 }], f32x4.clone()),
+        "simd.__f32x4_splat" => (vec![f32_ty.clone()], f32x4.clone()),
         "simd.__f32x4_load" => (
             vec![Type::Array {
                 elem: Box::new(f32_ty.clone()),
@@ -18453,9 +18826,29 @@ fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
             return true;
         }
     }
+    if let (Type::Ptr { to, .. }, Type::Array { elem, .. }) = (expected, actual) {
+        if expr_supports_implicit_borrow(expr) && type_compatible(to, elem) {
+            return true;
+        }
+    }
     if let Type::Ref { to, .. } = expected {
         if expr_supports_implicit_borrow(expr) && type_compatible(to, actual) {
             return true;
+        }
+    }
+    if is_integer_type(expected) && is_integer_type(actual) {
+        match (expected, actual) {
+            (
+                Type::Int {
+                    bits: expected_bits,
+                    ..
+                },
+                Type::Int {
+                    bits: actual_bits, ..
+                },
+            ) if expected_bits == actual_bits => return true,
+            (Type::USize, Type::ISize) | (Type::ISize, Type::USize) => return true,
+            _ => {}
         }
     }
     if !is_integer_type(expected) || !is_integer_type(actual) {
@@ -21187,6 +21580,77 @@ mod tests {
             .linear_type_violations
             .iter()
             .any(|detail| detail.contains("frees non-linear value `p`")));
+    }
+
+    #[test]
+    fn const_usize_accepts_integer_literal_initializer() {
+        let source = r#"
+            const LEN: usize = 32
+            fn main() -> i32 {
+                let p = alloc(LEN);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn raw_pointer_indexing_typechecks_for_borrowed_buffers() {
+        let source = r#"
+            #[ffi_panic(abort)]
+            pubext c fn first(buf_borrowed: *f32, buf_len: usize) -> f32 {
+                discard buf_len
+                return buf_borrowed[0]
+            }
+        "#;
+        let module = parser::parse(source, "first").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn gpu_upload_accepts_borrowed_pointer_with_sibling_len() {
+        let source = r#"
+            use core.gpu;
+            #[ffi_panic(abort)]
+            pubext c fn upload(weights_borrowed: *f32, weights_len: usize) -> i32 {
+                let dev = gpu.default_device()
+                let buf: GpuBuffer<f32> = gpu.upload_f32(dev, weights_borrowed)
+                gpu.free(buf)
+                return 0
+            }
+        "#;
+        let module = parser::parse(source, "gpu_upload_ptr").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn kernel_plain_helpers_typecheck_after_default_pure_inference() {
+        let source = r#"
+            use core.gpu;
+
+            fn bias(value: f32) -> f32 {
+                return value + 1.0f32
+            }
+
+            kernel fn forward(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x()
+                if i < n {
+                    output[i] = bias(input[i])
+                }
+            }
+
+            host fn main() -> i32 {
+                return 0
+            }
+        "#;
+        let module = parser::parse(source, "gpu_kernel_plain_helper").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
     }
 
     #[test]
