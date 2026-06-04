@@ -10593,15 +10593,34 @@ struct ReprCLayout {
     kind: &'static str,
     size: usize,
     align: usize,
+    fields: Vec<ReprCFieldLayout>,
+    variants: Vec<ReprCVariantLayout>,
+    storage: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct ReprCFieldLayout {
+    name: String,
+    ty: ast::Type,
+    offset: usize,
+    size: usize,
+    align: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ReprCVariantLayout {
+    name: String,
+    value: u64,
 }
 
 fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
     let mut layouts = Vec::new();
     for item in &module.items {
-        match item {
+            match item {
             ast::Item::Struct(item) if is_repr_c(item.repr.as_deref()) => {
                 let mut offset = 0usize;
                 let mut struct_align = 1usize;
+                let mut fields = Vec::with_capacity(item.fields.len());
                 for field in &item.fields {
                     let (size, align) = ffi_type_layout(&field.ty).ok_or_else(|| {
                         anyhow!(
@@ -10611,8 +10630,15 @@ fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
                             field.ty
                         )
                     })?;
-                    offset = align_up(offset, align);
-                    offset += size;
+                    let field_offset = align_up(offset, align);
+                    fields.push(ReprCFieldLayout {
+                        name: field.name.clone(),
+                        ty: field.ty.clone(),
+                        offset: field_offset,
+                        size,
+                        align,
+                    });
+                    offset = field_offset + size;
                     struct_align = struct_align.max(align);
                 }
                 let size = align_up(offset, struct_align);
@@ -10621,6 +10647,9 @@ fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
                     kind: "struct",
                     size,
                     align: struct_align,
+                    fields,
+                    variants: Vec::new(),
+                    storage: None,
                 });
             }
             ast::Item::Enum(item) if is_repr_c(item.repr.as_deref()) => {
@@ -10639,6 +10668,17 @@ fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
                     kind: "enum",
                     size: 4,
                     align: 4,
+                    fields: Vec::new(),
+                    variants: item
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .map(|(index, variant)| ReprCVariantLayout {
+                            name: variant.name.clone(),
+                            value: index as u64,
+                        })
+                        .collect(),
+                    storage: Some("int32_t"),
                 });
             }
             _ => {}
@@ -12839,6 +12879,42 @@ mod tests {
     }
 
     #[test]
+    fn check_and_verify_accept_lib_only_project_roots() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-check-lib-only-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"check_lib_only\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"check_lib_only\"\npath=\"src/lib.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "pub fn helper(value: i32) -> i32 {\n    return value + 1\n}\n",
+        )
+        .expect("source should be written");
+
+        let check = run(Command::Check { path: root.clone() }, Format::Json)
+            .expect("check should succeed for lib-only project");
+        let check_json: serde_json::Value =
+            serde_json::from_str(&check).expect("check output should parse");
+        assert_eq!(check_json["errors"].as_u64(), Some(0));
+        assert_eq!(check_json["module"].as_str(), Some("lib"));
+
+        let verify = run(Command::Verify { path: root.clone() }, Format::Json)
+            .expect("verify should succeed for lib-only project");
+        let verify_json: serde_json::Value =
+            serde_json::from_str(&verify).expect("verify output should parse");
+        assert_eq!(verify_json["errors"].as_u64(), Some(0));
+        assert_eq!(verify_json["module"].as_str(), Some("lib"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn parity_canary_builds_fzweb_project_with_both_backends() {
         let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../frameworklib/fzweb");
         let parity = parity_command(&project, 11, Format::Json).expect("fzweb parity should run");
@@ -13523,16 +13599,99 @@ mod tests {
             .expect("PackedLike layout should exist");
         assert_eq!(packed["size"].as_u64(), Some(24));
         assert_eq!(packed["align"].as_u64(), Some(8));
+        let fields = packed["fields"]
+            .as_array()
+            .expect("PackedLike fields should be emitted");
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0]["name"].as_str(), Some("a"));
+        assert_eq!(fields[0]["c"].as_str(), Some("uint8_t"));
+        assert_eq!(fields[0]["offset"].as_u64(), Some(0));
+        assert_eq!(fields[1]["name"].as_str(), Some("b"));
+        assert_eq!(fields[1]["c"].as_str(), Some("uint64_t"));
+        assert_eq!(fields[1]["offset"].as_u64(), Some(8));
+        assert_eq!(fields[2]["name"].as_str(), Some("c"));
+        assert_eq!(fields[2]["c"].as_str(), Some("uint16_t"));
+        assert_eq!(fields[2]["offset"].as_u64(), Some(16));
         let mode = layouts
             .iter()
             .find(|layout| layout["name"] == "Mode")
             .expect("Mode layout should exist");
         assert_eq!(mode["size"].as_u64(), Some(4));
         assert_eq!(mode["align"].as_u64(), Some(4));
+        assert_eq!(mode["storage"].as_str(), Some("int32_t"));
+        let variants = mode["variants"]
+            .as_array()
+            .expect("Mode variants should be emitted");
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0]["name"].as_str(), Some("Ready"));
+        assert_eq!(variants[0]["value"].as_u64(), Some(0));
+        assert_eq!(variants[1]["name"].as_str(), Some("Busy"));
+        assert_eq!(variants[1]["value"].as_u64(), Some(1));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(header);
         let _ = std::fs::remove_file(abi_path);
+    }
+
+    #[test]
+    fn build_lib_abi_manifest_includes_repr_c_return_field_metadata() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-build-lib-layout-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "#[repr(C)]\nstruct BridgeClickResult {\n    input_count: i32,\n    js_doubled: i32,\n    callback_total: i32,\n    handshake_score: i32,\n}\n\n#[ffi_panic(abort)]\npubext c fn bridge_click(count: i32) -> BridgeClickResult {\n    return BridgeClickResult {\n        input_count: count,\n        js_doubled: count,\n        callback_total: count,\n        handshake_score: count,\n    }\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Build {
+                path: source.clone(),
+                release: false,
+                strict: false,
+                lib: true,
+                threads: None,
+                backend: None,
+                pgo_generate: false,
+                pgo_use: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect("build --lib should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("build output should be valid json");
+        let abi_path = std::path::PathBuf::from(
+            payload["abiManifest"]
+                .as_str()
+                .expect("abi manifest path should be present"),
+        );
+        let abi_text = std::fs::read_to_string(&abi_path).expect("abi manifest should be readable");
+        let abi: serde_json::Value =
+            serde_json::from_str(&abi_text).expect("abi manifest should be valid json");
+        let layout = abi["reprCLayouts"]
+            .as_array()
+            .and_then(|items| {
+                items.iter()
+                    .find(|layout| layout["name"] == "BridgeClickResult")
+            })
+            .expect("BridgeClickResult layout should exist");
+        let fields = layout["fields"]
+            .as_array()
+            .expect("BridgeClickResult fields should be emitted");
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[0]["name"].as_str(), Some("input_count"));
+        assert_eq!(fields[0]["c"].as_str(), Some("int32_t"));
+        assert_eq!(fields[1]["name"].as_str(), Some("js_doubled"));
+        assert_eq!(fields[2]["name"].as_str(), Some("callback_total"));
+        assert_eq!(fields[3]["name"].as_str(), Some("handshake_score"));
+
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]

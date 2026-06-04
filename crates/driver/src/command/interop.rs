@@ -24,6 +24,8 @@ struct HeaderArtifactCache {
     exports: usize,
 }
 
+const HEADER_ARTIFACT_CACHE_SCHEMA: &str = "fozzylang.header_artifact_cache.v2";
+
 #[derive(Debug, Clone)]
 pub(super) struct RpcArtifacts {
     pub(super) schema: PathBuf,
@@ -197,13 +199,46 @@ pub(super) fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<H
         "contractSchema": "fozzylang.ffi_contracts.v1",
         "callbackAbi": "signature-typed-v1",
         "reprCLayouts": repr_c_layouts.iter().map(|layout| {
-            serde_json::json!({
-                "name": layout.name,
-                "cName": repr_c_aliases.get(&layout.name).cloned().unwrap_or_else(|| layout.name.clone()),
-                "kind": layout.kind,
-                "size": layout.size,
-                "align": layout.align,
-            })
+            let mut record = serde_json::Map::new();
+            record.insert("name".to_string(), serde_json::json!(layout.name));
+            record.insert(
+                "cName".to_string(),
+                serde_json::json!(
+                    repr_c_aliases
+                        .get(&layout.name)
+                        .cloned()
+                        .unwrap_or_else(|| layout.name.clone())
+                ),
+            );
+            record.insert("kind".to_string(), serde_json::json!(layout.kind));
+            record.insert("size".to_string(), serde_json::json!(layout.size));
+            record.insert("align".to_string(), serde_json::json!(layout.align));
+            if !layout.fields.is_empty() {
+                record.insert(
+                    "fields".to_string(),
+                    serde_json::json!(layout.fields.iter().map(|field| serde_json::json!({
+                        "name": field.name,
+                        "fzy": field.ty.to_string(),
+                        "c": render_c_surface_type(&field.ty, &repr_c_aliases, &[]),
+                        "offset": field.offset,
+                        "size": field.size,
+                        "align": field.align,
+                    })).collect::<Vec<_>>()),
+                );
+            }
+            if !layout.variants.is_empty() {
+                record.insert(
+                    "variants".to_string(),
+                    serde_json::json!(layout.variants.iter().map(|variant| serde_json::json!({
+                        "name": variant.name,
+                        "value": variant.value,
+                    })).collect::<Vec<_>>()),
+                );
+            }
+            if let Some(storage) = layout.storage {
+                record.insert("storage".to_string(), serde_json::json!(storage));
+            }
+            serde_json::Value::Object(record)
         }).collect::<Vec<_>>(),
         "exports": exports.iter().map(|function| {
             let symbol = ffi_symbol_name(function);
@@ -580,6 +615,7 @@ fn header_cache_path(header_path: &Path) -> PathBuf {
 
 fn header_cache_fingerprint(resolved: &ResolvedSource) -> Result<String> {
     let mut hasher = Sha256::new();
+    hasher.update(HEADER_ARTIFACT_CACHE_SCHEMA.as_bytes());
     hasher.update(resolved.source_path.to_string_lossy().as_bytes());
     hasher.update(
         &std::fs::read(&resolved.source_path)

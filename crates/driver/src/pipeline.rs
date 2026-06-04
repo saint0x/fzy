@@ -630,7 +630,7 @@ fn validate_file_with_root_source(
     tier: ValidationTier,
 ) -> Result<Output> {
     let started = Instant::now();
-    let resolved = resolve_source_path(path)?;
+    let resolved = resolve_validation_source_path(path)?;
     let module_name = resolved
         .source_path
         .file_stem()
@@ -762,6 +762,21 @@ fn validate_file_with_root_source(
             input_bytes: parsed.input_bytes,
         },
     })
+}
+
+fn resolve_validation_source_path(input: &Path) -> Result<ResolvedSource> {
+    match resolve_source_path(input) {
+        Ok(resolved) => Ok(resolved),
+        Err(err) if input.is_dir() => {
+            let rendered = err.to_string();
+            if rendered.contains("no [[target.bin]] entry in") {
+                resolve_source_path_with_target(input, true)
+            } else {
+                Err(err)
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn normalize_diagnostics_for_path(path: &Path, diagnostics: &mut [diagnostics::Diagnostic]) {
