@@ -436,12 +436,18 @@ static uintptr_t fz_native_gpu_download_bytes(
     fz_numeric_vec_state* vec = fz_numeric_vec_get((uintptr_t)handle);
     if (vec != NULL) {
       vec->element_kind = element_kind;
+      if (fz_numeric_vec_reserve(vec, len) != 0) {
+        handle = -1;
+        fz_numeric_vec_reset(vec);
+      }
       uint32_t* words = (uint32_t*)contents;
-      for (int32_t index = 0; index < len; index++) {
-        if (fz_numeric_vec_push_bits32(vec, words[index]) != 0) {
-          handle = -1;
-          vec->in_use = 0;
-          break;
+      if (handle > 0) {
+        for (int32_t index = 0; index < len; index++) {
+          if (fz_numeric_vec_push_bits32(vec, words[index]) != 0) {
+            handle = -1;
+            fz_numeric_vec_reset(vec);
+            break;
+          }
         }
       }
     } else {

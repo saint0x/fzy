@@ -430,8 +430,7 @@ pub fn fuzz(
         &mut profile_trace,
         &profile_artifacts_summary,
         &artifacts_dir,
-        emit_heavy
-            || should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture),
+        emit_heavy || should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture),
     )?;
     let coverage_stats = FuzzCoverageStats {
         target: target_string(target),

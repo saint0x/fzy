@@ -187,24 +187,26 @@ fn run_parallel_tests(
             let det = opt.det;
             let planned_scenarios = planned_scenarios;
             let next = &next;
-            scope.spawn(move || loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                let Some(planned) = planned_scenarios.get(index).cloned() else {
-                    break;
-                };
-                let result = run_embedded_scenario_inner(
-                    planned.scenario,
-                    planned.path,
-                    seed,
-                    det,
-                    timeout,
-                    proc_backend,
-                    fs_backend,
-                    http_backend,
-                    memory.clone(),
-                );
-                if tx.send(result).is_err() {
-                    break;
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(planned) = planned_scenarios.get(index).cloned() else {
+                        break;
+                    };
+                    let result = run_embedded_scenario_inner(
+                        planned.scenario,
+                        planned.path,
+                        seed,
+                        det,
+                        timeout,
+                        proc_backend,
+                        fs_backend,
+                        http_backend,
+                        memory.clone(),
+                    );
+                    if tx.send(result).is_err() {
+                        break;
+                    }
                 }
             });
         }

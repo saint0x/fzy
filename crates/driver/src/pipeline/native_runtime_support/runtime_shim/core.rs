@@ -115,7 +115,8 @@ typedef struct {
   int in_use;
   int32_t element_kind;
   int32_t count;
-  uint32_t items[FZ_MAX_LIST_ITEMS];
+  int32_t cap;
+  uint32_t* items;
 } fz_numeric_vec_state;
 
 typedef struct {
@@ -314,6 +315,8 @@ static int32_t fz_find_string_slice_unlocked(const char* value, size_t len, uint
 static int32_t fz_find_string_cstr_unlocked(const char* value, uint32_t hash);
 static void fz_string_index_insert_unlocked(int32_t id, const char* value, uint32_t hash);
 static void fz_string_index_bootstrap(void);
+static void fz_numeric_vec_reset(fz_numeric_vec_state* vec);
+static int fz_numeric_vec_reserve(fz_numeric_vec_state* vec, int32_t need);
 int32_t fz_native_net_request_id(int32_t conn_fd);
 int32_t fz_native_net_write(int32_t conn_fd, int32_t status_code, int32_t body_id);
 
@@ -568,10 +571,18 @@ static int fz_array_push_i32(fz_array_state* array, int32_t value) {
   return 0;
 }
 
+static void fz_numeric_vec_reset(fz_numeric_vec_state* vec) {
+  if (vec == NULL) {
+    return;
+  }
+  free(vec->items);
+  memset(vec, 0, sizeof(*vec));
+}
+
 static int32_t fz_numeric_vec_alloc(void) {
   for (int i = 0; i < FZ_MAX_LISTS; i++) {
     if (!fz_numeric_vecs[i].in_use) {
-      memset(&fz_numeric_vecs[i], 0, sizeof(fz_numeric_vecs[i]));
+      fz_numeric_vec_reset(&fz_numeric_vecs[i]);
       fz_numeric_vecs[i].in_use = 1;
       return i + 1;
     }
@@ -587,8 +598,36 @@ static fz_numeric_vec_state* fz_numeric_vec_get(uintptr_t handle) {
   return vec->in_use ? vec : NULL;
 }
 
+static int fz_numeric_vec_reserve(fz_numeric_vec_state* vec, int32_t need) {
+  if (vec == NULL || need < 0) {
+    return -1;
+  }
+  if (need <= vec->cap) {
+    return 0;
+  }
+  int32_t next_cap = vec->cap <= 0 ? 16 : vec->cap;
+  while (next_cap < need) {
+    if (next_cap > (INT32_MAX / 2)) {
+      next_cap = need;
+      break;
+    }
+    next_cap *= 2;
+  }
+  size_t bytes = (size_t)next_cap * sizeof(uint32_t);
+  uint32_t* next_items = (uint32_t*)realloc(vec->items, bytes);
+  if (next_items == NULL) {
+    return -1;
+  }
+  vec->items = next_items;
+  vec->cap = next_cap;
+  return 0;
+}
+
 static int fz_numeric_vec_push_bits32(fz_numeric_vec_state* vec, uint32_t bits) {
-  if (vec == NULL || vec->count >= FZ_MAX_LIST_ITEMS) {
+  if (vec == NULL) {
+    return -1;
+  }
+  if (fz_numeric_vec_reserve(vec, vec->count + 1) != 0) {
     return -1;
   }
   vec->items[vec->count++] = bits;

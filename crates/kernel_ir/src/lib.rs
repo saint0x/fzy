@@ -7,6 +7,7 @@ use diagnostics::{Diagnostic, Severity};
 pub struct KernelModule {
     pub name: String,
     pub kernels: Vec<String>,
+    pub const_i32_globals: BTreeMap<String, i32>,
     pub functions: Vec<KernelFunction>,
 }
 
@@ -275,6 +276,7 @@ pub fn lower(module: &hir::TypedModule) -> Result<KernelModule, Vec<Diagnostic>>
         return Ok(KernelModule {
             name: module.name.clone(),
             kernels,
+            const_i32_globals: BTreeMap::new(),
             functions: Vec::new(),
         });
     }
@@ -296,6 +298,11 @@ pub fn lower(module: &hir::TypedModule) -> Result<KernelModule, Vec<Diagnostic>>
         Ok(KernelModule {
             name: module.name.clone(),
             kernels,
+            const_i32_globals: module
+                .typed_globals
+                .iter()
+                .filter_map(|global| Some((global.name.clone(), global.const_i32?)))
+                .collect(),
             functions,
         })
     } else {
@@ -311,6 +318,13 @@ pub fn render(module: &KernelModule) -> String {
     out.push_str("kernel.module ");
     out.push_str(&module.name);
     out.push('\n');
+    for (name, value) in &module.const_i32_globals {
+        out.push_str("const ");
+        out.push_str(name);
+        out.push_str(" = ");
+        out.push_str(&value.to_string());
+        out.push('\n');
+    }
     for kernel in &module.kernels {
         out.push_str("kernel.entry ");
         out.push_str(kernel);
@@ -1075,27 +1089,7 @@ fn lower_stmt(
                 lower_expr(function, value, function_map, scope, diagnostics)
             })))
         }
-        Stmt::Expr(Expr::Call { callee, args }) if base_callee(callee) == "__index_assign" => {
-            if args.len() != 3 {
-                diagnostics.push(lowering_error(
-                    function,
-                    "indexed assignment lowering expects exactly 3 arguments",
-                ));
-                return None;
-            }
-            Some(KernelStmt::Store {
-                base: lower_expr(function, &args[0], function_map, scope, diagnostics)?,
-                index: lower_expr(function, &args[1], function_map, scope, diagnostics)?,
-                value: lower_expr(function, &args[2], function_map, scope, diagnostics)?,
-            })
-        }
-        Stmt::Expr(expr) => Some(KernelStmt::Expr(lower_expr(
-            function,
-            expr,
-            function_map,
-            scope,
-            diagnostics,
-        )?)),
+        Stmt::Expr(expr) => lower_stmt_expr(function, expr, function_map, scope, diagnostics),
         Stmt::LetPattern { .. } => {
             diagnostics.push(lowering_error(
                 function,
@@ -1138,6 +1132,57 @@ fn lower_stmt(
             ));
             None
         }
+    }
+}
+
+fn lower_stmt_expr(
+    function: &hir::TypedFunction,
+    expr: &Expr,
+    function_map: &BTreeMap<String, &hir::TypedFunction>,
+    scope: &BTreeMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<KernelStmt> {
+    match expr {
+        Expr::Call { callee, args } if base_callee(callee) == "__index_assign" => {
+            if args.len() != 3 {
+                diagnostics.push(lowering_error(
+                    function,
+                    "indexed assignment lowering expects exactly 3 arguments",
+                ));
+                return None;
+            }
+            Some(KernelStmt::Store {
+                base: lower_expr(function, &args[0], function_map, scope, diagnostics)?,
+                index: lower_expr(function, &args[1], function_map, scope, diagnostics)?,
+                value: lower_expr(function, &args[2], function_map, scope, diagnostics)?,
+            })
+        }
+        Expr::Group(inner) | Expr::Discard(inner) => {
+            lower_stmt_expr(function, inner, function_map, scope, diagnostics)
+        }
+        _ => {
+            let lowered = lower_expr(function, expr, function_map, scope, diagnostics)?;
+            if kernel_stmt_expr_has_effect(&lowered) {
+                Some(KernelStmt::Expr(lowered))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn kernel_stmt_expr_has_effect(expr: &KernelExpr) -> bool {
+    match expr {
+        KernelExpr::Call { .. } => true,
+        KernelExpr::Intrinsic { op, .. } => matches!(
+            op,
+            KernelIntrinsic::Barrier
+                | KernelIntrinsic::StoreF32
+                | KernelIntrinsic::StoreI32
+                | KernelIntrinsic::StoreU32
+        ),
+        KernelExpr::Group(inner) => kernel_stmt_expr_has_effect(inner),
+        _ => false,
     }
 }
 

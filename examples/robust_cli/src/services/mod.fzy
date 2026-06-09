@@ -1,7 +1,6 @@
 mod store;
 mod journal;
 mod audit;
-
 fn boot_all() -> i32 {
     discard store.open_db();
     discard journal.append_event();

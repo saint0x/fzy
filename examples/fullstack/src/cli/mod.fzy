@@ -1,5 +1,4 @@
 mod commands;
-
 fn boot() -> i32 {
     return commands.boot();
 }

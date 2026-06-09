@@ -5,7 +5,9 @@ use sha2::{Digest, Sha256};
 
 use super::super::super::gpu_backend::fir_module_uses_gpu;
 use super::super::super::*;
-use super::super::ffi_exports::{NativeAsyncExport, NativeExportReturn, NativeFfiType, NativeSyncExport};
+use super::super::ffi_exports::{
+    NativeAsyncExport, NativeExportReturn, NativeFfiType, NativeSyncExport,
+};
 use super::render::render_native_runtime_shim;
 
 pub(crate) fn ensure_native_runtime_shim(

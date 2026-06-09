@@ -1,4 +1,4 @@
-use crate::core::{CapabilityError, require_capability};
+use crate::core::{require_capability, CapabilityError};
 use core::{Capability, CapabilityToken};
 use serde_json::{Map, Value};
 use socket2::{Domain, Protocol, Socket, Type};

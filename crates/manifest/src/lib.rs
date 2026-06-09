@@ -316,12 +316,16 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("fozzylang-manifest-default-targets-{suffix}"));
+        let root =
+            std::env::temp_dir().join(format!("fozzylang-manifest-default-targets-{suffix}"));
         std::fs::create_dir_all(root.join("src")).expect("src should be created");
         std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 { return 0 }\n")
             .expect("main should be written");
-        std::fs::write(root.join("src/lib.fzy"), "fn helper() -> i32 { return 1 }\n")
-            .expect("lib should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "fn helper() -> i32 { return 1 }\n",
+        )
+        .expect("lib should be written");
         let input = r#"
             [package]
             name = "demo"

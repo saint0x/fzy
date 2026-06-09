@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+pub(crate) use profile_analysis::explain_single;
 use profile_analysis::{
     compute_diff, explain_from_diff, format_metric_value, metric_value, normalize_metric_value,
     shrink_minimize_name,
@@ -35,9 +36,8 @@ use profile_support::{
     normalize_domains, parse_selector_group, profile_doctor, profile_env_report,
     resolve_profile_trace, top_by_tag, write_json, write_text,
 };
-pub use profile_types::*;
-pub(crate) use profile_analysis::explain_single;
 pub(crate) use profile_support::{explain_profile_bundle, load_profile_bundle_with_run_bundle};
+pub use profile_types::*;
 
 pub use profile_build::heap_budget_findings_from_trace;
 

@@ -1708,6 +1708,14 @@ fn clif_emit_array_argument_parts(
     locals: &mut HashMap<String, LocalBinding>,
     next_var: &mut usize,
 ) -> Result<Option<(ClifValue, ClifValue)>> {
+    fn pointer_element_stride(ty: &ast::Type) -> Option<u8> {
+        let ast::Type::Ptr { to, .. } = ty else {
+            return None;
+        };
+        let element_ty = ast_signature_type_to_clif_type(to.as_ref())?;
+        let bytes = element_ty.bytes();
+        Some(if bytes == 0 { 1 } else { bytes as u8 })
+    }
     fn sibling_len_binding_name(name: &str) -> Option<String> {
         for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
             if let Some(stem) = name.strip_suffix(suffix) {
@@ -1754,7 +1762,11 @@ fn clif_emit_array_argument_parts(
                     )));
                 }
             }
-            if matches!(clif_local_type(ctx, name), Some(ast::Type::Ptr { .. })) {
+            if let Some(ptr_ty) = clif_local_type(ctx, name) {
+                if !matches!(ptr_ty, ast::Type::Ptr { .. }) {
+                    return Ok(None);
+                }
+                let element_stride = pointer_element_stride(ptr_ty);
                 if let Some(len_name) = sibling_len_binding_name(name) {
                     if clif_local_type(ctx, &len_name).is_some() {
                         let ptr = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
@@ -1766,7 +1778,17 @@ fn clif_emit_array_argument_parts(
                             locals,
                             next_var,
                         )?;
-                        let len = cast_clif_value(builder, len, types::I32)?;
+                        let mut len = cast_clif_value(builder, len, types::I32)?;
+                        if let Some(element_stride) = element_stride {
+                            if element_stride > 1 {
+                                let stride =
+                                    builder.ins().iconst(types::I32, i64::from(element_stride));
+                                len = ClifValue {
+                                    value: builder.ins().udiv(len.value, stride),
+                                    ty: types::I32,
+                                };
+                            }
+                        }
                         return Ok(Some((ptr, len)));
                     }
                 }

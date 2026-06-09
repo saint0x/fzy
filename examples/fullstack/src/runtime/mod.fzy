@@ -1,22 +1,18 @@
 mod scheduler;
 mod worker;
 mod supervisor;
-
 fn start_worker() -> i32 {
     spawn(worker.run);
     return 0;
 }
-
 fn start_scheduler() -> i32 {
     spawn(scheduler.tick);
     return 0;
 }
-
 fn start_supervisor() -> i32 {
     spawn(supervisor.guard);
     return 0;
 }
-
 fn start() -> i32 {
     discard start_worker();
     discard start_scheduler();

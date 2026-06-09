@@ -10,17 +10,17 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use core::{Capability, CapabilitySet};
 use runtime::service::{RuntimeProfile, ServiceRuntime, ShutdownSignal};
 use serde::{Deserialize, Serialize};
 use stdlib::durability::{acquire_file_lock, fsync_file};
-use stdlib::http::{HttpResponse, HttpServerLimits, parse_http_request};
+use stdlib::http::{parse_http_request, HttpResponse, HttpServerLimits};
 use stdlib::observability::{
     LogField, LogLevel, Logger, Metrics, RedactionPolicy, RuntimeStats as ObsRuntimeStats, Tracer,
 };
 use stdlib::process::EnvConfig;
-use stdlib::security::{PrivilegedOperation, ServerHardeningDefaults, audit_privileged_operation};
+use stdlib::security::{audit_privileged_operation, PrivilegedOperation, ServerHardeningDefaults};
 
 #[derive(Debug, Clone)]
 struct AppConfig {

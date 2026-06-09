@@ -10370,6 +10370,14 @@ fn expr_root_binding_name(expr: &Expr) -> Option<&str> {
     }
 }
 
+fn supports_index_base_type(ty: &Type) -> bool {
+    match ty {
+        Type::Array { .. } | Type::Slice(_) | Type::Vec(_) | Type::Ptr { .. } => true,
+        Type::Named { name, args } => name == "GpuSlice" && args.len() == 1,
+        _ => false,
+    }
+}
+
 fn binding_partial_move_root_type<'a>(function: &'a TypedFunction, name: &str) -> Option<&'a Type> {
     function.local_types.get(name).or_else(|| {
         function
@@ -13819,6 +13827,90 @@ fn type_check_stmt(
                 scopes.pop();
             }
         }
+        Stmt::Expr(Expr::Call { callee, args }) if callee == "__index_assign" => {
+            if args.len() != 3 {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    "indexed assignment expects exactly 3 arguments".to_string(),
+                );
+                return;
+            }
+            let mut base_ty = infer_expr_type(&args[0], scopes, env, state);
+            if !base_ty.as_ref().is_some_and(supports_index_base_type) {
+                if let Some(root_name) = expr_root_binding_name(&args[0]) {
+                    if let Some(found) = scopes.get(root_name) {
+                        base_ty = Some(found.clone());
+                    } else if let Some(found) = env.global_types.get(root_name) {
+                        base_ty = Some(found.clone());
+                    }
+                }
+            }
+            let index_ty = infer_expr_type(&args[1], scopes, env, state);
+            let value_ty = infer_expr_type(&args[2], scopes, env, state);
+            if !index_ty.as_ref().is_some_and(is_integer_type) {
+                let found = index_ty
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unknown".to_string());
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!("index expression must be integer, got `{found}`"),
+                );
+            }
+            match base_ty {
+                Some(Type::Array { elem, .. })
+                | Some(Type::Slice(elem))
+                | Some(Type::Vec(elem))
+                | Some(Type::Ptr { to: elem, .. }) => {
+                    if let Some(actual) = value_ty.as_ref() {
+                        if !expr_type_compatible(&elem, actual, &args[2]) {
+                            record_type_error(
+                                state.errors,
+                                state.type_error_details,
+                                format!(
+                                    "indexed assignment type mismatch: expected `{}`, got `{}`",
+                                    elem, actual
+                                ),
+                            );
+                        }
+                    }
+                }
+                Some(Type::Named {
+                    name,
+                    args: named_args,
+                }) if name == "GpuSlice" && named_args.len() == 1 => {
+                    if let Some(actual) = value_ty.as_ref() {
+                        if !expr_type_compatible(&named_args[0], actual, &args[2]) {
+                            record_type_error(
+                                state.errors,
+                                state.type_error_details,
+                                format!(
+                                    "indexed assignment type mismatch: expected `{}`, got `{}`",
+                                    named_args[0], actual
+                                ),
+                            );
+                        }
+                    }
+                }
+                Some(Type::Str) => {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        "indexed assignment is not supported for type `str`".to_string(),
+                    );
+                }
+                Some(other) => {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!("indexed assignment is not supported for type `{other}`"),
+                    );
+                }
+                None => {}
+            }
+        }
         Stmt::Defer(expr) | Stmt::Requires(expr) | Stmt::Ensures(expr) | Stmt::Expr(expr) => {
             let _ = infer_expr_type(expr, scopes, env, state);
         }
@@ -14355,7 +14447,16 @@ fn infer_expr_type(
                     );
                     return Some(Type::Void);
                 }
-                let base_ty = infer_expr_type(&args[0], scopes, env, state);
+                let mut base_ty = infer_expr_type(&args[0], scopes, env, state);
+                if !base_ty.as_ref().is_some_and(supports_index_base_type) {
+                    if let Some(root_name) = expr_root_binding_name(&args[0]) {
+                        if let Some(found) = scopes.get(root_name) {
+                            base_ty = Some(found.clone());
+                        } else if let Some(found) = global_types.get(root_name) {
+                            base_ty = Some(found.clone());
+                        }
+                    }
+                }
                 let index_ty = infer_expr_type(&args[1], scopes, env, state);
                 let value_ty = infer_expr_type(&args[2], scopes, env, state);
                 if !index_ty.as_ref().is_some_and(is_integer_type) {
@@ -15486,7 +15587,16 @@ fn infer_expr_type(
             }
         }
         Expr::Index { base, index } => {
-            let base_ty = infer_expr_type(base, scopes, env, state);
+            let mut base_ty = infer_expr_type(base, scopes, env, state);
+            if !base_ty.as_ref().is_some_and(supports_index_base_type) {
+                if let Some(root_name) = expr_root_binding_name(base) {
+                    if let Some(found) = scopes.get(root_name) {
+                        base_ty = Some(found.clone());
+                    } else if let Some(found) = global_types.get(root_name) {
+                        base_ty = Some(found.clone());
+                    }
+                }
+            }
             let index_ty = infer_expr_type(index, scopes, env, state);
             if !index_ty.as_ref().is_some_and(is_integer_type) {
                 let found = index_ty
@@ -17695,8 +17805,8 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             ],
             gpu_event.clone(),
         ),
-        "gpu.wait" => (vec![gpu_event.clone()], Type::Void),
-        "gpu.wait_async" => (vec![gpu_event.clone()], Type::Future(Box::new(Type::Void))),
+        "gpu.wait" => (vec![gpu_event.clone()], i32.clone()),
+        "gpu.wait_async" => (vec![gpu_event.clone()], Type::Future(Box::new(i32.clone()))),
         "gpu.global_id_x" | "gpu.global_id_y" | "gpu.global_id_z" => (vec![], i32.clone()),
         "gpu.thread_id_x" | "gpu.thread_id_y" | "gpu.thread_id_z" => (vec![], i32.clone()),
         "gpu.block_id_x" | "gpu.block_id_y" | "gpu.block_id_z" => (vec![], i32.clone()),
@@ -24031,6 +24141,43 @@ mod tests {
     }
 
     #[test]
+    fn gpu_wait_status_is_usable_from_sync_and_async_code() {
+        let source = r#"
+            use core.gpu;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            async host fn flush(event: GpuEvent) -> i32 {
+                return await gpu.wait_async(event);
+            }
+            async host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let event = gpu.launch3(noop, 1, 64, gpu.slice(input, 0, 8), gpu.slice(output, 0, 8), 8);
+                let direct = gpu.wait(event);
+                if direct != 0 {
+                    return direct;
+                }
+                let event2 = gpu.launch3(noop, 1, 64, gpu.slice(input, 0, 8), gpu.slice(output, 0, 8), 8);
+                return await flush(event2);
+            }
+        "#;
+        let module = parser::parse(source, "gpu_wait_status").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(
+            typed.type_errors, 0,
+            "type errors: {:?}; ownership: {:?}; linear: {:?}",
+            typed.type_error_details, typed.ownership_violations, typed.linear_type_violations
+        );
+    }
+
+    #[test]
     fn gpu_wait_async_requires_async_context() {
         let source = r#"
             use core.gpu;
@@ -24588,5 +24735,13 @@ mod tests {
         );
         let typed = lowered.expect("lowering should return typed module");
         assert!(typed.type_errors > 0, "lowering should surface type errors");
+    }
+
+    #[test]
+    fn raw_pointer_index_assign_typechecks() {
+        let source = "const N: usize = 1\n#[ffi_panic(abort)]\npubext c fn poke(buf_out: *f32, buf_len: usize) -> i32 {\n    discard N\n    discard buf_len\n    buf_out[0] = 1.0f32\n    return 0\n}\n";
+        let module = parser::parse(source, "ptrwrite").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
     }
 }

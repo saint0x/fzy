@@ -425,8 +425,8 @@ use serde::Serialize;
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_MEMORY_LOG_LIMIT, DEFAULT_METRIC_HISTORY_LIMIT, DEFAULT_TRACER_SPAN_LIMIT,
         LogField, LogLevel, Logger, LoggerSink, Metrics, RuntimeStats, TraceContext, Tracer,
+        DEFAULT_MEMORY_LOG_LIMIT, DEFAULT_METRIC_HISTORY_LIMIT, DEFAULT_TRACER_SPAN_LIMIT,
     };
 
     #[test]

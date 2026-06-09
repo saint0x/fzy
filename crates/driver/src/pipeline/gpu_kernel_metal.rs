@@ -41,7 +41,7 @@ pub(crate) fn metal_kernel_launch_descriptors_from_kernel_module(
         descriptors.insert(kernel_name.clone(), {
             let shared_contract = shared_gpu_kernel_contract(kernel)?;
             MetalKernelLaunchDescriptor {
-                kernel_name: kernel_name.clone(),
+                kernel_name: render_function_name(kernel_name),
                 source,
                 param_layout: shared_contract.param_layout.clone(),
                 shared_contract,
@@ -123,6 +123,16 @@ fn render_metal_module(
 ) -> Result<String> {
     let mut out = String::new();
     out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+    for (name, value) in &module.const_i32_globals {
+        out.push_str("constant int ");
+        out.push_str(name);
+        out.push_str(" = ");
+        out.push_str(&value.to_string());
+        out.push_str(";\n");
+    }
+    if !module.const_i32_globals.is_empty() {
+        out.push('\n');
+    }
     for function in &module.functions {
         out.push_str(&render_function_signature(function, false, function_map)?);
         out.push_str(";\n");
@@ -159,7 +169,7 @@ fn render_function_signature(
         out.push_str(render_scalar_type(&function.return_type)?);
         out.push(' ');
     }
-    out.push_str(&function.name);
+    out.push_str(&render_function_name(&function.name));
     out.push('(');
     let mut parts = Vec::new();
     let mut buffer_index = 0usize;
@@ -177,6 +187,10 @@ fn render_function_signature(
     out.push_str(&parts.join(", "));
     out.push(')');
     Ok(out)
+}
+
+fn render_function_name(name: &str) -> String {
+    format!("fz_{}", name)
 }
 
 fn render_param_parts(
@@ -427,7 +441,7 @@ fn render_expr(
                 "fz_tg_size".to_string(),
                 "fz_grid_size".to_string(),
             ]);
-            format!("{callee}({})", rendered.join(", "))
+            format!("{}({})", render_function_name(callee), rendered.join(", "))
         }
         kernel_ir::KernelExpr::Intrinsic { op, args } => {
             render_intrinsic(*op, args, scope, function_map)?

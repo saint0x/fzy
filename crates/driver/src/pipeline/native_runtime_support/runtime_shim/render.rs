@@ -188,7 +188,9 @@ fn render_sync_export_helper_code(sync_exports: &[NativeSyncExport]) -> String {
             })
         {
             match ty {
-                NativeFfiType::ReprCStruct(layout) if emitted_structs.insert(layout.name.clone()) => {
+                NativeFfiType::ReprCStruct(layout)
+                    if emitted_structs.insert(layout.name.clone()) =>
+                {
                     render_struct_bridge_helpers(layout, &mut out);
                 }
                 NativeFfiType::ReprCEnum(layout) if emitted_enums.insert(layout.name.clone()) => {

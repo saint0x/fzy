@@ -204,7 +204,11 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 .with_catalog_key("verifier.extern_c_unstable_type"),
             );
         }
-        if function.is_extern && function.abi.as_deref() == Some("c") && !function.has_body && function.is_async {
+        if function.is_extern
+            && function.abi.as_deref() == Some("c")
+            && !function.has_body
+            && function.is_async
+        {
             report.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,

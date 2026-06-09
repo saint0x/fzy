@@ -1,14 +1,12 @@
 use core.proc;
 use core.fs;
 use core.log;
-
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let fields = map.new();
     discard map.set(fields, k1, v1);
     discard map.set(fields, k2, v2);
     return log.fields(fields);
 }
-
 fn cmd_init() -> i32 {
     let init_proc_owned = proc.spawn("echo robust-cli-init");
     defer proc.close(init_proc_owned);
@@ -16,7 +14,6 @@ fn cmd_init() -> i32 {
     discard proc.exec_timeout(init_proc_owned);
     return 0;
 }
-
 fn cmd_set() -> i32 {
     let set_proc_owned = proc.spawn("echo robust-cli-set");
     let command_file_ref = fs.open("robust_cli.commands.log");
@@ -27,21 +24,18 @@ fn cmd_set() -> i32 {
     discard fs.flush(command_file_ref);
     return 0;
 }
-
 fn cmd_get() -> i32 {
     let get_proc_owned = proc.spawn("echo robust-cli-get");
     defer proc.close(get_proc_owned);
     discard proc.exec_timeout(get_proc_owned);
     return 0;
 }
-
 fn cmd_list() -> i32 {
     let list_proc_owned = proc.spawn("echo robust-cli-list");
     defer proc.close(list_proc_owned);
     discard proc.exec_timeout(list_proc_owned);
     return 0;
 }
-
 fn cmd_compact() -> i32 {
     let compact_file_ref = fs.open("robust_cli.compact.log");
     defer fs.close(compact_file_ref);
@@ -50,7 +44,6 @@ fn cmd_compact() -> i32 {
     discard fs.fsync(compact_file_ref);
     return 0;
 }
-
 fn cmd_export() -> i32 {
     let export_proc_owned = proc.spawn("echo robust-cli-export");
     defer proc.close(export_proc_owned);

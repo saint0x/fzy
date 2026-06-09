@@ -1,6 +1,5 @@
 use core.thread;
 use core.time;
-
 fn run() -> i32 {
     discard time.now();
     checkpoint();

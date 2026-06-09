@@ -168,7 +168,10 @@ pub(crate) fn write_event_artifacts(
     events: &[TraceEvent],
     artifacts_dir: &Path,
 ) -> FozzyResult<()> {
-    std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(events)?)?;
+    std::fs::write(
+        artifacts_dir.join("events.json"),
+        serde_json::to_vec(events)?,
+    )?;
     crate::write_timeline(events, &artifacts_dir.join("timeline.json"))?;
     Ok(())
 }
@@ -178,9 +181,7 @@ pub(crate) fn write_memory_artifacts_if_enabled(
     artifacts_dir: &Path,
     enabled: bool,
 ) -> FozzyResult<()> {
-    if enabled
-        && let Some(memory) = memory
-    {
+    if enabled && let Some(memory) = memory {
         crate::write_memory_artifacts(memory, artifacts_dir)?;
     }
     Ok(())

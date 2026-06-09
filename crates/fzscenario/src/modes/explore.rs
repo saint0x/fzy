@@ -352,7 +352,11 @@ fn explore_steps_scenario(
         should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
     if emit_heavy {
         write_event_artifacts(&run.events, &artifacts_dir)?;
-        write_memory_artifacts_if_enabled(run.memory.as_ref(), &artifacts_dir, opt.memory.artifacts)?;
+        write_memory_artifacts_if_enabled(
+            run.memory.as_ref(),
+            &artifacts_dir,
+            opt.memory.artifacts,
+        )?;
     }
 
     let should_record = opt.record_trace_to.is_some() || run.status != ExitStatus::Pass;

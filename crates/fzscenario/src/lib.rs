@@ -86,6 +86,7 @@ pub(crate) use tracefile::*;
 
 pub use artifacts::{ArtifactCommand, artifacts_command};
 pub use ci::{CiOptions, CiReport, ci_command, ci_evaluate};
+pub use clock::VirtualClock;
 pub use config::Config;
 pub use corpus::{CorpusCommand, corpus_command};
 pub use decisions::{Decision, DecisionCursor};
@@ -94,7 +95,6 @@ pub use engine::{
     FsBackend, HttpBackend, InitTemplate, InitTestType, ProcBackend, ProfileCaptureLevel,
     RecordCollisionPolicy, ReplayOptions, RunOptions, RunResult, ShrinkMinimize, ShrinkOptions,
 };
-pub use clock::VirtualClock;
 pub use envinfo::{compatibility_info, env_info, version_info};
 pub use explore::{ExploreOptions, ScheduleStrategy, explore};
 pub use fsutil::find_matching_files;
@@ -103,8 +103,8 @@ pub use init_scaffold::{InitProjectOptions, init_project, init_project_with_opti
 pub use map_cmd::{MapCommand, ShrinkCoveragePolicy, TopologyProfile, map_command};
 pub use memory::MemoryOptions;
 pub use memory_cmd::{MemoryCommand, memory_command};
-pub use reporting::ReportOutput;
 pub use profile_cmd::heap_budget_findings_from_trace;
+pub use reporting::ReportOutput;
 pub use reporting::{ExitStatus, FindingKind, Reporter, RunSummary};
 pub use reporting_cmd::{ReportCommand, report_command};
 pub use run_flow::{replay_trace, run_scenario, shrink_trace};

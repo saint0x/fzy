@@ -4,7 +4,6 @@ mod services;
 mod runtime;
 mod cli;
 mod tests;
-
 fn main() -> i32 {
     requires true;
     discard model.preflight();

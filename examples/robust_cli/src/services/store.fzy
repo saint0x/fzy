@@ -1,14 +1,12 @@
 use core.fs;
 use core.mem;
 use core.time;
-
 fn open_db() -> i32 {
     let db_ref = fs.open("robust_cli.store.db");
     defer fs.close(db_ref);
     discard fs.flush(db_ref);
     return 0;
 }
-
 fn write_kv() -> i32 {
     let write_file_ref = fs.open("robust_cli.store.db");
     defer fs.close(write_file_ref);
@@ -19,14 +17,12 @@ fn write_kv() -> i32 {
     discard time.now();
     return 0;
 }
-
 fn read_kv() -> i32 {
     let read_file_ref = fs.open("robust_cli.store.db");
     defer fs.close(read_file_ref);
     discard fs.read(read_file_ref, 4096);
     return 0;
 }
-
 fn scan_kv() -> i32 {
     discard time.now();
     return 0;

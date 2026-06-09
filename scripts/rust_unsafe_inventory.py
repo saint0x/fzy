@@ -5,6 +5,7 @@ import pathlib
 import re
 import sys
 from datetime import datetime, timezone
+from typing import Optional
 
 DEFAULT_SKIP = {"target", ".git", "artifacts", "vendor", "node_modules"}
 
@@ -130,6 +131,13 @@ def strip_non_code(text: str) -> str:
     return "".join(out)
 
 
+def find_cfg_test_cutoff(lines: list[str]) -> Optional[int]:
+    for idx in range(len(lines) - 1):
+        if lines[idx].strip() == "#[cfg(test)]" and lines[idx + 1].strip().startswith("mod tests"):
+            return idx + 1
+    return None
+
+
 def main():
     args = parse_args()
     root = pathlib.Path(args.root).resolve()
@@ -146,7 +154,10 @@ def main():
         text = file_path.read_text(encoding="utf-8")
         lines = text.splitlines()
         code_only_lines = strip_non_code(text).splitlines()
+        cutoff = find_cfg_test_cutoff(lines)
         for i, line in enumerate(code_only_lines, start=1):
+            if cutoff is not None and i >= cutoff:
+                break
             for kind, regex in (("unsafe_block", UNSAFE_BLOCK_RE), ("unsafe_fn", UNSAFE_FN_RE)):
                 if not regex.search(line):
                     continue

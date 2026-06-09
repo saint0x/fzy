@@ -1,14 +1,12 @@
 use core.proc;
 use core.fs;
 use core.log;
-
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let fields = map.new();
     discard map.set(fields, k1, v1);
     discard map.set(fields, k2, v2);
     return log.fields(fields);
 }
-
 fn log_access() -> i32 {
     let audit_proc_owned = proc.spawn("echo audit-access");
     defer proc.close(audit_proc_owned);
@@ -19,7 +17,6 @@ fn log_access() -> i32 {
     log.info("audit.access", fields2("component", "audit", "phase", "access"));
     return 0;
 }
-
 fn audit_privileged_op() -> i32 {
     proc.exit_class();
     log.warn("audit.privileged", fields2("component", "audit", "phase", "privileged"));

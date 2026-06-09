@@ -1,9 +1,9 @@
 pub mod service;
 
 use std::collections::HashMap;
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -325,13 +325,21 @@ impl RunQueue {
     fn pop_front(&mut self) -> Option<TaskId> {
         let id = self.head?;
         let removed = self.remove(id);
-        if removed { Some(id) } else { None }
+        if removed {
+            Some(id)
+        } else {
+            None
+        }
     }
 
     fn pop_back(&mut self) -> Option<TaskId> {
         let id = self.tail?;
         let removed = self.remove(id);
-        if removed { Some(id) } else { None }
+        if removed {
+            Some(id)
+        } else {
+            None
+        }
     }
 
     fn pop_random(&mut self, random_state: &mut u64) -> Option<TaskId> {
@@ -814,8 +822,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        CancellationToken, DeterministicExecutor, ExecutorConfig, JoinOutcome, PanicReport,
-        RuntimeConfig, Scheduler, TaskEvent, TaskLocalStore, TaskState, plan_async_checkpoints,
+        plan_async_checkpoints, CancellationToken, DeterministicExecutor, ExecutorConfig,
+        JoinOutcome, PanicReport, RuntimeConfig, Scheduler, TaskEvent, TaskLocalStore, TaskState,
     };
 
     #[test]
@@ -916,12 +924,10 @@ mod tests {
             .spawn_bounded(Box::new(|| {}))
             .expect("first spawn");
         assert!(executor.spawn_bounded(Box::new(|| {})).is_err());
-        assert!(
-            executor
-                .trace()
-                .iter()
-                .any(|event| matches!(event, TaskEvent::Backpressure { .. }))
-        );
+        assert!(executor
+            .trace()
+            .iter()
+            .any(|event| matches!(event, TaskEvent::Backpressure { .. })));
     }
 
     #[test]

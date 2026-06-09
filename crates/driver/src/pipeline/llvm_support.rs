@@ -248,6 +248,14 @@ fn llvm_emit_array_argument_parts(
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
 ) -> Result<Option<(LlvmValue, LlvmValue)>> {
+    fn pointer_element_stride(ty: &ast::Type) -> Option<u8> {
+        let ast::Type::Ptr { to, .. } = ty else {
+            return None;
+        };
+        let element_ty = llvm_ir_type_for_ast_type(to.as_ref());
+        let (_bits, _align, stride) = llvm_array_layout_for_element_ty(&element_ty);
+        Some(if stride == 0 { 1 } else { stride })
+    }
     fn sibling_len_binding_name(name: &str) -> Option<String> {
         for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
             if let Some(stem) = name.strip_suffix(suffix) {
@@ -278,7 +286,11 @@ fn llvm_emit_array_argument_parts(
                     },
                 )));
             }
-            if matches!(ctx.local_types.get(name), Some(ast::Type::Ptr { .. })) {
+            if let Some(ptr_ty) = ctx.local_types.get(name) {
+                if !matches!(ptr_ty, ast::Type::Ptr { .. }) {
+                    return Ok(None);
+                }
+                let element_stride = pointer_element_stride(ptr_ty);
                 if let Some(len_name) = sibling_len_binding_name(name) {
                     if ctx.local_types.contains_key(&len_name) {
                         let ptr = llvm_emit_expr_as(
@@ -295,6 +307,23 @@ fn llvm_emit_array_argument_parts(
                             task_ref_ids,
                             "i32",
                         )?;
+                        let len = if let Some(element_stride) = element_stride {
+                            if element_stride > 1 {
+                                let count = ctx.value();
+                                ctx.code.push_str(&format!(
+                                    "  {count} = udiv i32 {}, {}\n",
+                                    len.value, element_stride
+                                ));
+                                LlvmValue {
+                                    value: count,
+                                    ty: "i32".to_string(),
+                                }
+                            } else {
+                                len
+                            }
+                        } else {
+                            len
+                        };
                         return Ok(Some((ptr, len)));
                     }
                 }

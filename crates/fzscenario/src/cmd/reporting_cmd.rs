@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Config, FlakeBudget, FozzyError, FozzyResult, Reporter, RunSummary, RunBundleTraceMode,
+    Config, FlakeBudget, FozzyError, FozzyResult, Reporter, RunBundleTraceMode, RunSummary,
     explain_profile_bundle, load_profile_bundle_with_run_bundle, load_run_bundle, render_html,
     render_junit_xml,
 };
@@ -56,7 +56,10 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
     match command {
         ReportCommand::Show { run, format } => {
             let bundle = load_run_bundle(config, run, RunBundleTraceMode::IfNeeded)?;
-            let summary = bundle.summary.clone().ok_or_else(|| missing_report_error(run, &bundle))?;
+            let summary = bundle
+                .summary
+                .clone()
+                .ok_or_else(|| missing_report_error(run, &bundle))?;
             let doc = report_doc_with_profile(config, run, &summary, &bundle);
             match format {
                 Reporter::Json => Ok(doc),
@@ -81,7 +84,10 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
             list_paths,
         } => {
             let bundle = load_run_bundle(config, run, RunBundleTraceMode::IfNeeded)?;
-            let summary = bundle.summary.clone().ok_or_else(|| missing_report_error(run, &bundle))?;
+            let summary = bundle
+                .summary
+                .clone()
+                .ok_or_else(|| missing_report_error(run, &bundle))?;
             let value = report_doc_with_profile(config, run, &summary, &bundle);
             if *list_paths {
                 return Ok(serde_json::json!({

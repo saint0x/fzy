@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use driver::{
-    Command, CommandFailure, Format, cli_output, run as driver_run,
-    run_with_metadata as driver_run_with_metadata,
+    cli_output, run as driver_run, run_with_metadata as driver_run_with_metadata, Command,
+    CommandFailure, Format,
 };
 
 pub fn run() -> Result<()> {
@@ -834,10 +834,9 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(
-            err.to_string()
-                .contains("production memory safety is always enabled")
-        );
+        assert!(err
+            .to_string()
+            .contains("production memory safety is always enabled"));
     }
 
     #[test]
@@ -848,10 +847,9 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(
-            err.to_string()
-                .contains("production memory safety is always enabled")
-        );
+        assert!(err
+            .to_string()
+            .contains("production memory safety is always enabled"));
     }
 
     #[test]
@@ -1259,11 +1257,9 @@ mod tests {
             "artifacts/default.profdata".to_string(),
         ];
         let error = parse_command(&args).expect_err("combined pgo flags should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("--pgo-generate and --pgo-use are mutually exclusive")
-        );
+        assert!(error
+            .to_string()
+            .contains("--pgo-generate and --pgo-use are mutually exclusive"));
     }
 
     #[test]

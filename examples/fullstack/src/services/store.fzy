@@ -1,6 +1,5 @@
 use core.fs;
 use core.mem;
-
 fn init() -> i32 {
     let db_ref = fs.open("fullstack.store.db");
     defer fs.close(db_ref);

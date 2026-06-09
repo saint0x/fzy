@@ -1,5 +1,4 @@
 use core.proc;
-
 fn guard() -> i32 {
     let guard_proc_owned = proc.spawn("echo fullstack-guard");
     defer proc.close(guard_proc_owned);

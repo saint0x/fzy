@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use ast::Type;
 use core::CapabilitySet;
+pub use hir::count_module_owned_return_transfers;
 pub use hir::TypedFunction;
 pub use hir::UnsafeContractSite;
-pub use hir::count_module_owned_return_transfers;
 use hir::{FunctionCapabilityRequirement, TypedModule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,16 +138,18 @@ pub struct VerifierFunction<'a> {
 
 impl FirModule {
     pub fn verifier_functions(&self) -> impl Iterator<Item = VerifierFunction<'_>> {
-        self.typed_functions.iter().map(|function| VerifierFunction {
-            name: function.name.as_str(),
-            params: function.params.as_slice(),
-            return_type: &function.return_type,
-            is_async: function.is_async,
-            is_unsafe: function.is_unsafe,
-            is_extern: function.is_extern,
-            abi: &function.abi,
-            has_body: !function.body.is_empty(),
-        })
+        self.typed_functions
+            .iter()
+            .map(|function| VerifierFunction {
+                name: function.name.as_str(),
+                params: function.params.as_slice(),
+                return_type: &function.return_type,
+                is_async: function.is_async,
+                is_unsafe: function.is_unsafe,
+                is_extern: function.is_extern,
+                abi: &function.abi,
+                has_body: !function.body.is_empty(),
+            })
     }
 
     pub fn returned_owned_sites(&self) -> usize {

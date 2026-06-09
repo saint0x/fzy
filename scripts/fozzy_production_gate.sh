@@ -6,8 +6,12 @@ cd "$ROOT"
 
 SEED="${SEED:-4242}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts}"
-TRACE_PATH="$ARTIFACT_DIR/production-gate.trace.fozzy"
-MEM_TRACE_PATH="$ARTIFACT_DIR/production-memory.trace.fozzy"
+TRACE_BASENAME="production-gate.${SEED}.$$"
+MEM_TRACE_BASENAME="production-memory.${SEED}.$$"
+TRAIT_TRACE_BASENAME="trait-generic-gate.${SEED}.$$"
+TRACE_PATH="$ARTIFACT_DIR/${TRACE_BASENAME}.trace.fozzy"
+MEM_TRACE_PATH="$ARTIFACT_DIR/${MEM_TRACE_BASENAME}.trace.fozzy"
+TRAIT_TRACE_PATH="$ARTIFACT_DIR/${TRAIT_TRACE_BASENAME}.trace.fozzy"
 UNSAFE_BUDGET="${UNSAFE_BUDGET:-38}"
 UNSAFE_AUDIT_TARGET="${UNSAFE_AUDIT_TARGET:-.}"
 RUST_UNSAFE_BUDGET="${RUST_UNSAFE_BUDGET:-2}"
@@ -86,7 +90,7 @@ echo "[gate] deterministic trait/generic doctor/tests"
 "${FZ_CMD[@]}" test tests/trait_generic.pass.fozzy.json --det --strict-verify --seed "$SEED" --json >/dev/null
 
 echo "[gate] record deterministic trace"
-"${FZ_CMD[@]}" run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --record-collision overwrite --json >/dev/null
 
 echo "[gate] trace verify/replay/ci"
 "${FZ_CMD[@]}" trace verify "$TRACE_PATH" --strict --json >/dev/null
@@ -94,16 +98,16 @@ echo "[gate] trace verify/replay/ci"
 "${FZ_CMD[@]}" ci "$TRACE_PATH" --json >/dev/null
 
 echo "[gate] memory trace record/verify/replay/ci"
-"${FZ_CMD[@]}" run tests/memory_graph_diff_top.pass.fozzy.json --det --seed "$SEED" --record "$MEM_TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" run tests/memory_graph_diff_top.pass.fozzy.json --det --seed "$SEED" --record "$MEM_TRACE_PATH" --record-collision overwrite --json >/dev/null
 "${FZ_CMD[@]}" trace verify "$MEM_TRACE_PATH" --strict --json >/dev/null
 "${FZ_CMD[@]}" replay "$MEM_TRACE_PATH" --json >/dev/null
 "${FZ_CMD[@]}" ci "$MEM_TRACE_PATH" --json >/dev/null
 
 echo "[gate] trait/generic trace record/verify/replay/ci"
-"${FZ_CMD[@]}" run tests/trait_generic.pass.fozzy.json --det --seed "$SEED" --record "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
-"${FZ_CMD[@]}" trace verify "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --strict --json >/dev/null
-"${FZ_CMD[@]}" replay "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
-"${FZ_CMD[@]}" ci "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
+"${FZ_CMD[@]}" run tests/trait_generic.pass.fozzy.json --det --seed "$SEED" --record "$TRAIT_TRACE_PATH" --record-collision overwrite --json >/dev/null
+"${FZ_CMD[@]}" trace verify "$TRAIT_TRACE_PATH" --strict --json >/dev/null
+"${FZ_CMD[@]}" replay "$TRAIT_TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" ci "$TRAIT_TRACE_PATH" --json >/dev/null
 
 echo "[gate] host-backed run"
 "${FZ_CMD[@]}" run tests/runtime.bind_json_env.pass.fozzy.json --host-backends --json >/dev/null

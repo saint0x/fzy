@@ -7,6 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "crates" / "driver" / "src" / "pipeline.rs"
+LLVM_SUPPORT = ROOT / "crates" / "driver" / "src" / "pipeline" / "llvm_support.rs"
+CLIF_SUPPORT = ROOT / "crates" / "driver" / "src" / "pipeline" / "clif_support.rs"
 
 
 def read_text(path: Path) -> str:
@@ -14,7 +16,10 @@ def read_text(path: Path) -> str:
 
 
 def main() -> int:
-    src = read_text(PIPELINE)
+    pipeline_src = read_text(PIPELINE)
+    llvm_src = read_text(LLVM_SUPPORT)
+    clif_src = read_text(CLIF_SUPPORT)
+    src = "\n".join([pipeline_src, llvm_src, clif_src])
     errors: list[str] = []
 
     legacy_array_symbols = [
@@ -69,13 +74,20 @@ def main() -> int:
         "fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> Result<String>",
         "BackendKind::Llvm => lower_llvm_ir(fir, true)",
         "BackendKind::Cranelift => lower_cranelift_ir(fir, true)",
-        "let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks)?;",
         "canonical cfg unavailable for `{}`: missing entry",
         "canonical cfg unavailable for `{}`: {}",
     ]
     for marker in required_fail_fast_markers:
         if marker not in src:
             errors.append(f"native fail-fast contract marker missing: `{marker}`")
+
+    if not re.search(
+        r"let llvm_ir = lower_llvm_ir\([A-Za-z_][A-Za-z0-9_]*,\s*enforce_contract_checks\)\?;",
+        src,
+    ):
+        errors.append(
+            "native fail-fast contract marker missing: `let llvm_ir = lower_llvm_ir(<fir>, enforce_contract_checks)?;`"
+        )
 
     fallback_markers = (
         "; cfg lowering failed:",

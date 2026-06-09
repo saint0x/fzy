@@ -36,7 +36,7 @@ def main() -> int:
 
     has_use_alias = (
         "fn parse_use_tree(" in parser_src
-        and "if self.consume(&TokenKind::Ident(\"as\".to_string()))" in parser_src
+        and "if self.consume_ident(\"as\")" in parser_src
     )
     has_use_wildcard = (
         "fn parse_use_tree(" in parser_src
@@ -126,8 +126,7 @@ def main() -> int:
         "pub_use_reexport_support": "implemented" if has_pub_use else "missing",
         "let_mutability_semantics": "implemented"
         if "assignment to immutable binding" in hir_src
-        and "let mutable = self.consume(&TokenKind::Ident(\"mut\".to_string()));"
-        in parser_src
+        and "let mutable = self.consume_ident(\"mut\");" in parser_src
         else "missing",
         "let_pattern_destructuring": "implemented" if has_let_pattern else "missing",
         "const_declaration_surface": "implemented"
@@ -137,7 +136,7 @@ def main() -> int:
         if "fn parse_static(" in parser_src and "ast::Item::Static" in parser_src
         else "missing",
         "static_mut_surface": "implemented"
-        if "let mutable = self.consume(&TokenKind::Ident(\"mut\".to_string()));" in parser_src
+        if "let mutable = self.consume_ident(\"mut\");" in parser_src
         and "pub mutable: bool," in ast_src
         else "missing",
         "closure_lambda_values": "implemented" if has_closure else "missing",
