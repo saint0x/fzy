@@ -1,5 +1,18 @@
 use core.thread;
 
+struct ThreadPolicy {
+    workers: i32,
+    batch_size: i32,
+    spawn_threshold: i32,
+}
+
+fn clamp_nonnegative(value: i32) -> i32 {
+    if value < 0 {
+        return 0
+    }
+    return value
+}
+
 fn context_id() -> i32 {
     return thread.context_id()
 }
@@ -18,9 +31,62 @@ fn context_id_or(fallback: i32) -> i32 {
     return context_id()
 }
 
-fn sample() -> i32 {
-    if is_context_bound() == 1 {
-        return context_id() % 251
+fn normalize_workers(requested: i32, fallback: i32, max_workers: i32) -> i32 {
+    let safe_fallback = if fallback < 1 { 1 } else { fallback }
+    let safe_max = if max_workers < 1 { safe_fallback } else { max_workers }
+    let mut workers = requested
+    if workers < 1 {
+        workers = safe_fallback
     }
-    return 0
+    if workers > safe_max {
+        workers = safe_max
+    }
+    if workers < 1 {
+        return 1
+    }
+    return workers
+}
+
+fn batch_size(work_items: i32, workers: i32) -> i32 {
+    let safe_work = clamp_nonnegative(work_items)
+    let safe_workers = normalize_workers(workers, 1, workers)
+    if safe_work == 0 {
+        return 1
+    }
+    let batches = (safe_work + safe_workers - 1) / safe_workers
+    if batches < 1 {
+        return 1
+    }
+    return batches
+}
+
+fn should_spawn(work_items: i32, workers: i32, threshold: i32) -> i32 {
+    let safe_work = clamp_nonnegative(work_items)
+    let safe_threshold = if threshold < 1 { 1 } else { threshold }
+    let safe_workers = normalize_workers(workers, 1, workers)
+    if safe_workers < 2 {
+        return 0
+    }
+    if safe_work < safe_threshold {
+        return 0
+    }
+    return 1
+}
+
+fn policy(work_items: i32, requested_workers: i32, max_workers: i32, threshold: i32) -> ThreadPolicy {
+    let workers = normalize_workers(requested_workers, 1, max_workers)
+    return ThreadPolicy {
+        workers: workers,
+        batch_size: batch_size(work_items, workers),
+        spawn_threshold: if threshold < 1 { 1 } else { threshold },
+    }
+}
+
+fn sample() -> i32 {
+    let cfg = policy(17, 4, 8, 3)
+    let score = cfg.workers + cfg.batch_size + cfg.spawn_threshold + should_spawn(17, cfg.workers, cfg.spawn_threshold)
+    if is_context_bound() == 1 {
+        return (context_id() + score) % 251
+    }
+    return score % 251
 }

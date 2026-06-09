@@ -84,6 +84,23 @@ pub fn bytes_read_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
 }
 pub fn duration_add(a: i32, b: i32) -> i32 { return duration.add(a, b) }
 pub fn duration_sub(a: i32, b: i32) -> i32 { return duration.sub(a, b) }
+pub fn abi_layout_score(size: i32, align: i32, pointer_width: i32, stable_ffi: i32) -> i32 {
+    return abi.layout_score(size, align, pointer_width, stable_ffi)
+}
+pub fn abi_layout_is_valid(size: i32, align: i32, pointer_width: i32) -> i32 {
+    return abi.layout_is_valid(size, align, pointer_width)
+}
+pub fn cinterop_contract_score(owner: str, nullable: i32, mutable_mode: i32, panic_abort: i32) -> i32 {
+    return cinterop.contract_score(owner, nullable, mutable_mode, panic_abort)
+}
+pub fn result_status_retryable(status: i32) -> i32 {
+    let record = resultx.status_record(status)
+    return record.retryable
+}
+pub fn result_status_class_score(status: i32) -> i32 {
+    let record = resultx.status_record(status)
+    return resultx.score(record.class)
+}
 
 pub fn io_read_text(file_path: str) -> str { return io.read_text(file_path) }
 pub fn io_write_text(file_path: str, value: str) -> i32 { return io.write_text(file_path, value) }
@@ -175,4 +192,8 @@ pub fn concurrency_backpressure_score(depth: i32, capacity: i32) -> i32 {
     return concurrency.backpressure_score(signal)
 }
 pub fn thread_context_id_or(fallback: i32) -> i32 { return threadkit.context_id_or(fallback) }
+pub fn thread_batch_size(work_items: i32, workers: i32) -> i32 { return threadkit.batch_size(work_items, workers) }
+pub fn thread_should_spawn(work_items: i32, workers: i32, threshold: i32) -> i32 {
+    return threadkit.should_spawn(work_items, workers, threshold)
+}
 pub fn memory_phase_fence() -> i32 { return memkit.phase_fence() }

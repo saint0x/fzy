@@ -1,3 +1,35 @@
+fn clamp_nonnegative(value: i32) -> i32 {
+    if value < 0 {
+        return 0
+    }
+    return value
+}
+
+host fn has_device() -> i32 {
+    if device_count() > 0 {
+        return 1
+    }
+    return 0
+}
+
+host fn safe_allocation_len(len: i32) -> i32 {
+    return clamp_nonnegative(len)
+}
+
+host fn safe_slice_offset(offset: i32) -> i32 {
+    return clamp_nonnegative(offset)
+}
+
+host fn safe_slice_len(len: i32) -> i32 {
+    return clamp_nonnegative(len)
+}
+
+host fn slice_bounds_score(offset: i32, len: i32) -> i32 {
+    let safe_offset = safe_slice_offset(offset)
+    let safe_len = safe_slice_len(len)
+    return (safe_offset + (safe_len * 7)) % 251
+}
+
 host fn device_count() -> i32 {
     return gpu.device_count()
 }
@@ -15,15 +47,15 @@ host fn device_memory_bytes(dev: GpuDevice) -> i64 {
 }
 
 host fn alloc_f32(dev: GpuDevice, len: i32) -> GpuBuffer<f32> {
-    return gpu.alloc_f32(dev, len)
+    return gpu.alloc_f32(dev, safe_allocation_len(len))
 }
 
 host fn alloc_i32(dev: GpuDevice, len: i32) -> GpuBuffer<i32> {
-    return gpu.alloc_i32(dev, len)
+    return gpu.alloc_i32(dev, safe_allocation_len(len))
 }
 
 host fn alloc_u32(dev: GpuDevice, len: i32) -> GpuBuffer<u32> {
-    return gpu.alloc_u32(dev, len)
+    return gpu.alloc_u32(dev, safe_allocation_len(len))
 }
 
 host fn free<T>(buffer: GpuBuffer<T>) -> void {
@@ -55,7 +87,7 @@ host fn download_u32(buffer: GpuBuffer<u32>) -> Vec<u32> {
 }
 
 host fn slice<T>(buffer: GpuBuffer<T>, offset: i32, len: i32) -> GpuSlice<T> {
-    return gpu.slice(buffer, offset, len)
+    return gpu.slice(buffer, safe_slice_offset(offset), safe_slice_len(len))
 }
 
 device fn len<T>(buffer: GpuSlice<T>) -> i32 {
@@ -124,13 +156,14 @@ fn sample() -> i32 {
         return 1
     }
     if count == 0 {
-        return 0
+        return slice_bounds_score(-1, -1)
     }
     let dev = default_device()
     let name = device_name(dev)
     let bytes = device_memory_bytes(dev)
+    let alloc_score = safe_allocation_len(-7) + slice_bounds_score(-2, 8) + has_device()
     if str.len(name) < 0 || bytes < 0 {
         return 2
     }
-    return 0
+    return alloc_score % 251
 }
