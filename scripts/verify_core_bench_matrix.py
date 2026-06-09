@@ -89,10 +89,10 @@ def main():
             )
         verified.append({"bench": name, "checksum": rust_checksum})
 
-    out_path = ROOT / "artifacts" / "corelibs_bench_matrix_verify.json"
+    out_path = ROOT / "artifacts" / "core_bench_matrix_verify.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({"verified": verified}, indent=2) + "\n", encoding="utf-8")
-    print("corelibs-bench-matrix-ok")
+    print("core-bench-matrix-ok")
 
 
 if __name__ == "__main__":

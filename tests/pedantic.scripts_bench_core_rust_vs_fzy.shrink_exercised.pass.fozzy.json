@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "name": "pedantic-scripts-bench-corelibs-rust-vs-fzy-explore-schedule-faults-pass",
+  "name": "pedantic-scripts-bench-core-rust-vs-fzy-shrink-exercised-pass",
   "steps": [
     {
       "type": "proc_when",
       "cmd": "python3",
       "args": [
         "-c",
-        "print('bench-corelibs-explore-pass')"
+        "print('bench-core-shrink-pass')"
       ],
       "exit_code": 0,
-      "stdout": "bench-corelibs-explore-pass\n",
+      "stdout": "bench-core-shrink-pass\n",
       "stderr": "",
       "times": 1
     },
@@ -19,10 +19,10 @@
       "cmd": "python3",
       "args": [
         "-c",
-        "print('bench-corelibs-explore-pass')"
+        "print('bench-core-shrink-pass')"
       ],
       "expect_exit": 0,
-      "expect_stdout": "bench-corelibs-explore-pass\n"
+      "expect_stdout": "bench-core-shrink-pass\n"
     }
   ]
 }

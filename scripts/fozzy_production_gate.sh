@@ -32,12 +32,12 @@ python3 ./scripts/traits_generics_gate.py >/dev/null
 echo "[gate] direct-memory architecture gate"
 python3 ./scripts/direct_memory_architecture_gate.py >/dev/null
 
-echo "[gate] runtime corelib execution path gate"
-python3 ./scripts/runtime_corelib_execution_path_gate.py >/dev/null
+echo "[gate] runtime core execution path gate"
+python3 ./scripts/runtime_core_execution_path_gate.py >/dev/null
 
-echo "[gate] corelib package check/build"
-cargo run -q -p fz -- check corelib --json >/dev/null
-cargo run -q -p fz -- build corelib --backend llvm --release --json >/dev/null
+echo "[gate] core package check/build"
+cargo run -q -p fz -- check core --json >/dev/null
+cargo run -q -p fz -- build core --backend llvm --release --json >/dev/null
 
 echo "[gate] direct-memory perf exit gate"
 python3 ./scripts/direct_memory_perf_gate.py >/dev/null

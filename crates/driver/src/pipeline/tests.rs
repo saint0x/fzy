@@ -75,6 +75,34 @@ fn compile_and_run_c_host(source: &str, static_lib: &Path, work_dir: &Path) {
     );
 }
 
+#[cfg(target_vendor = "apple")]
+fn compile_and_run_c_host_with_metal(source: &str, static_lib: &Path, work_dir: &Path) {
+    let host_c = work_dir.join("host.c");
+    let host_bin = work_dir.join("host");
+    std::fs::write(&host_c, source).expect("host source should be written");
+    let status = Command::new("cc")
+        .arg(&host_c)
+        .arg(static_lib)
+        .arg("-lpthread")
+        .arg("-framework")
+        .arg("Foundation")
+        .arg("-framework")
+        .arg("Metal")
+        .arg("-o")
+        .arg(&host_bin)
+        .status()
+        .expect("cc should be available");
+    assert!(status.success(), "gpu c host build should succeed");
+    let run = Command::new(&host_bin)
+        .status()
+        .expect("gpu c host should execute");
+    assert!(
+        run.success(),
+        "gpu c host should exit successfully with {}",
+        run.code().unwrap_or(-1)
+    );
+}
+
 #[test]
 fn compile_file_runs_pipeline() {
     let file_name = format!(
@@ -520,7 +548,7 @@ fn release_policy_artifact_reports_error_perf_and_compat_contracts() {
         .is_some_and(|items| items.iter().any(|item| item["name"] == "timeout")));
     assert_eq!(
         payload["performance"]["benchmarkArtifact"].as_str(),
-        Some("artifacts/bench_corelibs_rust_vs_fzy.json")
+        Some("artifacts/bench_core_rust_vs_fzy.json")
     );
     assert!(payload["performance"]["workloads"]
         .as_array()
@@ -6461,6 +6489,44 @@ fn compile_library_supports_raw_pointer_indexing_and_usize_consts() {
     let _ = std::fs::remove_dir_all(clif_root);
 }
 
+#[test]
+fn compile_library_supports_raw_pointer_indexed_writes() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("fozzylang-lib-ptr-write-{suffix}"));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo_lib\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"demo_lib\"\npath=\"src/lib.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/lib.fzy"),
+        "#[ffi_panic(abort)]\npubext c fn poke(out_values_out: *f32, out_values_len: usize) -> i32 {\n    discard out_values_len\n    out_values_out[0] = 1.0f32\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let parsed = parse_program(&root.join("src/lib.fzy")).expect("parse should succeed");
+    let ((_typed, fir), _) = super::lower_fir_cached_with_metadata(&parsed);
+    assert_eq!(fir.type_errors, 0, "{:?}", fir.type_error_details);
+
+    let artifact = compile_library_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("raw pointer indexed write library build should succeed");
+    assert_eq!(
+        artifact.status, "ok",
+        "{:?}",
+        artifact
+            .diagnostic_details
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[cfg(target_vendor = "apple")]
 #[test]
 fn compile_library_supports_gpu_pointer_upload_helpers_and_kernel_simd_arrays() {
@@ -6527,6 +6593,240 @@ pubext c fn render(weights_borrowed: *f32, weights_len: usize, out_values_out: *
     assert_eq!(cranelift.status, "ok");
 
     let _ = std::fs::remove_dir_all(llvm_root);
+    let _ = std::fs::remove_dir_all(clif_root);
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn borrowed_gpu_upload_from_ffi_raw_pointer_uses_element_counts_at_runtime() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let llvm_root =
+        std::env::temp_dir().join(format!("fozzylang-lib-gpu-upload-runtime-llvm-{suffix}"));
+    let clif_root =
+        std::env::temp_dir().join(format!("fozzylang-lib-gpu-upload-runtime-clif-{suffix}"));
+    let manifest = "[package]\nname=\"gpu_upload_runtime\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"gpu_upload_runtime\"\npath=\"src/lib.fzy\"\n";
+    let source = r#"use core.gpu;
+
+#[ffi_panic(abort)]
+pubext c fn echo_gpu_upload(weights_borrowed: *f32, weights_len: usize, out_values_out: *f32, out_values_len: usize) -> i32 {
+    discard weights_len
+    discard out_values_len
+    let dev = gpu.default_device()
+    let input: GpuBuffer<f32> = gpu.upload_f32(dev, weights_borrowed)
+    defer gpu.free(input)
+    let values: Vec<f32> = gpu.download_f32(input)
+    out_values_out[0] = values[0]
+    out_values_out[1] = values[1]
+    out_values_out[2] = values[2]
+    out_values_out[3] = values[3]
+    return 0
+}
+"#;
+
+    for root in [&llvm_root, &clif_root] {
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(root.join("fozzy.toml"), manifest).expect("manifest should be written");
+        std::fs::write(root.join("src/lib.fzy"), source).expect("source should be written");
+    }
+
+    let llvm = compile_library_with_backend(&llvm_root, BuildProfile::Release, Some("llvm"))
+        .expect("llvm gpu upload runtime library build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift = compile_library_with_backend(&clif_root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift gpu upload runtime library build should succeed");
+    assert_eq!(cranelift.status, "ok");
+
+    let host_source = r#"
+#include <stdint.h>
+
+int32_t echo_gpu_upload(float* weights_borrowed, uintptr_t weights_len, float* out_values_out, uintptr_t out_values_len);
+
+int main(void) {
+  float values[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  float out[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  int32_t status = echo_gpu_upload(values, sizeof(values), out, sizeof(out));
+  if (status != 0) return 11;
+  if (out[0] != 1.0f) return 12;
+  if (out[1] != 2.0f) return 13;
+  if (out[2] != 3.0f) return 14;
+  if (out[3] != 4.0f) return 15;
+  return 0;
+}
+"#;
+
+    compile_and_run_c_host_with_metal(
+        host_source,
+        llvm.static_lib
+            .as_deref()
+            .expect("llvm static lib should exist"),
+        &llvm_root,
+    );
+    compile_and_run_c_host_with_metal(
+        host_source,
+        cranelift
+            .static_lib
+            .as_deref()
+            .expect("cranelift static lib should exist"),
+        &clif_root,
+    );
+
+    let _ = std::fs::remove_dir_all(llvm_root);
+    let _ = std::fs::remove_dir_all(clif_root);
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn metal_kernel_stmt_discard_of_gpu_slice_lowers_to_noop_without_breaking_launch() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let clif_root =
+        std::env::temp_dir().join(format!("fozzylang-lib-gpu-discard-slice-runtime-{suffix}"));
+    let manifest = "[package]\nname=\"gpu_discard_slice_runtime\"\nversion=\"0.1.0\"\n\n[ffi]\npanic_boundary=\"abort\"\n\n[target.lib]\nname=\"gpu_discard_slice_runtime\"\npath=\"src/lib.fzy\"\n";
+    let source = r#"use core.gpu;
+
+kernel fn paint(input: GpuSlice<f32>, output: GpuSlice<i32>) -> void {
+    let i = gpu.global_id_x()
+    let total = gpu.slice_len(output)
+    if i < total {
+        discard input
+        output[i] = 7
+    }
+}
+
+#[ffi_panic(abort)]
+pubext c fn render(values_borrowed: *f32, values_len: usize, out_words_out: *i32, out_words_len: usize) -> i32 {
+    discard values_len
+    discard out_words_len
+    let dev = gpu.default_device()
+    let input: GpuBuffer<f32> = gpu.upload_f32(dev, values_borrowed)
+    defer gpu.free(input)
+    let output: GpuBuffer<i32> = gpu.alloc_i32(dev, 8)
+    defer gpu.free(output)
+    let event = gpu.launch2(paint, 1, 64, gpu.slice(input, 0, 8), gpu.slice(output, 0, 8))
+    gpu.wait(event)
+    let words: Vec<i32> = gpu.download_i32(output)
+    out_words_out[0] = words[0]
+    out_words_out[1] = words[1]
+    out_words_out[2] = words[2]
+    out_words_out[3] = words[3]
+    return 0
+}
+"#;
+
+    std::fs::create_dir_all(clif_root.join("src")).expect("project dir should be created");
+    std::fs::write(clif_root.join("fozzy.toml"), manifest).expect("manifest should be written");
+    std::fs::write(clif_root.join("src/lib.fzy"), source).expect("source should be written");
+
+    let cranelift = compile_library_with_backend(&clif_root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift discard-slice runtime library build should succeed");
+    assert_eq!(cranelift.status, "ok");
+
+    let host_source = r#"
+#include <stdint.h>
+
+int32_t render(float* values_borrowed, uintptr_t values_len, int32_t* out_words_out, uintptr_t out_words_len);
+
+int main(void) {
+  float values[8] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f};
+  int32_t out[4] = {0, 0, 0, 0};
+  int32_t status = render(values, sizeof(values), out, sizeof(out));
+  if (status != 0) return 11;
+  if (out[0] != 7) return 12;
+  if (out[1] != 7) return 13;
+  if (out[2] != 7) return 14;
+  if (out[3] != 7) return 15;
+  return 0;
+}
+"#;
+
+    compile_and_run_c_host_with_metal(
+        host_source,
+        cranelift
+            .static_lib
+            .as_deref()
+            .expect("cranelift static lib should exist"),
+        &clif_root,
+    );
+
+    let _ = std::fs::remove_dir_all(clif_root);
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn gpu_download_u32_large_readback_survives_multi_threadgroup_launch() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let clif_root =
+        std::env::temp_dir().join(format!("fozzylang-lib-gpu-large-u32-readback-{suffix}"));
+    let manifest = "[package]\nname=\"gpu_large_u32_readback\"\nversion=\"0.1.0\"\n\n[ffi]\npanic_boundary=\"abort\"\n\n[target.lib]\nname=\"gpu_large_u32_readback\"\npath=\"src/lib.fzy\"\n";
+    let source = r#"use core.gpu;
+
+kernel fn paint(output: GpuSlice<u32>, n: i32) -> void {
+    let i = gpu.global_id_x()
+    if i < n {
+        output[i] = 255 + ((i + 1) << 8)
+    }
+}
+
+#[ffi_panic(abort)]
+pubext c fn run(out_rgba_out: *u32, out_rgba_len: usize, out_count: i32) -> i32 {
+    discard out_rgba_len
+    let dev = gpu.default_device()
+    let output: GpuBuffer<u32> = gpu.alloc_u32(dev, out_count)
+    defer gpu.free(output)
+    let event = gpu.launch2(paint, ((out_count + 63) / 64), 64, gpu.slice(output, 0, out_count), out_count)
+    gpu.wait(event)
+    let words: Vec<u32> = gpu.download_u32(output)
+    let mut idx = 0
+    while idx < out_count {
+        out_rgba_out[idx] = words[idx]
+        idx = idx + 1
+    }
+    return 0
+}
+"#;
+
+    std::fs::create_dir_all(clif_root.join("src")).expect("project dir should be created");
+    std::fs::write(clif_root.join("fozzy.toml"), manifest).expect("manifest should be written");
+    std::fs::write(clif_root.join("src/lib.fzy"), source).expect("source should be written");
+
+    let cranelift = compile_library_with_backend(&clif_root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift large u32 readback library build should succeed");
+    assert_eq!(cranelift.status, "ok");
+
+    let host_source = r#"
+#include <stdint.h>
+
+int32_t run(uint32_t* out_rgba_out, uintptr_t out_rgba_len, int32_t out_count);
+
+int main(void) {
+  static uint32_t out[12544];
+  int32_t status = run(out, sizeof(out), 12544);
+  if (status != 0) return 11;
+  if (out[0] != 511u) return 12;
+  if (out[1] != 767u) return 13;
+  if (out[4095] != (uint32_t)(255 + ((4095 + 1) << 8))) return 14;
+  if (out[12543] != (uint32_t)(255 + ((12543 + 1) << 8))) return 15;
+  return 0;
+}
+"#;
+
+    compile_and_run_c_host_with_metal(
+        host_source,
+        cranelift
+            .static_lib
+            .as_deref()
+            .expect("cranelift static lib should exist"),
+        &clif_root,
+    );
+
     let _ = std::fs::remove_dir_all(clif_root);
 }
 

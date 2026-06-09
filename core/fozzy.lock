@@ -1,0 +1,12 @@
+{
+  "dependencyGraphHash": "712c33293ad514cf1f37e50554ba83d93ab1e839da0db786a321700e663e70e8",
+  "graph": {
+    "deps": [],
+    "package": {
+      "manifestHash": "cf68cc087c77181b215eaa1cd0156b7ab7b6451c3ce9446b66c3f5c275010152",
+      "name": "core",
+      "version": "0.1.0"
+    }
+  },
+  "schemaVersion": "fozzylang.lock.v0"
+}

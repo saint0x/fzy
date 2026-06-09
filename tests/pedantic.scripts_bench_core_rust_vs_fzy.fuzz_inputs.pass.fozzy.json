@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "name": "pedantic-scripts-bench-corelibs-rust-vs-fzy-shrink-exercised-pass",
+  "name": "pedantic-scripts-bench-core-rust-vs-fzy-fuzz-inputs-pass",
   "steps": [
     {
       "type": "proc_when",
       "cmd": "python3",
       "args": [
         "-c",
-        "print('bench-corelibs-shrink-pass')"
+        "print('bench-core-fuzz-pass')"
       ],
       "exit_code": 0,
-      "stdout": "bench-corelibs-shrink-pass\n",
+      "stdout": "bench-core-fuzz-pass\n",
       "stderr": "",
       "times": 1
     },
@@ -19,10 +19,10 @@
       "cmd": "python3",
       "args": [
         "-c",
-        "print('bench-corelibs-shrink-pass')"
+        "print('bench-core-fuzz-pass')"
       ],
       "expect_exit": 0,
-      "expect_stdout": "bench-corelibs-shrink-pass\n"
+      "expect_stdout": "bench-core-fuzz-pass\n"
     }
   ]
 }

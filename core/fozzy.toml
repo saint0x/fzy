@@ -1,0 +1,11 @@
+[package]
+name = "core"
+version = "0.1.0"
+
+[target.lib]
+name = "core"
+path = "src/lib.fzy"
+
+[[target.bin]]
+name = "core_smoke"
+path = "src/main.fzy"

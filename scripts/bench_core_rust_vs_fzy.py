@@ -207,14 +207,14 @@ def locate_rust_bin() -> pathlib.Path:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run robust Rust vs Fzy production-corelib benchmark suite")
+    parser = argparse.ArgumentParser(description="Run robust Rust vs Fzy production-core benchmark suite")
     parser.add_argument("--warmup-runs", type=int, default=5)
     parser.add_argument("--measured-runs", type=int, default=30)
     parser.add_argument("--bootstrap-samples", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=20260226)
     parser.add_argument(
         "--out-prefix",
-        default="bench_corelibs_rust_vs_fzy",
+        default="bench_core_rust_vs_fzy",
         help="Artifact prefix written into artifacts/<prefix>.json|.md",
     )
     return parser.parse_args()
@@ -315,7 +315,7 @@ def main():
         wins[result["classification"]] += 1
 
     payload = {
-        "suite": "corelibs-rust-vs-fzy-production-corelib-robust",
+        "suite": "core-rust-vs-fzy-production-core-robust",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "commit": commit,
         "warmup_runs": args.warmup_runs,

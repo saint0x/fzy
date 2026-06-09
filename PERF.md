@@ -51,8 +51,8 @@ Follow-up still in progress (separate from this DX pass):
 
 Source benchmark table:
 - `BENCH.md`
-- `artifacts/bench_corelibs_rust_vs_fzy.json`
-- `artifacts/bench_corelibs_rust_vs_fzy.md`
+- `artifacts/bench_core_rust_vs_fzy.json`
+- `artifacts/bench_core_rust_vs_fzy.md`
 
 Primary gaps to close:
 - [ ] `bytes_kernel`: `4.995x` (Fzy slower)

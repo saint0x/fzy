@@ -11148,16 +11148,16 @@ mod embedded_stdlib_dx_tests {
 
 pub(crate) fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str> {
     match module_name {
-        "process" => Some(include_str!("../../../corelib/src/process.fzy")),
-        "term" => Some(include_str!("../../../corelib/src/term.fzy")),
-        "thread" => Some(include_str!("../../../corelib/src/threadkit.fzy")),
-        "log" => Some(include_str!("../../../corelib/src/logkit.fzy")),
-        "mem" => Some(include_str!("../../../corelib/src/mem.fzy")),
-        "security" => Some(include_str!("../../../corelib/src/security.fzy")),
-        "simd" => Some(include_str!("../../../corelib/src/simd.fzy")),
-        "text" => Some(include_str!("../../../corelib/src/text.fzy")),
-        "io" => Some(include_str!("../../../corelib/src/io.fzy")),
-        "http" => Some(include_str!("../../../corelib/src/httpkit.fzy")),
+        "process" => Some(include_str!("../../../core/src/process.fzy")),
+        "term" => Some(include_str!("../../../core/src/termkit.fzy")),
+        "thread" => Some(include_str!("../../../core/src/threadkit.fzy")),
+        "log" => Some(include_str!("../../../core/src/logkit.fzy")),
+        "mem" => Some(include_str!("../../../core/src/memkit.fzy")),
+        "security" => Some(include_str!("../../../core/src/security.fzy")),
+        "simd" => Some(include_str!("../../../core/src/simd.fzy")),
+        "text" => Some(include_str!("../../../core/src/text.fzy")),
+        "io" => Some(include_str!("../../../core/src/io.fzy")),
+        "http" => Some(include_str!("../../../core/src/httpkit.fzy")),
         _ => None,
     }
 }
@@ -15974,7 +15974,7 @@ fn emit_native_libraries_cranelift(
     let object_bytes = object_product
         .emit()
         .map_err(|error| anyhow!("failed emitting cranelift object bytes: {error}"))?;
-    std::fs::write(&object_path, object_bytes).with_context(|| {
+    std::fs::write(&object_path, &object_bytes).with_context(|| {
         format!(
             "failed writing cranelift ffi object: {}",
             object_path.display()
@@ -15988,6 +15988,13 @@ fn emit_native_libraries_cranelift(
         &shim_plan.async_exports,
         &shim_plan.sync_exports,
     )?;
+    compile_runtime_shim_object(
+        &runtime_shim_path,
+        &shim_obj_path,
+        profile,
+        manifest,
+        native_runtime_shim_uses_objc(lowered_fir),
+    )?;
     let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "ffi", "cranelift");
     let cache_key = native_artifact_cache_key(
         "ffi",
@@ -15997,18 +16004,11 @@ fn emit_native_libraries_cranelift(
         lowered_fir,
         manifest,
         &runtime_shim_path,
-        &[],
+        &[&object_bytes],
     )?;
     if native_artifact_cache_hit(&cache_marker, &cache_key, &[&static_path, &shared_path]) {
         return Ok((Some(static_path), Some(shared_path)));
     }
-    compile_runtime_shim_object(
-        &runtime_shim_path,
-        &shim_obj_path,
-        profile,
-        manifest,
-        native_runtime_shim_uses_objc(lowered_fir),
-    )?;
     create_static_archive(
         &static_path,
         &[object_path.as_path(), shim_obj_path.as_path()],
@@ -16321,20 +16321,6 @@ fn emit_native_artifact_cranelift(
         &shim_plan.async_exports,
         &shim_plan.sync_exports,
     )?;
-    let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "bin", "cranelift");
-    let cache_key = native_artifact_cache_key(
-        "bin",
-        "cranelift",
-        artifact_stem,
-        profile,
-        lowered_fir,
-        manifest,
-        &runtime_shim_path,
-        &[],
-    )?;
-    if native_artifact_cache_hit(&cache_marker, &cache_key, &[&bin_path]) {
-        return Ok(bin_path);
-    }
 
     for function in &lowered_fir.typed_functions {
         if matches!(
@@ -16460,8 +16446,22 @@ fn emit_native_artifact_cranelift(
     let object_bytes = object_product
         .emit()
         .map_err(|error| anyhow!("failed emitting cranelift object bytes: {error}"))?;
-    std::fs::write(&object_path, object_bytes)
+    std::fs::write(&object_path, &object_bytes)
         .with_context(|| format!("failed writing cranelift object: {}", object_path.display()))?;
+    let cache_marker = native_artifact_cache_marker(&build_dir, artifact_stem, "bin", "cranelift");
+    let cache_key = native_artifact_cache_key(
+        "bin",
+        "cranelift",
+        artifact_stem,
+        profile,
+        lowered_fir,
+        manifest,
+        &runtime_shim_path,
+        &[&object_bytes],
+    )?;
+    if native_artifact_cache_hit(&cache_marker, &cache_key, &[&bin_path]) {
+        return Ok(bin_path);
+    }
 
     let candidates = linker_candidates();
     let mut last_error = None;

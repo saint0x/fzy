@@ -33,16 +33,16 @@ fn socket_kind_score(kind: SocketKind) -> i32 {
     }
 }
 
-fn ip_class_score(host: str) -> i32 {
-    if str.contains(host, "::") == 1 then return 29
-    if str.contains(host, ".") == 1 then return 19
-    if host == "localhost" then return 13
+fn ip_class_score(hostname: str) -> i32 {
+    if str.contains(hostname, "::") == 1 then return 29
+    if str.contains(hostname, ".") == 1 then return 19
+    if hostname == "localhost" then return 13
     return 31
 }
 
-fn endpoint_score(host: str, endpoint: Endpoint, kind: SocketKind) -> i32 {
+fn endpoint_score(hostname: str, endpoint: Endpoint, kind: SocketKind) -> i32 {
     let mut score = socket_kind_score(kind)
-    score = score + ip_class_score(host)
+    score = score + ip_class_score(hostname)
     score = score + (endpoint.port % 97)
     if endpoint.tls == 1 { score = score + 37 }
     if endpoint.ipv6 == 1 { score = score + 41 }

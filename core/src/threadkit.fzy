@@ -1,9 +1,11 @@
+use core.thread;
+
 fn context_id() -> i32 {
-    return task.context_id()
+    return thread.context_id()
 }
 
 fn is_context_bound() -> i32 {
-    if context_id() == 0 {
+    if thread.is_context_bound() == 0 {
         return 0
     }
     return 1

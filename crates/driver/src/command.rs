@@ -3575,7 +3575,7 @@ fn production_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>>
 fn perf_command(artifact: Option<&Path>, format: Format) -> Result<String> {
     let path = artifact
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("artifacts/bench_corelibs_rust_vs_fzy.json"));
+        .unwrap_or_else(|| PathBuf::from("artifacts/bench_core_rust_vs_fzy.json"));
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("failed reading benchmark artifact {}", path.display()))?;
     let payload: serde_json::Value =
@@ -3651,8 +3651,8 @@ fn stability_dashboard_command(format: Format) -> Result<String> {
         "maturity": exit_payload.get("seriousSystemsLanguageMaturity").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "criteria": exit_payload.get("criteria").cloned().unwrap_or(serde_json::json!({})),
         "performance": {
-            "summaryCommand": "fz perf [--artifact artifacts/bench_corelibs_rust_vs_fzy.json]",
-            "artifact": "artifacts/bench_corelibs_rust_vs_fzy.json",
+            "summaryCommand": "fz perf [--artifact artifacts/bench_core_rust_vs_fzy.json]",
+            "artifact": "artifacts/bench_core_rust_vs_fzy.json",
             "workloads": [
                 {"name": "cli_startup", "description": "CLI startup latency"},
                 {"name": "http_throughput", "description": "HTTP request throughput"},
@@ -3667,7 +3667,7 @@ fn stability_dashboard_command(format: Format) -> Result<String> {
         "sources": {
             "exitCriteria": "release/exit_criteria_state.json",
             "plan": "PLAN.md",
-            "perfArtifact": "artifacts/bench_corelibs_rust_vs_fzy.json"
+            "perfArtifact": "artifacts/bench_core_rust_vs_fzy.json"
         }
     });
     let path = PathBuf::from("artifacts/stability_dashboard.json");
@@ -20321,7 +20321,7 @@ fn main() -> i32 {
         );
         assert_eq!(
             payload["dashboard"]["performance"]["artifact"],
-            "artifacts/bench_corelibs_rust_vs_fzy.json"
+            "artifacts/bench_core_rust_vs_fzy.json"
         );
         assert!(payload["dashboard"]["performance"]["workloads"]
             .as_array()

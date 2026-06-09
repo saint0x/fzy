@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "name": "pedantic-scripts-bench-corelibs-rust-vs-fzy-fuzz-inputs-pass",
+  "name": "pedantic-scripts-bench-core-rust-vs-fzy-explore-schedule-faults-pass",
   "steps": [
     {
       "type": "proc_when",
       "cmd": "python3",
       "args": [
         "-c",
-        "print('bench-corelibs-fuzz-pass')"
+        "print('bench-core-explore-pass')"
       ],
       "exit_code": 0,
-      "stdout": "bench-corelibs-fuzz-pass\n",
+      "stdout": "bench-core-explore-pass\n",
       "stderr": "",
       "times": 1
     },
@@ -19,10 +19,10 @@
       "cmd": "python3",
       "args": [
         "-c",
-        "print('bench-corelibs-fuzz-pass')"
+        "print('bench-core-explore-pass')"
       ],
       "expect_exit": 0,
-      "expect_stdout": "bench-corelibs-fuzz-pass\n"
+      "expect_stdout": "bench-core-explore-pass\n"
     }
   ]
 }

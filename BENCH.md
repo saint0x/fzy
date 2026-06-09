@@ -140,12 +140,12 @@ Date: 2026-02-26
 
 Runner:
 
-- `scripts/bench_corelibs_rust_vs_fzy.py`
+- `scripts/bench_core_rust_vs_fzy.py`
 
 Artifacts:
 
-- `artifacts/bench_corelibs_rust_vs_fzy.json`
-- `artifacts/bench_corelibs_rust_vs_fzy.md`
+- `artifacts/bench_core_rust_vs_fzy.json`
+- `artifacts/bench_core_rust_vs_fzy.md`
 
 ### Result Table
 
@@ -175,22 +175,22 @@ Date: 2026-02-26
 
 Scenario:
 
-- `tests/corelibs.bench_matrix.pass.fozzy.json`
+- `tests/core.bench_matrix.pass.fozzy.json`
 
 Verifier script:
 
-- `scripts/verify_corelibs_bench_matrix.py`
+- `scripts/verify_core_bench_matrix.py`
 
 Commands run:
 
 ```bash
-fozzy doctor --deep --scenario tests/corelibs.bench_matrix.pass.fozzy.json --runs 5 --seed 20260226 --strict --proc-backend host --fs-backend host --http-backend host --json
-fozzy test --det --strict tests/corelibs.bench_matrix.pass.fozzy.json --json
-fozzy test --strict tests/corelibs.bench_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
-fozzy run tests/corelibs.bench_matrix.pass.fozzy.json --det --strict --record artifacts/corelibs_bench_matrix.trace.fozzy --record-collision overwrite --json
-fozzy trace verify artifacts/corelibs_bench_matrix.trace.fozzy --strict --json
-fozzy replay artifacts/corelibs_bench_matrix.trace.fozzy --json
-fozzy ci artifacts/corelibs_bench_matrix.trace.fozzy --json
+fozzy doctor --deep --scenario tests/core.bench_matrix.pass.fozzy.json --runs 5 --seed 20260226 --strict --proc-backend host --fs-backend host --http-backend host --json
+fozzy test --det --strict tests/core.bench_matrix.pass.fozzy.json --json
+fozzy test --strict tests/core.bench_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+fozzy run tests/core.bench_matrix.pass.fozzy.json --det --strict --record artifacts/core_bench_matrix.trace.fozzy --record-collision overwrite --json
+fozzy trace verify artifacts/core_bench_matrix.trace.fozzy --strict --json
+fozzy replay artifacts/core_bench_matrix.trace.fozzy --json
+fozzy ci artifacts/core_bench_matrix.trace.fozzy --json
 ```
 
 Determinism audit:
@@ -200,7 +200,7 @@ Determinism audit:
 
 ### Robust Timing Method
 
-- Runner: `scripts/bench_corelibs_rust_vs_fzy.py`
+- Runner: `scripts/bench_core_rust_vs_fzy.py`
 - Workload parity: checksum-matched for each of 8 kernels.
 - Warmup runs: `5`
 - Measured runs: `30`
@@ -210,13 +210,13 @@ Determinism audit:
 Repro:
 
 ```bash
-python3 scripts/bench_corelibs_rust_vs_fzy.py --warmup-runs 5 --measured-runs 30 --bootstrap-samples 5000 --seed 20260226 --out-prefix bench_corelibs_rust_vs_fzy_robust
+python3 scripts/bench_core_rust_vs_fzy.py --warmup-runs 5 --measured-runs 30 --bootstrap-samples 5000 --seed 20260226 --out-prefix bench_core_rust_vs_fzy_robust
 ```
 
 Artifacts:
 
-- `artifacts/bench_corelibs_rust_vs_fzy_robust.json`
-- `artifacts/bench_corelibs_rust_vs_fzy_robust.md`
+- `artifacts/bench_core_rust_vs_fzy_robust.json`
+- `artifacts/bench_core_rust_vs_fzy_robust.md`
 
 ### Result Table (Robust)
 

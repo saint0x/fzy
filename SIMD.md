@@ -249,7 +249,7 @@ This track adds an explicit author-facing SIMD model.
 
 ### G. Standard library layer
 
-- [x] Add `corelib/src/simd.fzy`.
+- [x] Add `core/src/simd.fzy`.
 - [x] Register `use core.simd;` in parser + embedded stdlib merge path.
 - [ ] Decide whether `core.simd` implies any capability.
   - [x] phase 1 uses no special capability unless raw CPU feature probing is added later

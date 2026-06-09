@@ -128,8 +128,7 @@ fn write_artifact_if_changed(path: &Path, bytes: &[u8]) -> Result<()> {
     if std::fs::read(path).ok().as_deref() == Some(bytes) {
         return Ok(());
     }
-    std::fs::write(path, bytes)
-        .with_context(|| format!("failed writing {}", path.display()))
+    std::fs::write(path, bytes).with_context(|| format!("failed writing {}", path.display()))
 }
 
 pub(super) fn compatibility_versions_json() -> serde_json::Value {
@@ -755,8 +754,8 @@ fn build_release_policy_json() -> serde_json::Value {
             }).collect::<Vec<_>>(),
         },
         "performance": {
-            "summaryCommand": "fz perf [--artifact artifacts/bench_corelibs_rust_vs_fzy.json]",
-            "benchmarkArtifact": "artifacts/bench_corelibs_rust_vs_fzy.json",
+            "summaryCommand": "fz perf [--artifact artifacts/bench_core_rust_vs_fzy.json]",
+            "benchmarkArtifact": "artifacts/bench_core_rust_vs_fzy.json",
             "stabilityDashboardCommand": "fz stability-dashboard",
             "workloads": release_policy_benchmark_lanes().iter().map(|(name, description)| {
                 serde_json::json!({
@@ -794,7 +793,7 @@ fn render_release_policy_markdown(value: &serde_json::Value) -> String {
             .unwrap_or(false),
         value["performance"]["benchmarkArtifact"]
             .as_str()
-            .unwrap_or("artifacts/bench_corelibs_rust_vs_fzy.json"),
+            .unwrap_or("artifacts/bench_core_rust_vs_fzy.json"),
         value["performance"]["stabilityDashboardCommand"]
             .as_str()
             .unwrap_or("fz stability-dashboard"),

@@ -1,3 +1,5 @@
+use core.term;
+
 fn print(text: str) -> i32 {
     return term.write(text)
 }

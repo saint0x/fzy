@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCH_JSON = ROOT / "artifacts" / "bench_corelibs_rust_vs_fzy.json"
+BENCH_JSON = ROOT / "artifacts" / "bench_core_rust_vs_fzy.json"
 
 KERNEL_THRESHOLDS = {
     "bytes_kernel": 1.40,

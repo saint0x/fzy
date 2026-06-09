@@ -124,11 +124,11 @@
 
 ## Checklist: Needs To Be Done
 
-### Corelib Benchmark Reboot + Decoupling Readiness (Production, No Backwards Compatibility)
-- [✅] Replace scratch-oriented benchmark narratives with production corelib benchmark narratives for both Rust and Fzy implementations.
-- [✅] Keep Fzy benchmark implementations pure language/corelib code (no `use core.*` capability modules in benchmark kernels).
-- [✅] Keep Rust benchmark implementations self-contained and representative of production corelib logic (no dependency on deprecated Rust stdlib facade for benchmark kernels).
-- [✅] Rewrite benchmark kernels to model real corelib domains end-to-end:
+### Core Benchmark Reboot + Decoupling Readiness (Production, No Backwards Compatibility)
+- [✅] Replace scratch-oriented benchmark narratives with production core benchmark narratives for both Rust and Fzy implementations.
+- [✅] Keep Fzy benchmark implementations pure language/core code (no `use core.*` capability modules in benchmark kernels).
+- [✅] Keep Rust benchmark implementations self-contained and representative of production core logic (no dependency on deprecated Rust stdlib facade for benchmark kernels).
+- [✅] Rewrite benchmark kernels to model real core domains end-to-end:
 - [✅] `resultx` classification and typed error mapping.
 - [✅] text transform/search pipeline (`trim`/`replace`/`contains`/prefix/suffix/length).
 - [✅] capability parse/classification.
@@ -137,18 +137,18 @@
 - [✅] duration arithmetic kernel.
 - [✅] ABI pair/layout kernel.
 - [✅] C interop contract scoring kernel.
-- [ ] Text-kernel migration policy: keep text kernel Rust-backed as an allowed performance island until Fzy corelib path matches or exceeds Rust on long-run geomean for that kernel.
+- [ ] Text-kernel migration policy: keep text kernel Rust-backed as an allowed performance island until Fzy core path matches or exceeds Rust on long-run geomean for that kernel.
 - [✅] Remove process-surface compatibility aliases from compiler/runtime call routing (`process.*`); standardize on canonical `proc.*` runtime call surface only.
 - [✅] Remove non-text runtime-handle data-plane fallback routing from native import tables (`list.*`, `map.*`) so native lowering no longer silently routes these calls through compatibility paths.
 - [✅] Keep dual-backend support (LLVM production default, Cranelift debug/dev) while preserving one canonical lowering architecture across both backends.
 - [✅] Ensure Rust/Fzy benchmark kernel pairs are algorithmically equivalent and checksum-equivalent before timing.
-- [✅] Regenerate benchmark artifacts with the rewritten kernels (`artifacts/bench_corelibs_rust_vs_fzy.json` + markdown summary).
-- [✅] Re-run matrix verification gate (`scripts/verify_corelibs_bench_matrix.py`) after rewrite and require pass.
+- [✅] Regenerate benchmark artifacts with the rewritten kernels (`artifacts/bench_core_rust_vs_fzy.json` + markdown summary).
+- [✅] Re-run matrix verification gate (`scripts/verify_core_bench_matrix.py`) after rewrite and require pass.
 - [✅] Re-run direct-memory perf gate against refreshed artifact (`scripts/direct_memory_perf_gate.py`) and require pass.
-- [✅] Update benchmark documentation terminology from “scratch” to “corelib production kernels” where applicable.
+- [✅] Update benchmark documentation terminology from “scratch” to “core production kernels” where applicable.
 - [✅] Record refreshed benchmark facts and CI-safe evidence timestamps in this plan once rerun is complete.
-- [✅] 2026-02-27 benchmark refresh facts (`artifacts/bench_corelibs_rust_vs_fzy.json`):
-- [✅] suite: `corelibs-rust-vs-fzy-production-corelib-robust`
+- [✅] 2026-02-27 benchmark refresh facts (`artifacts/bench_core_rust_vs_fzy.json`):
+- [✅] suite: `core-rust-vs-fzy-production-core-robust`
 - [✅] geomean ratio (fzy/rust): `0.870x`
 - [✅] mean ratio (fzy/rust): `0.905x`
 - [✅] classification counts: `fzy_faster=2`, `near_parity=7`, `rust_faster=0`
@@ -239,11 +239,11 @@
 - [✅] Replace lexical `unsafe` audit scanning with AST/HIR/FIR-backed semantic unsafe-site analysis.
 - [✅] Replace text/index heuristic rename/definition flow with semantic symbol resolution and scope-aware workspace edits.
 
-### Follow-Up Performance Targets: Fzy Corelib (2026-02-27)
-- [ ] Optimize `task_retry_backoff` in Fzy corelib path to close the current Rust lead.
-- [ ] Optimize `http_kernel_persistent` in Fzy corelib path to close the current Rust lead.
+### Follow-Up Performance Targets: Fzy Core (2026-02-27)
+- [ ] Optimize `task_retry_backoff` in Fzy core path to close the current Rust lead.
+- [ ] Optimize `http_kernel_persistent` in Fzy core path to close the current Rust lead.
 - [ ] Re-run full suite after both optimizations and update benchmark artifacts/docs.
-- [✅] Current baseline captured from `artifacts/corelibbench_post_opt.json`:
+- [✅] Current baseline captured from `artifacts/corebench_post_opt.json`:
 - [✅] `task_retry_backoff`: Rust `62.081713 ms`, Fzy `82.650297 ms`, ratio `1.331315` (Rust winner by `33.13%`).
 - [✅] `http_kernel_persistent`: Rust `46.212766 ms`, Fzy `72.202474 ms`, ratio `1.562392` (Rust winner by `56.24%`).
 - [✅] Extend dependency model beyond path-only dependencies with versioned/remote sources and lockfile-enforced reproducibility.
@@ -742,8 +742,8 @@
 
 #### Perf Exit Criteria
 - [✅] `bytes_kernel`: reduce from ~`4.995x` to <= `2.0x` in first pass, with follow-up target <= `1.4x`.
-- [✅] `resultx_classify`: reduce from ~`3.155x` to <= `1.8x` in first pass, with follow-up target <= `1.3x` (2026-02-27 refresh: `0.991x`, `artifacts/bench_corelibs_rust_vs_fzy.json`).
-- [✅] `text_kernel`: reduce from ~`1.667x` to <= `1.25x` after temporary-string direct-memory path lands (2026-02-27 refresh: `0.168x`, `artifacts/bench_corelibs_rust_vs_fzy.json`).
+- [✅] `resultx_classify`: reduce from ~`3.155x` to <= `1.8x` in first pass, with follow-up target <= `1.3x` (2026-02-27 refresh: `0.991x`, `artifacts/bench_core_rust_vs_fzy.json`).
+- [✅] `text_kernel`: reduce from ~`1.667x` to <= `1.25x` after temporary-string direct-memory path lands (2026-02-27 refresh: `0.168x`, `artifacts/bench_core_rust_vs_fzy.json`).
 - [✅] Maintain parity/near-parity on existing strong kernels (no regressions beyond agreed noise band).
 - [✅] Make perf regressions release-blocking on these kernels once new pipeline is default.
 - 2026-02-27 verification: `python3 scripts/direct_memory_perf_gate.py` passes on refreshed benchmark artifact.

@@ -267,7 +267,7 @@ Recommended order for feature work:
 
 ```bash
 fz emit-ir [path]
-fz perf [--artifact artifacts/bench_corelibs_rust_vs_fzy.json]
+fz perf [--artifact artifacts/bench_core_rust_vs_fzy.json]
 fz stability-dashboard
 fz parity [path] [--seed N]
 fz equivalence [path] [--seed N]

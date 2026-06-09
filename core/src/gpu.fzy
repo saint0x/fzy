@@ -94,56 +94,6 @@ async host fn wait_async(event: GpuEvent) -> void {
     await gpu.wait_async(event)
 }
 
-host fn launch0(
-    kernel: fn() -> void,
-    grid: i32,
-    block: i32,
-) -> GpuEvent {
-    return gpu.launch0(kernel, grid, block)
-}
-
-host fn launch1<A>(
-    kernel: fn(A) -> void,
-    grid: i32,
-    block: i32,
-    a: A,
-) -> GpuEvent {
-    return gpu.launch1(kernel, grid, block, a)
-}
-
-host fn launch2<A, B>(
-    kernel: fn(A, B) -> void,
-    grid: i32,
-    block: i32,
-    a: A,
-    b: B,
-) -> GpuEvent {
-    return gpu.launch2(kernel, grid, block, a, b)
-}
-
-host fn launch3<A, B, C>(
-    kernel: fn(A, B, C) -> void,
-    grid: i32,
-    block: i32,
-    a: A,
-    b: B,
-    c: C,
-) -> GpuEvent {
-    return gpu.launch3(kernel, grid, block, a, b, c)
-}
-
-host fn launch4<A, B, C, D>(
-    kernel: fn(A, B, C, D) -> void,
-    grid: i32,
-    block: i32,
-    a: A,
-    b: B,
-    c: C,
-    d: D,
-) -> GpuEvent {
-    return gpu.launch4(kernel, grid, block, a, b, c, d)
-}
-
 device fn global_id_x() -> i32 { return gpu.global_id_x() }
 device fn global_id_y() -> i32 { return gpu.global_id_y() }
 device fn global_id_z() -> i32 { return gpu.global_id_z() }

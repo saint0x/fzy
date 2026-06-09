@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "core-production-surface-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": ["scripts/verify_core_production_surface.py"],
+      "exit_code": 0,
+      "stdout": "core-production-surface-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": ["scripts/verify_core_production_surface.py"],
+      "expect_exit": 0,
+      "expect_stdout": "core-production-surface-ok\n"
+    }
+  ]
+}

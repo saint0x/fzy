@@ -1,13 +1,13 @@
-# Corelib Bench Findings (Rust vs Fzy)
+# Core Bench Findings (Rust vs Fzy)
 
 ## Scope
 
-Production-corelib kernels, Rust vs Fzy, checksum-equivalent before timing.
+Production-core kernels, Rust vs Fzy, checksum-equivalent before timing.
 
-- Suite id: `corelibs-rust-vs-fzy-production-corelib-robust`
+- Suite id: `core-rust-vs-fzy-production-core-robust`
 - Kernel count: `17` (`log` + `error` added; HTTP split one-off/persistent)
-- Canonical artifact (latest): `artifacts/corelibbench_post_log_error_opt3.json`
-- Companion summary: `artifacts/corelibbench_post_log_error_opt3.md`
+- Canonical artifact (latest): `artifacts/corebench_post_log_error_opt3.json`
+- Companion summary: `artifacts/corebench_post_log_error_opt3.md`
 
 ## Latest Full Run
 
@@ -46,7 +46,7 @@ Summary:
 
 ## Current Focus
 
-- Keep Fzy as canonical corelib path for `log` + `error`.
+- Keep Fzy as canonical core path for `log` + `error`.
 - Remaining high-delta Rust wins to optimize in Fzy:
   - `http_kernel_persistent`
   - `log_kernel`

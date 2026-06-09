@@ -1,3 +1,5 @@
+use core.log;
+
 enum LogLevel {
     Info,
     Warn,
@@ -112,9 +114,27 @@ fn should_sample(counter: i32, sample_mod: i32) -> i32 {
     return 0
 }
 
-fn request_log(config: LogConfig, level: LogLevel, message: str, request_id: str, path: str, method: str) -> i32 {
+fn request_log_sampled(
+    config: LogConfig,
+    level: LogLevel,
+    message: str,
+    request_id: str,
+    path: str,
+    method: str,
+    counter: i32
+) -> i32 {
+    if config.enabled == 0 {
+        return 0
+    }
+    if should_sample(counter, config.sample_mod) == 0 {
+        return 0
+    }
     let msg = clamp_field(message, config.max_field_bytes)
-    let rid = clamp_field(request_id, config.max_field_bytes)
+    let rid = if config.include_correlation == 1 {
+        clamp_field(request_id, config.max_field_bytes)
+    } else {
+        ""
+    }
     let p = clamp_field(path, config.max_field_bytes)
     let m = clamp_field(method, 16)
     discard set_policy(config)
@@ -145,10 +165,14 @@ fn request_log(config: LogConfig, level: LogLevel, message: str, request_id: str
     return 1
 }
 
+fn request_log(config: LogConfig, level: LogLevel, message: str, request_id: str, path: str, method: str) -> i32 {
+    return request_log_sampled(config, level, message, request_id, path, method, 0)
+}
+
 fn sample() -> i32 {
     let cfg = default_config()
     if should_sample(100, cfg.sample_mod) == 1 {
-        let mut acc = request_log(cfg, LogLevel::Info, "corelib.log.sample", "rid-sample", "/health", "GET")
+        let mut acc = request_log_sampled(cfg, LogLevel::Info, "core.log.sample", "rid-sample", "/health", "GET", 100)
         acc = acc + use_stdout()
         acc = acc + set_min_level(LogLevel::Warn)
         acc = acc + set_level_name("info")

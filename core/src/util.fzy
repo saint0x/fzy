@@ -1,3 +1,7 @@
+use core.http;
+use core.log;
+use core.thread;
+
 fn log_fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let fields = map.new()
     discard map.set(fields, k1, json.str(v1))

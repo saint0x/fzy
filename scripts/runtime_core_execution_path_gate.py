@@ -50,7 +50,7 @@ def main() -> int:
     metadata = cargo_metadata()
     fz_id = package_id_by_name(metadata, "fz")
     if fz_id is None:
-        print("runtime corelib execution path gate failed: missing `fz` package", file=sys.stderr)
+        print("runtime core execution path gate failed: missing `fz` package", file=sys.stderr)
         return 2
 
     closure = dependency_closure(metadata, fz_id)
@@ -59,7 +59,7 @@ def main() -> int:
 
     if "stdlib" in closure_names:
         print(
-            "runtime corelib execution path gate failed: `fz` dependency closure includes `stdlib`",
+            "runtime core execution path gate failed: `fz` dependency closure includes `stdlib`",
             file=sys.stderr,
         )
         return 2
@@ -68,13 +68,13 @@ def main() -> int:
     missing = sorted(required.difference(closure_names))
     if missing:
         print(
-            "runtime corelib execution path gate failed: missing required runtime packages: "
+            "runtime core execution path gate failed: missing required runtime packages: "
             + ", ".join(missing),
             file=sys.stderr,
         )
         return 2
 
-    print("runtime-corelib-execution-path-ok")
+    print("runtime-core-execution-path-ok")
     return 0
 
 

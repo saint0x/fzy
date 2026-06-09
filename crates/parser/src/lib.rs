@@ -5962,7 +5962,7 @@ mod tests {
 
     #[test]
     fn parses_embedded_core_log_module_source() {
-        let source = include_str!("../../../corelib/src/logkit.fzy");
+        let source = include_str!("../../../core/src/logkit.fzy");
         parse(source, "log").expect("embedded core.log module should parse");
     }
 }

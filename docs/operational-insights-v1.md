@@ -17,7 +17,7 @@ fz lint [path] --tier production|pedantic|compat
 Command:
 
 ```bash
-fz perf [--artifact artifacts/bench_corelibs_rust_vs_fzy.json]
+fz perf [--artifact artifacts/bench_core_rust_vs_fzy.json]
 ```
 
 Outputs:
