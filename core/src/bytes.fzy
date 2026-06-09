@@ -1,5 +1,16 @@
+fn clamp_byte(value: i32) -> i32 {
+    let mut safe = value
+    if safe < 0 { safe = 0 }
+    if safe > 255 { safe = 255 }
+    return safe
+}
+
 fn read_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
-    return b0 + (b1 << 8) + (b2 << 16) + (b3 << 24)
+    let byte0 = clamp_byte(b0)
+    let byte1 = clamp_byte(b1)
+    let byte2 = clamp_byte(b2)
+    let byte3 = clamp_byte(b3)
+    return byte0 + (byte1 << 8) + (byte2 << 16) + (byte3 << 24)
 }
 
 fn sample() -> i32 {

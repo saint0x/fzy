@@ -1,11 +1,12 @@
 fn parse(name: str) -> i32 {
-    if name == "time" then return 3
-    if name == "rng" then return 5
-    if name == "fs" then return 7
-    if name == "http" then return 11
-    if name == "proc" then return 13
-    if name == "mem" then return 17
-    if name == "thread" then return 19
+    let normalized = str.lower_ascii(str.trim(name))
+    if normalized == "time" then return 3
+    if normalized == "rng" then return 5
+    if normalized == "fs" then return 7
+    if normalized == "http" then return 11
+    if normalized == "proc" then return 13
+    if normalized == "mem" then return 17
+    if normalized == "thread" then return 19
     return 23
 }
 

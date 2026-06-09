@@ -12,6 +12,7 @@ enum ErrorClass {
     Parse,
     Timeout,
     Policy,
+    Missing,
     Internal,
 }
 
@@ -21,7 +22,7 @@ fn classify(code: ErrorCode) -> ErrorClass {
         ErrorCode::InvalidInput => return ErrorClass::Parse,
         ErrorCode::Timeout => return ErrorClass::Timeout,
         ErrorCode::Conflict => return ErrorClass::Policy,
-        ErrorCode::NotFound => return ErrorClass::Internal,
+        ErrorCode::NotFound => return ErrorClass::Missing,
         ErrorCode::Internal => return ErrorClass::Internal,
         _ => return ErrorClass::Internal,
     }
@@ -33,6 +34,7 @@ fn score(class: ErrorClass) -> i32 {
         ErrorClass::Parse => return 17,
         ErrorClass::Timeout => return 23,
         ErrorClass::Policy => return 31,
+        ErrorClass::Missing => return 37,
         ErrorClass::Internal => return 43,
         _ => return 43,
     }

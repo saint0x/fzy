@@ -11,6 +11,13 @@ fn is_context_bound() -> i32 {
     return 1
 }
 
+fn context_id_or(fallback: i32) -> i32 {
+    if is_context_bound() == 0 {
+        return fallback
+    }
+    return context_id()
+}
+
 fn sample() -> i32 {
     if is_context_bound() == 1 {
         return context_id() % 251

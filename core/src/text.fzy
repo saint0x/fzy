@@ -1,3 +1,10 @@
+fn clamp_nonnegative(value: i32) -> i32 {
+    if value < 0 {
+        return 0
+    }
+    return value
+}
+
 fn trim(v: str) -> str {
     return str.trim(v)
 }
@@ -23,27 +30,29 @@ fn len(v: str) -> i32 {
 }
 
 fn repeat(piece: str, count: i32) -> str {
-    return str.repeat(piece, count)
+    return str.repeat(piece, clamp_nonnegative(count))
 }
 
 fn spaces(count: i32) -> str {
-    return str.repeat(" ", count)
+    return str.repeat(" ", clamp_nonnegative(count))
 }
 
 fn pad_left(v: str, width: i32) -> str {
     let current = len(v)
-    if current >= width {
+    let target = clamp_nonnegative(width)
+    if current >= target {
         return v
     }
-    return str.concat(spaces(width - current), v)
+    return str.concat(spaces(target - current), v)
 }
 
 fn pad_right(v: str, width: i32) -> str {
     let current = len(v)
-    if current >= width {
+    let target = clamp_nonnegative(width)
+    if current >= target {
         return v
     }
-    return str.concat(v, spaces(width - current))
+    return str.concat(v, spaces(target - current))
 }
 
 fn indent(v: str, prefix: str) -> str {

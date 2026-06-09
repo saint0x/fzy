@@ -48,6 +48,10 @@ struct SseEvent {
     done: i32,
 }
 
+fn normalize_header_value(value: str) -> str {
+    return str.lower_ascii(str.trim(value))
+}
+
 fn parse_method(name: str) -> Method {
     if name == "GET" then return Method::Get
     if name == "POST" then return Method::Post
@@ -87,6 +91,23 @@ fn default_limits() -> Limits {
         max_body_bytes: 1048576,
         request_timeout_ms: 2500,
         idle_timeout_ms: 10000,
+    }
+}
+
+fn sanitize_limits(limits: Limits) -> Limits {
+    let mut header_bytes = limits.max_header_bytes
+    let mut body_bytes = limits.max_body_bytes
+    let mut request_timeout = limits.request_timeout_ms
+    let mut idle_timeout = limits.idle_timeout_ms
+    if header_bytes < 1024 { header_bytes = 1024 }
+    if body_bytes < 0 { body_bytes = 0 }
+    if request_timeout < 1 { request_timeout = 1 }
+    if idle_timeout < request_timeout { idle_timeout = request_timeout }
+    return Limits {
+        max_header_bytes: header_bytes,
+        max_body_bytes: body_bytes,
+        request_timeout_ms: request_timeout,
+        idle_timeout_ms: idle_timeout,
     }
 }
 
@@ -133,27 +154,34 @@ fn next_accept_backoff_ms(fail_streak: i32) -> i32 {
 }
 
 fn should_keep_alive(connection_header: str, mode: ConnectionMode, handled: i32, policy: ServePolicy) -> i32 {
+    let safe_policy = sanitize_policy(policy)
+    let normalized = normalize_header_value(connection_header)
     if mode == ConnectionMode::OneOff then return 0
-    if connection_header == "close" then return 0
-    if handled >= policy.keep_alive_max_requests then return 0
+    if str.contains(normalized, "close") == 1 then return 0
+    if handled >= safe_policy.keep_alive_max_requests then return 0
     return 1
 }
 
 fn clamp_body_size(body_bytes: i32, limits: Limits) -> i32 {
+    let safe_limits = sanitize_limits(limits)
     if body_bytes < 0 then return 0
-    if body_bytes > limits.max_body_bytes {
-        return limits.max_body_bytes
+    if body_bytes > safe_limits.max_body_bytes {
+        return safe_limits.max_body_bytes
     }
     return body_bytes
 }
 
 fn clamp_body_size_max(body_bytes: i32, max_body_bytes: i32) -> i32 {
     let mut safe = body_bytes
+    let mut max_body = max_body_bytes
     if safe < 0 {
         safe = 0
     }
-    if safe > max_body_bytes {
-        safe = max_body_bytes
+    if max_body < 0 {
+        max_body = 0
+    }
+    if safe > max_body {
+        safe = max_body
     }
     return safe
 }
@@ -200,9 +228,10 @@ fn connection_session_score(mode: ConnectionMode, requests_per_connection: i32) 
 }
 
 fn route_fingerprint(method: Method, path: str, query_len: i32, body_bytes: i32, limits: Limits) -> i32 {
-    let safe_body = clamp_body_size(body_bytes, limits)
+    let safe_limits = sanitize_limits(limits)
+    let safe_body = clamp_body_size(body_bytes, safe_limits)
     let base = (method_score(method) * 131) + (str.len(path) * 17)
-    let policy = (limits.request_timeout_ms % 97) + (limits.max_header_bytes % 89)
+    let policy = (safe_limits.request_timeout_ms % 97) + (safe_limits.max_header_bytes % 89)
     return (base + (query_len * 7) + (safe_body % 251) + policy) % 251
 }
 
@@ -217,7 +246,11 @@ fn route_fingerprint_fast(
 ) -> i32 {
     let safe_body = clamp_body_size_max(body_bytes, max_body_bytes)
     let base = (method_score * 131) + (path_len * 17)
-    let policy = (timeout_ms % 97) + (max_header_bytes % 89)
+    let mut safe_timeout = timeout_ms
+    let mut safe_headers = max_header_bytes
+    if safe_timeout < 1 { safe_timeout = 1 }
+    if safe_headers < 1024 { safe_headers = 1024 }
+    let policy = (safe_timeout % 97) + (safe_headers % 89)
     return (base + (query_len * 7) + (safe_body % 251) + policy) % 251
 }
 

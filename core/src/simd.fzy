@@ -1,3 +1,23 @@
+fn clamp_lane_count(active_lanes: i32) -> i32 {
+    if active_lanes < 0 {
+        return 0
+    }
+    if active_lanes > 4 {
+        return 4
+    }
+    return active_lanes
+}
+
+fn clamp_lane_index(index: i32) -> i32 {
+    if index < 0 {
+        return 0
+    }
+    if index > 3 {
+        return 3
+    }
+    return index
+}
+
 fn i32x4_new(x0: i32, x1: i32, x2: i32, x3: i32) -> i32x4 {
     return simd.__i32x4(x0, x1, x2, x3)
 }
@@ -48,11 +68,12 @@ unsafe fn i32x4_store_ptr_unaligned(ptr: *mut u8, value: i32x4) -> void {
 }
 
 fn prefix_mask32x4(active_lanes: i32) -> mask32x4 {
+    let lane_count = clamp_lane_count(active_lanes)
     return mask32x4_new(
-        if active_lanes > 0 { 1 } else { 0 },
-        if active_lanes > 1 { 1 } else { 0 },
-        if active_lanes > 2 { 1 } else { 0 },
-        if active_lanes > 3 { 1 } else { 0 },
+        if lane_count > 0 { 1 } else { 0 },
+        if lane_count > 1 { 1 } else { 0 },
+        if lane_count > 2 { 1 } else { 0 },
+        if lane_count > 3 { 1 } else { 0 },
     )
 }
 
@@ -86,39 +107,47 @@ fn i32x4_merge_prefix(value: i32x4, active_lanes: i32, base: [i32; 4]) -> i32x4 
 }
 
 fn i32x4_gather(values: [i32; 4], lanes: [i32; 4]) -> i32x4 {
+    let lane0 = clamp_lane_index(lanes[0])
+    let lane1 = clamp_lane_index(lanes[1])
+    let lane2 = clamp_lane_index(lanes[2])
+    let lane3 = clamp_lane_index(lanes[3])
     return i32x4_new(
-        values[lanes[0]],
-        values[lanes[1]],
-        values[lanes[2]],
-        values[lanes[3]],
+        values[lane0],
+        values[lane1],
+        values[lane2],
+        values[lane3],
     )
 }
 
 fn i32x4_scatter(value: i32x4, lanes: [i32; 4], base: [i32; 4]) -> [i32; 4] {
-    let probe0 = base[lanes[0]]
-    let probe1 = base[lanes[1]]
-    let probe2 = base[lanes[2]]
-    let probe3 = base[lanes[3]]
+    let lane0 = clamp_lane_index(lanes[0])
+    let lane1 = clamp_lane_index(lanes[1])
+    let lane2 = clamp_lane_index(lanes[2])
+    let lane3 = clamp_lane_index(lanes[3])
+    let probe0 = base[lane0]
+    let probe1 = base[lane1]
+    let probe2 = base[lane2]
+    let probe3 = base[lane3]
     let mut out0 = base[0]
     let mut out1 = base[1]
     let mut out2 = base[2]
     let mut out3 = base[3]
-    if lanes[0] == 0 { out0 = i32x4_lane0(value) }
-    if lanes[1] == 0 { out0 = i32x4_lane1(value) }
-    if lanes[2] == 0 { out0 = i32x4_lane2(value) }
-    if lanes[3] == 0 { out0 = i32x4_lane3(value) }
-    if lanes[0] == 1 { out1 = i32x4_lane0(value) }
-    if lanes[1] == 1 { out1 = i32x4_lane1(value) }
-    if lanes[2] == 1 { out1 = i32x4_lane2(value) }
-    if lanes[3] == 1 { out1 = i32x4_lane3(value) }
-    if lanes[0] == 2 { out2 = i32x4_lane0(value) }
-    if lanes[1] == 2 { out2 = i32x4_lane1(value) }
-    if lanes[2] == 2 { out2 = i32x4_lane2(value) }
-    if lanes[3] == 2 { out2 = i32x4_lane3(value) }
-    if lanes[0] == 3 { out3 = i32x4_lane0(value) }
-    if lanes[1] == 3 { out3 = i32x4_lane1(value) }
-    if lanes[2] == 3 { out3 = i32x4_lane2(value) }
-    if lanes[3] == 3 { out3 = i32x4_lane3(value) }
+    if lane0 == 0 { out0 = i32x4_lane0(value) }
+    if lane1 == 0 { out0 = i32x4_lane1(value) }
+    if lane2 == 0 { out0 = i32x4_lane2(value) }
+    if lane3 == 0 { out0 = i32x4_lane3(value) }
+    if lane0 == 1 { out1 = i32x4_lane0(value) }
+    if lane1 == 1 { out1 = i32x4_lane1(value) }
+    if lane2 == 1 { out1 = i32x4_lane2(value) }
+    if lane3 == 1 { out1 = i32x4_lane3(value) }
+    if lane0 == 2 { out2 = i32x4_lane0(value) }
+    if lane1 == 2 { out2 = i32x4_lane1(value) }
+    if lane2 == 2 { out2 = i32x4_lane2(value) }
+    if lane3 == 2 { out2 = i32x4_lane3(value) }
+    if lane0 == 3 { out3 = i32x4_lane0(value) }
+    if lane1 == 3 { out3 = i32x4_lane1(value) }
+    if lane2 == 3 { out3 = i32x4_lane2(value) }
+    if lane3 == 3 { out3 = i32x4_lane3(value) }
     return [
         out0 + (probe0 - probe0),
         out1 + (probe1 - probe1),
@@ -193,35 +222,43 @@ fn u32x4_merge_prefix(value: u32x4, active_lanes: i32, base: [u32; 4]) -> u32x4 
 }
 
 fn u32x4_gather(values: [u32; 4], lanes: [i32; 4]) -> u32x4 {
+    let lane0 = clamp_lane_index(lanes[0])
+    let lane1 = clamp_lane_index(lanes[1])
+    let lane2 = clamp_lane_index(lanes[2])
+    let lane3 = clamp_lane_index(lanes[3])
     let source = u32x4_as_i32x4(u32x4_load(values))
-    return i32x4_as_u32x4(i32x4_shuffle(source, source, lanes[0], lanes[1], lanes[2], lanes[3]))
+    return i32x4_as_u32x4(i32x4_shuffle(source, source, lane0, lane1, lane2, lane3))
 }
 
 fn u32x4_scatter(value: u32x4, lanes: [i32; 4], base: [u32; 4]) -> [u32; 4] {
-    let probe0 = base[lanes[0]]
-    let probe1 = base[lanes[1]]
-    let probe2 = base[lanes[2]]
-    let probe3 = base[lanes[3]]
+    let lane0 = clamp_lane_index(lanes[0])
+    let lane1 = clamp_lane_index(lanes[1])
+    let lane2 = clamp_lane_index(lanes[2])
+    let lane3 = clamp_lane_index(lanes[3])
+    let probe0 = base[lane0]
+    let probe1 = base[lane1]
+    let probe2 = base[lane2]
+    let probe3 = base[lane3]
     let mut out0 = base[0]
     let mut out1 = base[1]
     let mut out2 = base[2]
     let mut out3 = base[3]
-    if lanes[0] == 0 { out0 = u32x4_lane0(value) }
-    if lanes[1] == 0 { out0 = u32x4_lane1(value) }
-    if lanes[2] == 0 { out0 = u32x4_lane2(value) }
-    if lanes[3] == 0 { out0 = u32x4_lane3(value) }
-    if lanes[0] == 1 { out1 = u32x4_lane0(value) }
-    if lanes[1] == 1 { out1 = u32x4_lane1(value) }
-    if lanes[2] == 1 { out1 = u32x4_lane2(value) }
-    if lanes[3] == 1 { out1 = u32x4_lane3(value) }
-    if lanes[0] == 2 { out2 = u32x4_lane0(value) }
-    if lanes[1] == 2 { out2 = u32x4_lane1(value) }
-    if lanes[2] == 2 { out2 = u32x4_lane2(value) }
-    if lanes[3] == 2 { out2 = u32x4_lane3(value) }
-    if lanes[0] == 3 { out3 = u32x4_lane0(value) }
-    if lanes[1] == 3 { out3 = u32x4_lane1(value) }
-    if lanes[2] == 3 { out3 = u32x4_lane2(value) }
-    if lanes[3] == 3 { out3 = u32x4_lane3(value) }
+    if lane0 == 0 { out0 = u32x4_lane0(value) }
+    if lane1 == 0 { out0 = u32x4_lane1(value) }
+    if lane2 == 0 { out0 = u32x4_lane2(value) }
+    if lane3 == 0 { out0 = u32x4_lane3(value) }
+    if lane0 == 1 { out1 = u32x4_lane0(value) }
+    if lane1 == 1 { out1 = u32x4_lane1(value) }
+    if lane2 == 1 { out1 = u32x4_lane2(value) }
+    if lane3 == 1 { out1 = u32x4_lane3(value) }
+    if lane0 == 2 { out2 = u32x4_lane0(value) }
+    if lane1 == 2 { out2 = u32x4_lane1(value) }
+    if lane2 == 2 { out2 = u32x4_lane2(value) }
+    if lane3 == 2 { out2 = u32x4_lane3(value) }
+    if lane0 == 3 { out3 = u32x4_lane0(value) }
+    if lane1 == 3 { out3 = u32x4_lane1(value) }
+    if lane2 == 3 { out3 = u32x4_lane2(value) }
+    if lane3 == 3 { out3 = u32x4_lane3(value) }
     return [
         out0 + (probe0 - probe0),
         out1 + (probe1 - probe1),
@@ -294,37 +331,45 @@ fn f32x4_merge_prefix(value: f32x4, active_lanes: i32, base: [f32; 4]) -> f32x4 
 }
 
 fn f32x4_gather(values: [f32; 4], lanes: [i32; 4]) -> f32x4 {
+    let lane0 = clamp_lane_index(lanes[0])
+    let lane1 = clamp_lane_index(lanes[1])
+    let lane2 = clamp_lane_index(lanes[2])
+    let lane3 = clamp_lane_index(lanes[3])
     let source = f32x4_bitcast_i32x4(f32x4_load(values))
     return i32x4_bitcast_f32x4(
-        i32x4_shuffle(source, source, lanes[0], lanes[1], lanes[2], lanes[3]),
+        i32x4_shuffle(source, source, lane0, lane1, lane2, lane3),
     )
 }
 
 fn f32x4_scatter(value: f32x4, lanes: [i32; 4], base: [f32; 4]) -> [f32; 4] {
-    let probe0 = base[lanes[0]]
-    let probe1 = base[lanes[1]]
-    let probe2 = base[lanes[2]]
-    let probe3 = base[lanes[3]]
+    let lane0 = clamp_lane_index(lanes[0])
+    let lane1 = clamp_lane_index(lanes[1])
+    let lane2 = clamp_lane_index(lanes[2])
+    let lane3 = clamp_lane_index(lanes[3])
+    let probe0 = base[lane0]
+    let probe1 = base[lane1]
+    let probe2 = base[lane2]
+    let probe3 = base[lane3]
     let mut out0 = base[0]
     let mut out1 = base[1]
     let mut out2 = base[2]
     let mut out3 = base[3]
-    if lanes[0] == 0 { out0 = f32x4_lane0(value) }
-    if lanes[1] == 0 { out0 = f32x4_lane1(value) }
-    if lanes[2] == 0 { out0 = f32x4_lane2(value) }
-    if lanes[3] == 0 { out0 = f32x4_lane3(value) }
-    if lanes[0] == 1 { out1 = f32x4_lane0(value) }
-    if lanes[1] == 1 { out1 = f32x4_lane1(value) }
-    if lanes[2] == 1 { out1 = f32x4_lane2(value) }
-    if lanes[3] == 1 { out1 = f32x4_lane3(value) }
-    if lanes[0] == 2 { out2 = f32x4_lane0(value) }
-    if lanes[1] == 2 { out2 = f32x4_lane1(value) }
-    if lanes[2] == 2 { out2 = f32x4_lane2(value) }
-    if lanes[3] == 2 { out2 = f32x4_lane3(value) }
-    if lanes[0] == 3 { out3 = f32x4_lane0(value) }
-    if lanes[1] == 3 { out3 = f32x4_lane1(value) }
-    if lanes[2] == 3 { out3 = f32x4_lane2(value) }
-    if lanes[3] == 3 { out3 = f32x4_lane3(value) }
+    if lane0 == 0 { out0 = f32x4_lane0(value) }
+    if lane1 == 0 { out0 = f32x4_lane1(value) }
+    if lane2 == 0 { out0 = f32x4_lane2(value) }
+    if lane3 == 0 { out0 = f32x4_lane3(value) }
+    if lane0 == 1 { out1 = f32x4_lane0(value) }
+    if lane1 == 1 { out1 = f32x4_lane1(value) }
+    if lane2 == 1 { out1 = f32x4_lane2(value) }
+    if lane3 == 1 { out1 = f32x4_lane3(value) }
+    if lane0 == 2 { out2 = f32x4_lane0(value) }
+    if lane1 == 2 { out2 = f32x4_lane1(value) }
+    if lane2 == 2 { out2 = f32x4_lane2(value) }
+    if lane3 == 2 { out2 = f32x4_lane3(value) }
+    if lane0 == 3 { out3 = f32x4_lane0(value) }
+    if lane1 == 3 { out3 = f32x4_lane1(value) }
+    if lane2 == 3 { out3 = f32x4_lane2(value) }
+    if lane3 == 3 { out3 = f32x4_lane3(value) }
     return [
         out0 + (probe0 - probe0),
         out1 + (probe1 - probe1),
@@ -404,39 +449,47 @@ fn mask32x4_merge_prefix(value: mask32x4, active_lanes: i32, base: [bool; 4]) ->
 }
 
 fn mask32x4_gather(values: [bool; 4], lanes: [i32; 4]) -> mask32x4 {
+    let lane0 = clamp_lane_index(lanes[0])
+    let lane1 = clamp_lane_index(lanes[1])
+    let lane2 = clamp_lane_index(lanes[2])
+    let lane3 = clamp_lane_index(lanes[3])
     return mask32x4_load([
-        values[lanes[0]],
-        values[lanes[1]],
-        values[lanes[2]],
-        values[lanes[3]],
+        values[lane0],
+        values[lane1],
+        values[lane2],
+        values[lane3],
     ])
 }
 
 fn mask32x4_scatter(value: mask32x4, lanes: [i32; 4], base: [bool; 4]) -> [bool; 4] {
-    let probe0 = base[lanes[0]]
-    let probe1 = base[lanes[1]]
-    let probe2 = base[lanes[2]]
-    let probe3 = base[lanes[3]]
+    let lane0 = clamp_lane_index(lanes[0])
+    let lane1 = clamp_lane_index(lanes[1])
+    let lane2 = clamp_lane_index(lanes[2])
+    let lane3 = clamp_lane_index(lanes[3])
+    let probe0 = base[lane0]
+    let probe1 = base[lane1]
+    let probe2 = base[lane2]
+    let probe3 = base[lane3]
     let mut out0 = base[0]
     let mut out1 = base[1]
     let mut out2 = base[2]
     let mut out3 = base[3]
-    if lanes[0] == 0 { out0 = mask32x4_lane0(value) }
-    if lanes[1] == 0 { out0 = mask32x4_lane1(value) }
-    if lanes[2] == 0 { out0 = mask32x4_lane2(value) }
-    if lanes[3] == 0 { out0 = mask32x4_lane3(value) }
-    if lanes[0] == 1 { out1 = mask32x4_lane0(value) }
-    if lanes[1] == 1 { out1 = mask32x4_lane1(value) }
-    if lanes[2] == 1 { out1 = mask32x4_lane2(value) }
-    if lanes[3] == 1 { out1 = mask32x4_lane3(value) }
-    if lanes[0] == 2 { out2 = mask32x4_lane0(value) }
-    if lanes[1] == 2 { out2 = mask32x4_lane1(value) }
-    if lanes[2] == 2 { out2 = mask32x4_lane2(value) }
-    if lanes[3] == 2 { out2 = mask32x4_lane3(value) }
-    if lanes[0] == 3 { out3 = mask32x4_lane0(value) }
-    if lanes[1] == 3 { out3 = mask32x4_lane1(value) }
-    if lanes[2] == 3 { out3 = mask32x4_lane2(value) }
-    if lanes[3] == 3 { out3 = mask32x4_lane3(value) }
+    if lane0 == 0 { out0 = mask32x4_lane0(value) }
+    if lane1 == 0 { out0 = mask32x4_lane1(value) }
+    if lane2 == 0 { out0 = mask32x4_lane2(value) }
+    if lane3 == 0 { out0 = mask32x4_lane3(value) }
+    if lane0 == 1 { out1 = mask32x4_lane0(value) }
+    if lane1 == 1 { out1 = mask32x4_lane1(value) }
+    if lane2 == 1 { out1 = mask32x4_lane2(value) }
+    if lane3 == 1 { out1 = mask32x4_lane3(value) }
+    if lane0 == 2 { out2 = mask32x4_lane0(value) }
+    if lane1 == 2 { out2 = mask32x4_lane1(value) }
+    if lane2 == 2 { out2 = mask32x4_lane2(value) }
+    if lane3 == 2 { out2 = mask32x4_lane3(value) }
+    if lane0 == 3 { out3 = mask32x4_lane0(value) }
+    if lane1 == 3 { out3 = mask32x4_lane1(value) }
+    if lane2 == 3 { out3 = mask32x4_lane2(value) }
+    if lane3 == 3 { out3 = mask32x4_lane3(value) }
     if probe0 { out0 = out0 } else { out0 = out0 }
     if probe1 { out1 = out1 } else { out1 = out1 }
     if probe2 { out2 = out2 } else { out2 = out2 }

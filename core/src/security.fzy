@@ -12,11 +12,29 @@ struct RateLimit {
     max_tokens: i32,
 }
 
+fn signature_prefix() -> str {
+    return "v1:"
+}
+
 fn default_rate_limit() -> RateLimit {
     return RateLimit {
         burst: 8,
         refill_per_sec: 4,
         max_tokens: 16,
+    }
+}
+
+fn sanitize_rate_limit(policy: RateLimit) -> RateLimit {
+    let mut burst = policy.burst
+    let mut refill = policy.refill_per_sec
+    let mut max_tokens = policy.max_tokens
+    if burst < 1 { burst = 1 }
+    if refill < 1 { refill = 1 }
+    if max_tokens < burst { max_tokens = burst }
+    return RateLimit {
+        burst: burst,
+        refill_per_sec: refill,
+        max_tokens: max_tokens,
     }
 }
 
@@ -49,19 +67,43 @@ fn auth_score(decision: AuthDecision) -> i32 {
 }
 
 fn refill_tokens(tokens: i32, elapsed_ms: i32, policy: RateLimit) -> i32 {
+    let safe_policy = sanitize_rate_limit(policy)
     let mut next = tokens
     if elapsed_ms > 0 {
-        next = next + ((elapsed_ms * policy.refill_per_sec) / 1000)
+        next = next + ((elapsed_ms * safe_policy.refill_per_sec) / 1000)
     }
-    if next > policy.max_tokens {
-        next = policy.max_tokens
+    if next > safe_policy.max_tokens {
+        next = safe_policy.max_tokens
+    }
+    if next < 0 {
+        next = 0
     }
     return next
 }
 
 fn consume_tokens(tokens: i32, cost: i32) -> i32 {
+    if cost < 0 then return -1
     if tokens < cost then return -1
     return tokens - cost
+}
+
+fn allow_cost(tokens: i32, cost: i32) -> i32 {
+    if consume_tokens(tokens, cost) < 0 {
+        return 0
+    }
+    return 1
+}
+
+fn refill_tokens_fast(tokens: i32, elapsed_ms: i32, burst: i32, refill_per_sec: i32, max_tokens: i32) -> i32 {
+    return refill_tokens(
+        tokens,
+        elapsed_ms,
+        RateLimit {
+            burst: burst,
+            refill_per_sec: refill_per_sec,
+            max_tokens: max_tokens,
+        },
+    )
 }
 
 fn random_hex(bytes: i32) -> str {
@@ -92,11 +134,15 @@ fn secure_eq(a: str, b: str) -> i32 {
 }
 
 fn sign_value(key: str, data: str) -> str {
-    return hmac_sha256_hex(key, data)
+    return str.concat(signature_prefix(), hmac_sha256_hex(key, data))
 }
 
 fn verify_value(key: str, data: str, mac_hex: str) -> i32 {
-    return secure_eq(sign_value(key, data), mac_hex)
+    let expected = sign_value(key, data)
+    if str.starts_with(mac_hex, signature_prefix()) == 1 {
+        return secure_eq(expected, mac_hex)
+    }
+    return secure_eq(hmac_sha256_hex(key, data), mac_hex)
 }
 
 fn base64_encode(data: str) -> str {
@@ -116,15 +162,17 @@ fn base64_url_decode(data: str) -> str {
 }
 
 fn sample() -> i32 {
-    let policy = default_rate_limit()
+    let policy = sanitize_rate_limit(default_rate_limit())
     let red = redact_key_score("authorization")
     let auth = auth_score(classify_auth(1, 0, 1, 1, 1))
     let tokens = refill_tokens(3, 2500, policy)
     let rem = consume_tokens(tokens, 2)
+    let allowed = allow_cost(tokens, 2)
     let digest = sha256_hex("sample")
     let mac = hmac_sha256_hex("key", "sample")
     let encoded = base64_url_encode("sample")
     let decoded = base64_url_decode(encoded)
-    let signed_ok = verify_value("key", "sample", mac)
-    return (red + auth + rem + policy.burst + str.len(digest) + str.len(mac) + str.len(decoded) + signed_ok) % 251
+    let signed = sign_value("key", "sample")
+    let signed_ok = verify_value("key", "sample", signed)
+    return (red + auth + rem + allowed + policy.burst + str.len(digest) + str.len(mac) + str.len(decoded) + signed_ok) % 251
 }

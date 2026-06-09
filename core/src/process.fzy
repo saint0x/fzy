@@ -58,6 +58,20 @@ fn default_limits() -> ProcessLimits {
     }
 }
 
+fn sanitize_limits(limits: ProcessLimits) -> ProcessLimits {
+    let mut timeout_ms = limits.timeout_ms
+    let mut max_output_bytes = limits.max_output_bytes
+    let mut max_children = limits.max_children
+    if timeout_ms < 1 { timeout_ms = 1 }
+    if max_output_bytes < 0 { max_output_bytes = 0 }
+    if max_children < 1 { max_children = 1 }
+    return ProcessLimits {
+        timeout_ms: timeout_ms,
+        max_output_bytes: max_output_bytes,
+        max_children: max_children,
+    }
+}
+
 fn classify_exit(exit_code: i32, timed_out: i32, cancelled: i32, signal: i32) -> ExitClass {
     if cancelled == 1 then return ExitClass::Cancelled
     if timed_out == 1 then return ExitClass::Timeout
@@ -78,23 +92,49 @@ fn class_score(class: ExitClass) -> i32 {
 }
 
 fn budget_score(argv_count: i32, env_count: i32, limits: ProcessLimits) -> i32 {
+    let safe_limits = sanitize_limits(limits)
     let mut score = (argv_count * 7) + (env_count * 5)
-    score = score + (limits.max_children % 97)
-    score = score + (limits.timeout_ms % 89)
-    score = score + (limits.max_output_bytes % 83)
+    score = score + (safe_limits.max_children % 97)
+    score = score + (safe_limits.timeout_ms % 89)
+    score = score + (safe_limits.max_output_bytes % 83)
     return score % 251
+}
+
+fn budget_score_fast(
+    argv_count: i32,
+    env_count: i32,
+    timeout_ms: i32,
+    max_output_bytes: i32,
+    max_children: i32
+) -> i32 {
+    return budget_score(
+        argv_count,
+        env_count,
+        ProcessLimits {
+            timeout_ms: timeout_ms,
+            max_output_bytes: max_output_bytes,
+            max_children: max_children,
+        },
+    )
 }
 
 fn retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
     let mut delay = base_ms
+    let mut capped_max = max_ms
     if delay < 1 {
         delay = 1
+    }
+    if capped_max < delay {
+        capped_max = delay
+    }
+    if attempt <= 1 {
+        return delay
     }
     let mut i = 1
     while i < attempt {
         delay = delay * 2
-        if delay > max_ms {
-            delay = max_ms
+        if delay > capped_max {
+            delay = capped_max
         }
         i = i + 1
     }
@@ -102,7 +142,7 @@ fn retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
 }
 
 fn sample() -> i32 {
-    let limits = default_limits()
+    let limits = sanitize_limits(default_limits())
     let class = classify_exit(0, 0, 0, 0)
     let a = class_score(class)
     let b = budget_score(4, 12, limits)

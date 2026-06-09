@@ -40,6 +40,9 @@ fn http_post_json_capture_map(endpoint: str, map_handle: MapHandle) -> str {
 }
 
 fn task_spawn_join_all(group: TaskGroupHandle, worker: fn() -> i32, n: i32) -> i32 {
+    if n < 1 {
+        return task.group_join_all(group)
+    }
     discard task.group_spawn_n(group, worker, n)
     return task.group_join_all(group)
 }

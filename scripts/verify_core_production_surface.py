@@ -68,8 +68,13 @@ def main() -> None:
                     return 13
                 }
 
-                if str.starts_with(mac, "") != 1 {
+                if str.starts_with(mac, "v1:") != 1 {
                     return 14
+                }
+
+                let same = security.secure_eq(mac, mac)
+                if same != 1 {
+                    return 15
                 }
 
                 return 0

@@ -119,10 +119,14 @@ device fn barrier() -> void {
 }
 
 fn sample() -> i32 {
-    let dev = default_device()
-    if device_count() < 0 {
+    let count = device_count()
+    if count < 0 {
         return 1
     }
+    if count == 0 {
+        return 0
+    }
+    let dev = default_device()
     let name = device_name(dev)
     let bytes = device_memory_bytes(dev)
     if str.len(name) < 0 || bytes < 0 {

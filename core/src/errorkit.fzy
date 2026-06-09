@@ -14,6 +14,14 @@ struct CoreError {
     message: str,
 }
 
+fn sanitize_message(message: str) -> str {
+    let trimmed = str.trim(message)
+    if trimmed == "" {
+        return "internal error"
+    }
+    return trimmed
+}
+
 fn kind_code(kind: ErrorKind) -> i32 {
     match kind {
         ErrorKind::InvalidInput => return 400,
@@ -37,7 +45,7 @@ fn make(kind: ErrorKind, message: str) -> CoreError {
         code: kind_code(kind),
         retryable: kind_retryable(kind),
         kind: kind,
-        message: message,
+        message: sanitize_message(message),
     }
 }
 
@@ -46,17 +54,21 @@ fn from_http_status(status: i32, message: str) -> CoreError {
     if status == 400 {
         kind = ErrorKind::InvalidInput
     } else {
-        if status == 401 {
+        if status == 401 || status == 403 {
             kind = ErrorKind::Unauthorized
         } else {
             if status == 404 {
                 kind = ErrorKind::NotFound
             } else {
-                if status == 409 {
-                    kind = ErrorKind::Conflict
+                if status == 408 || status == 429 {
+                    kind = ErrorKind::Timeout
                 } else {
-                    if status == 408 {
-                        kind = ErrorKind::Timeout
+                    if status == 409 {
+                        kind = ErrorKind::Conflict
+                    } else {
+                        if status >= 400 && status < 500 {
+                            kind = ErrorKind::InvalidInput
+                        }
                     }
                 }
             }
@@ -75,11 +87,13 @@ fn normalize(err: CoreError) -> CoreError {
         code: code,
         retryable: retryable,
         kind: err.kind,
-        message: err.message,
+        message: sanitize_message(err.message),
     }
 }
 
 fn should_retry(err: CoreError, attempt: i32, max_attempts: i32) -> i32 {
+    if max_attempts < 1 then return 0
+    if attempt < 0 then return 0
     if attempt >= max_attempts then return 0
     if err.retryable == 1 then return 1
     return 0

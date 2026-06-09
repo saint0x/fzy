@@ -33,6 +33,28 @@ fn default_config() -> LogConfig {
     }
 }
 
+fn sanitize_config(config: LogConfig) -> LogConfig {
+    let mut max_field_bytes = config.max_field_bytes
+    let mut sample_mod = config.sample_mod
+    let mut enabled = config.enabled
+    let mut include_correlation = config.include_correlation
+    let mut json_mode = config.json
+    if max_field_bytes < 1 { max_field_bytes = 1 }
+    if sample_mod < 1 { sample_mod = 1 }
+    if enabled != 0 { enabled = 1 }
+    if include_correlation != 0 { include_correlation = 1 }
+    if json_mode != 0 { json_mode = 1 }
+    return LogConfig {
+        json: json_mode,
+        include_correlation: include_correlation,
+        max_field_bytes: max_field_bytes,
+        sample_mod: sample_mod,
+        enabled: enabled,
+        sink: config.sink,
+        min_level: config.min_level,
+    }
+}
+
 fn level_name(level: LogLevel) -> str {
     match level {
         LogLevel::Warn => return "warn",
@@ -89,11 +111,12 @@ fn verbose() -> i32 {
 }
 
 fn set_policy(config: LogConfig) -> i32 {
+    let safe = sanitize_config(config)
     let mut rc = 0
-    rc = rc + set_logging_enabled(config.enabled)
-    rc = rc + set_json_mode(config.json)
-    rc = rc + set_output_sink(config.sink)
-    rc = rc + set_min_level(config.min_level)
+    rc = rc + set_logging_enabled(safe.enabled)
+    rc = rc + set_json_mode(safe.json)
+    rc = rc + set_output_sink(safe.sink)
+    rc = rc + set_min_level(safe.min_level)
     return rc
 }
 
@@ -123,45 +146,38 @@ fn request_log_sampled(
     method: str,
     counter: i32
 ) -> i32 {
-    if config.enabled == 0 {
+    let safe = sanitize_config(config)
+    if safe.enabled == 0 {
         return 0
     }
-    if should_sample(counter, config.sample_mod) == 0 {
+    if should_sample(counter, safe.sample_mod) == 0 {
         return 0
     }
-    let msg = clamp_field(message, config.max_field_bytes)
-    let rid = if config.include_correlation == 1 {
-        clamp_field(request_id, config.max_field_bytes)
+    let msg = clamp_field(message, safe.max_field_bytes)
+    let rid = if safe.include_correlation == 1 {
+        clamp_field(request_id, safe.max_field_bytes)
     } else {
         ""
     }
-    let p = clamp_field(path, config.max_field_bytes)
+    let p = clamp_field(path, safe.max_field_bytes)
     let m = clamp_field(method, 16)
-    discard set_policy(config)
+    let fields = map.new()
+    if safe.include_correlation == 1 {
+        discard map.set(fields, "request_id", json.str(rid))
+    }
+    discard map.set(fields, "path", json.str(p))
+    discard map.set(fields, "method", json.str(m))
+    discard map.set(fields, "level", json.str(level_name(level)))
+    discard set_policy(safe)
     if level == LogLevel::Warn {
-        discard log.warn(msg, log.fields(#{
-            "request_id": json.str(rid),
-            "path": json.str(p),
-            "method": json.str(m),
-            "level": json.str("warn"),
-        }))
+        discard log.warn(msg, log.fields(fields))
         return 2
     }
     if level == LogLevel::Error {
-        discard log.error(msg, log.fields(#{
-            "request_id": json.str(rid),
-            "path": json.str(p),
-            "method": json.str(m),
-            "level": json.str("error"),
-        }))
+        discard log.error(msg, log.fields(fields))
         return 3
     }
-    discard log.info(msg, log.fields(#{
-        "request_id": json.str(rid),
-        "path": json.str(p),
-        "method": json.str(m),
-        "level": json.str("info"),
-    }))
+    discard log.info(msg, log.fields(fields))
     return 1
 }
 

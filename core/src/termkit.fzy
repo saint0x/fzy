@@ -17,6 +17,9 @@ fn eprint_line(text: str) -> i32 {
 }
 
 fn prompt_line(prompt: str) -> str {
+    if is_interactive() == 0 {
+        return ""
+    }
     discard print(prompt)
     return term.read_line()
 }

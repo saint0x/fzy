@@ -1,8 +1,18 @@
 use core.mem;
 
-fn phase_fence() -> i32 {
+fn freeze() -> i32 {
     mem.freeze()
+    return 0
+}
+
+fn unfreeze() -> i32 {
     mem.unfreeze()
+    return 0
+}
+
+fn phase_fence() -> i32 {
+    discard freeze()
+    discard unfreeze()
     return 0
 }
 

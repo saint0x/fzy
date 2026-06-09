@@ -36,22 +36,34 @@ fn init_state(capacity: i32) -> QueueState {
     }
 }
 
+fn sanitize_depth(depth: i32) -> i32 {
+    if depth < 0 {
+        return 0
+    }
+    return depth
+}
+
 fn classify_backpressure(depth: i32, capacity: i32, watermark: i32) -> Backpressure {
-    if depth >= capacity then return Backpressure::Saturated
-    if depth >= watermark then return Backpressure::HighWatermark
+    let safe_depth = sanitize_depth(depth)
+    let safe_capacity = if capacity < 1 { 1 } else { capacity }
+    let safe_watermark = if watermark < 1 { 1 } else { watermark }
+    if safe_depth >= safe_capacity then return Backpressure::Saturated
+    if safe_depth >= safe_watermark then return Backpressure::HighWatermark
     return Backpressure::None
 }
 
 fn enqueue_depth(depth: i32, capacity: i32, policy: OverflowPolicy) -> i32 {
-    if depth < capacity {
-        return depth + 1
+    let safe_depth = sanitize_depth(depth)
+    let safe_capacity = if capacity < 1 { 1 } else { capacity }
+    if safe_depth < safe_capacity {
+        return safe_depth + 1
     }
 
     match policy {
-        OverflowPolicy::Reject => return depth,
-        OverflowPolicy::DropOldest => return capacity,
-        OverflowPolicy::DropNewest => return depth,
-        _ => return depth,
+        OverflowPolicy::Reject => return safe_depth,
+        OverflowPolicy::DropOldest => return safe_capacity,
+        OverflowPolicy::DropNewest => return safe_depth,
+        _ => return safe_depth,
     }
 }
 
@@ -65,8 +77,9 @@ fn backpressure_score(signal: Backpressure) -> i32 {
 }
 
 fn consume_depth(depth: i32) -> i32 {
-    if depth <= 0 then return 0
-    return depth - 1
+    let safe_depth = sanitize_depth(depth)
+    if safe_depth <= 0 then return 0
+    return safe_depth - 1
 }
 
 fn sample() -> i32 {

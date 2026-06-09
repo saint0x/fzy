@@ -27,48 +27,103 @@ struct DirEntries {
     names: ListHandle,
 }
 
+fn normalize_file_path(file_path: str) -> str {
+    return str.trim(file_path)
+}
+
+fn path_is_present(file_path: str) -> i32 {
+    if normalize_file_path(file_path) == "" {
+        return 0
+    }
+    return 1
+}
+
 fn read_text(file_path: str) -> str {
-    return fs.read_file(file_path)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return ""
+    }
+    return fs.read_file(normalized)
 }
 
 fn write_text(file_path: str, value: str) -> i32 {
-    return fs.atomic_write(file_path, value)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return 1
+    }
+    return fs.atomic_write(normalized, value)
 }
 
 fn mkdir(dir_path: str) -> i32 {
-    return fs.mkdir(dir_path)
+    let normalized = normalize_file_path(dir_path)
+    if normalized == "" {
+        return 1
+    }
+    return fs.mkdir(normalized)
 }
 
 fn exists(file_path: str) -> i32 {
-    return fs.exists(file_path)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return 0
+    }
+    return fs.exists(normalized)
 }
 
 fn is_file(file_path: str) -> i32 {
-    return fs.is_file(file_path)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return 0
+    }
+    return fs.is_file(normalized)
 }
 
 fn is_dir(dir_path: str) -> i32 {
-    return fs.is_dir(dir_path)
+    let normalized = normalize_file_path(dir_path)
+    if normalized == "" {
+        return 0
+    }
+    return fs.is_dir(normalized)
 }
 
 fn is_symlink(file_path: str) -> i32 {
-    return fs.is_symlink(file_path)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return 0
+    }
+    return fs.is_symlink(normalized)
 }
 
 fn remove_file(file_path: str) -> i32 {
-    return fs.remove_file(file_path)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return 1
+    }
+    return fs.remove_file(normalized)
 }
 
 fn remove(file_path: str) -> i32 {
-    return fs.remove(file_path)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return 1
+    }
+    return fs.remove(normalized)
 }
 
 fn stat_size(file_path: str) -> i32 {
-    return fs.stat_size(file_path)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return -1
+    }
+    return fs.stat_size(normalized)
 }
 
 fn stat_mtime(file_path: str) -> i32 {
-    return fs.stat_mtime(file_path)
+    let normalized = normalize_file_path(file_path)
+    if normalized == "" {
+        return -1
+    }
+    return fs.stat_mtime(normalized)
 }
 
 fn temp_file(prefix: str) -> str {
@@ -76,15 +131,20 @@ fn temp_file(prefix: str) -> str {
 }
 
 fn list_dir(dir_path: str) -> ListHandle {
-    return fs.listdir(dir_path)
+    let normalized = normalize_file_path(dir_path)
+    if normalized == "" {
+        return list.new()
+    }
+    return fs.listdir(normalized)
 }
 
 fn metadata(file_path: str) -> FileMetadata {
-    let name = path.basename(file_path)
-    let found = exists(file_path)
+    let normalized = normalize_file_path(file_path)
+    let name = path.basename(normalized)
+    let found = exists(normalized)
     if found == 0 {
         return FileMetadata {
-            path: file_path,
+            path: normalized,
             name: name,
             exists: 0,
             is_file: 0,
@@ -95,27 +155,45 @@ fn metadata(file_path: str) -> FileMetadata {
         }
     }
     return FileMetadata {
-        path: file_path,
+        path: normalized,
         name: name,
         exists: 1,
-        is_file: is_file(file_path),
-        is_dir: is_dir(file_path),
-        is_symlink: is_symlink(file_path),
-        size: stat_size(file_path),
-        modified_unix_secs: stat_mtime(file_path),
+        is_file: is_file(normalized),
+        is_dir: is_dir(normalized),
+        is_symlink: is_symlink(normalized),
+        size: stat_size(normalized),
+        modified_unix_secs: stat_mtime(normalized),
     }
 }
 
 fn copy_file(src: str, dst: str) -> i32 {
-    return fs.copy_file(src, dst)
+    let safe_src = normalize_file_path(src)
+    let safe_dst = normalize_file_path(dst)
+    if safe_src == "" || safe_dst == "" {
+        return 1
+    }
+    return fs.copy_file(safe_src, safe_dst)
 }
 
 fn copy_tree(src: str, dst: str) -> i32 {
-    return fs.copy_tree(src, dst)
+    let safe_src = normalize_file_path(src)
+    let safe_dst = normalize_file_path(dst)
+    if safe_src == "" || safe_dst == "" {
+        return 1
+    }
+    return fs.copy_tree(safe_src, safe_dst)
 }
 
 fn stage_tree(src: str, dst: str) -> i32 {
-    return copy_tree(src, dst)
+    let safe_src = normalize_file_path(src)
+    let safe_dst = normalize_file_path(dst)
+    if safe_src == "" || safe_dst == "" {
+        return 1
+    }
+    if safe_src == safe_dst {
+        return 0
+    }
+    return copy_tree(safe_src, safe_dst)
 }
 
 fn list_dir_entries(dir_path: str) -> DirEntries {
@@ -159,6 +237,7 @@ fn sample() -> i32 {
     let entries = list_dir_entries(root)
     let mut score = dir_len(entries)
     score = score + metadata(probe).exists
+    score = score + path_is_present(probe)
     let copy = path.join(root, "coreio-sample-copy.txt")
     discard write_text(probe, "sample")
     score = score + copy_file(probe, copy)

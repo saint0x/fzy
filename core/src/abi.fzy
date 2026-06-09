@@ -3,9 +3,20 @@ struct Pair {
     right: i32,
 }
 
+fn normalize_component(value: i32) -> i32 {
+    let modulo = value % 251
+    if modulo < 0 {
+        return modulo + 251
+    }
+    return modulo
+}
+
 fn combine(left: i32, right: i32) -> i32 {
-    let pair = Pair { left: left, right: right }
-    return ((pair.left * 3) + (pair.right * 5)) % 251
+    let pair = Pair {
+        left: normalize_component(left),
+        right: normalize_component(right),
+    }
+    return normalize_component((pair.left * 3) + (pair.right * 5))
 }
 
 fn sample() -> i32 {

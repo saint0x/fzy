@@ -2,17 +2,19 @@ fn owner_score(owner: str) -> i32 {
     if owner == "owned" then return 11
     if owner == "borrowed" then return 7
     if owner == "out" then return 13
+    if owner == "inout" then return 19
     return 17
 }
 
 fn contract_score(owner: str, nullable: i32, mutable_mode: i32, panic_abort: i32) -> i32 {
-    let mut score = owner_score(owner)
+    let normalized = str.lower_ascii(str.trim(owner))
+    let mut score = owner_score(normalized)
     if nullable == 1 { score = score + 5 } else { score = score + 3 }
     if mutable_mode == 1 { score = score + 19 } else { score = score + 2 }
     if panic_abort == 1 { score = score + 23 } else { score = score + 29 }
-    if owner == "owned" && panic_abort == 1 { score = score + 31 }
-    if owner == "borrowed" && nullable == 0 { score = score + 37 }
-    if owner == "inout" && mutable_mode == 1 { score = score + 41 }
+    if normalized == "owned" && panic_abort == 1 { score = score + 31 }
+    if normalized == "borrowed" && nullable == 0 { score = score + 37 }
+    if normalized == "inout" && mutable_mode == 1 { score = score + 41 }
     return score
 }
 

@@ -1,11 +1,25 @@
 fn delay_for_attempt(attempt: i32, initial: i32, max_delay: i32, factor: i32) -> i32 {
     let mut delay = initial
+    let mut capped_max = max_delay
+    let mut safe_factor = factor
+    if delay < 1 {
+        delay = 1
+    }
+    if capped_max < delay {
+        capped_max = delay
+    }
+    if safe_factor < 1 {
+        safe_factor = 1
+    }
+    if attempt <= 1 {
+        return delay
+    }
     let mut i = 1
 
     while i < attempt {
-        delay = delay * factor
-        if delay > max_delay {
-            delay = max_delay
+        delay = delay * safe_factor
+        if delay > capped_max {
+            delay = capped_max
         }
         i = i + 1
     }

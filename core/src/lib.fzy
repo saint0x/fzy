@@ -75,6 +75,16 @@ pub fn text_visible_len_ansi(value: str) -> i32 { return text.visible_len_ansi(v
 pub fn text_upper_ascii(value: str) -> str { return text.upper_ascii(value) }
 pub fn text_lower_ascii(value: str) -> str { return text.lower_ascii(value) }
 
+pub fn capability_parse(name: str) -> i32 { return capability.parse(name) }
+pub fn retry_delay_for_attempt(attempt: i32, initial: i32, max_delay: i32, factor: i32) -> i32 {
+    return retry.delay_for_attempt(attempt, initial, max_delay, factor)
+}
+pub fn bytes_read_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
+    return bytes.read_u32_le(b0, b1, b2, b3)
+}
+pub fn duration_add(a: i32, b: i32) -> i32 { return duration.add(a, b) }
+pub fn duration_sub(a: i32, b: i32) -> i32 { return duration.sub(a, b) }
+
 pub fn io_read_text(file_path: str) -> str { return io.read_text(file_path) }
 pub fn io_write_text(file_path: str, value: str) -> i32 { return io.write_text(file_path, value) }
 pub fn io_exists(file_path: str) -> i32 { return io.exists(file_path) }
@@ -97,6 +107,9 @@ pub fn process_has_flag(flag: str) -> i32 { return process.has_flag(flag) }
 pub fn process_retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
     return process.retry_delay_ms(attempt, base_ms, max_ms)
 }
+pub fn process_budget_score(argv_count: i32, env_count: i32, timeout_ms: i32, max_output_bytes: i32, max_children: i32) -> i32 {
+    return process.budget_score_fast(argv_count, env_count, timeout_ms, max_output_bytes, max_children)
+}
 
 pub fn security_random_hex(bytes: i32) -> str { return security.random_hex(bytes) }
 pub fn security_random_base64(bytes: i32) -> str { return security.random_base64(bytes) }
@@ -112,6 +125,10 @@ pub fn security_base64_encode(data: str) -> str { return security.base64_encode(
 pub fn security_base64_decode(data: str) -> str { return security.base64_decode(data) }
 pub fn security_base64_url_encode(data: str) -> str { return security.base64_url_encode(data) }
 pub fn security_base64_url_decode(data: str) -> str { return security.base64_url_decode(data) }
+pub fn security_rate_limit_allow(tokens: i32, cost: i32) -> i32 { return security.allow_cost(tokens, cost) }
+pub fn security_rate_limit_refill(tokens: i32, elapsed_ms: i32, burst: i32, refill_per_sec: i32, max_tokens: i32) -> i32 {
+    return security.refill_tokens_fast(tokens, elapsed_ms, burst, refill_per_sec, max_tokens)
+}
 
 pub fn http_route_fingerprint_fast(
     method_score: i32,
@@ -149,3 +166,13 @@ pub fn error_status_retryable(status: i32, message: str, attempt: i32, max_attem
     let err = errorkit.normalize(errorkit.from_http_status(status, message))
     return errorkit.should_retry(err, attempt, max_attempts)
 }
+pub fn network_endpoint_score(hostname: str, port: i32, tls: i32, ipv6: i32, socket_kind: str) -> i32 {
+    return network.endpoint_score_fast(hostname, port, tls, ipv6, socket_kind)
+}
+pub fn concurrency_backpressure_score(depth: i32, capacity: i32) -> i32 {
+    let state = concurrency.init_state(capacity)
+    let signal = concurrency.classify_backpressure(depth, state.capacity, state.high_watermark)
+    return concurrency.backpressure_score(signal)
+}
+pub fn thread_context_id_or(fallback: i32) -> i32 { return threadkit.context_id_or(fallback) }
+pub fn memory_phase_fence() -> i32 { return memkit.phase_fence() }
