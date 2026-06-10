@@ -2,6 +2,8 @@
 
 ## 1) Import a third-party C symbol
 
+This workflow does not require a public `core.*` FFI helper module. The contract is the language boundary itself plus generated artifacts.
+
 ```fzy
 ext unsafe c fn c_mul(left: i32, right: i32) -> i32;
 

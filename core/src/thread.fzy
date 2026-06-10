@@ -1,0 +1,114 @@
+use core.thread;
+
+struct ThreadContext {
+    id: i32,
+    bound: i32,
+}
+
+fn clamp_timeout(ms: i32) -> i32 {
+    if ms < 1 {
+        return 1
+    }
+    return ms
+}
+
+fn context_id() -> i32 {
+    return task.context_id()
+}
+
+fn current_context() -> ThreadContext {
+    let id = context_id()
+    return ThreadContext {
+        id: id,
+        bound: if id == 0 { 0 } else { 1 },
+    }
+}
+
+fn has_context() -> i32 {
+    return current_context().bound
+}
+
+fn context_id_or(fallback: i32) -> i32 {
+    let current = current_context()
+    if current.bound == 0 {
+        return fallback
+    }
+    return current.id
+}
+
+fn spawn_task(worker: fn() -> i32) -> TaskHandle {
+    return thread.spawn(worker)
+}
+
+fn spawn_task_in_context(worker: fn() -> i32, id: i32) -> TaskHandle {
+    return thread.spawn_ctx(worker, id)
+}
+
+fn join_task(handle: TaskHandle) -> i32 {
+    return join(handle)
+}
+
+fn detach_task(handle: TaskHandle) -> i32 {
+    return detach(handle)
+}
+
+fn cancel_task_handle(handle: TaskHandle) -> i32 {
+    return cancel_task(handle)
+}
+
+fn read_task_result(handle: TaskHandle) -> i32 {
+    return task_result(handle)
+}
+
+fn group_begin() -> TaskGroupHandle {
+    return task.group_begin()
+}
+
+fn group_spawn(group: TaskGroupHandle, worker: fn() -> i32) -> TaskHandle {
+    return task.group_spawn(group, worker)
+}
+
+fn group_spawn_n(group: TaskGroupHandle, worker: fn() -> i32, count: i32) -> i32 {
+    let safe_count = if count < 0 { 0 } else { count }
+    return task.group_spawn_n(group, worker, safe_count)
+}
+
+fn group_join(group: TaskGroupHandle) -> i32 {
+    return task.group_join(group)
+}
+
+fn group_join_all(group: TaskGroupHandle) -> i32 {
+    return task.group_join_all(group)
+}
+
+fn group_cancel(group: TaskGroupHandle) -> i32 {
+    return task.group_cancel(group)
+}
+
+fn parallel_map(group: TaskGroupHandle, worker: fn() -> i32) -> i32 {
+    return task.parallel_map(group, worker)
+}
+
+fn checkpoint_now() -> i32 {
+    return checkpoint()
+}
+
+fn yield_now() -> i32 {
+    return yield()
+}
+
+fn pulse_now() -> i32 {
+    return pulse()
+}
+
+fn cancel_now() -> i32 {
+    return cancel()
+}
+
+fn timeout_after(ms: i32) -> i32 {
+    return timeout(clamp_timeout(ms))
+}
+
+fn deadline_after(ms: i32) -> i32 {
+    return deadline(clamp_timeout(ms))
+}

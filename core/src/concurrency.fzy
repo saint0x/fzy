@@ -1,39 +1,35 @@
+// Internal coordination-policy shelf. This file is not part of the
+// canonical public `core.*` import surface.
 enum OverflowPolicy {
     Reject,
     DropOldest,
     DropNewest,
 }
 
-enum Backpressure {
-    None,
+enum ChannelPressure {
+    Ready,
     HighWatermark,
     Saturated,
 }
 
-struct QueueState {
+struct ChannelPolicy {
+    capacity: i32,
+    high_watermark: i32,
+    overflow: OverflowPolicy,
+}
+
+struct ChannelSnapshot {
     depth: i32,
     capacity: i32,
     high_watermark: i32,
+    pressure: ChannelPressure,
 }
 
-fn high_watermark(capacity: i32) -> i32 {
-    let mut capped = capacity
-    if capped < 1 {
-        capped = 1
+fn sanitize_capacity(capacity: i32) -> i32 {
+    if capacity < 1 {
+        return 1
     }
-    return (capped * 3) / 4
-}
-
-fn init_state(capacity: i32) -> QueueState {
-    let mut cap = capacity
-    if cap < 1 {
-        cap = 1
-    }
-    return QueueState {
-        depth: 0,
-        capacity: cap,
-        high_watermark: high_watermark(cap),
-    }
+    return capacity
 }
 
 fn sanitize_depth(depth: i32) -> i32 {
@@ -43,50 +39,131 @@ fn sanitize_depth(depth: i32) -> i32 {
     return depth
 }
 
-fn classify_backpressure(depth: i32, capacity: i32, watermark: i32) -> Backpressure {
-    let safe_depth = sanitize_depth(depth)
-    let safe_capacity = if capacity < 1 { 1 } else { capacity }
-    let safe_watermark = if watermark < 1 { 1 } else { watermark }
-    if safe_depth >= safe_capacity then return Backpressure::Saturated
-    if safe_depth >= safe_watermark then return Backpressure::HighWatermark
-    return Backpressure::None
+fn default_high_watermark(capacity: i32) -> i32 {
+    return (sanitize_capacity(capacity) * 3) / 4
 }
 
-fn enqueue_depth(depth: i32, capacity: i32, policy: OverflowPolicy) -> i32 {
-    let safe_depth = sanitize_depth(depth)
-    let safe_capacity = if capacity < 1 { 1 } else { capacity }
-    if safe_depth < safe_capacity {
-        return safe_depth + 1
+fn sanitize_high_watermark(capacity: i32, high_watermark: i32) -> i32 {
+    let safe_capacity = sanitize_capacity(capacity)
+    let mut safe_high_watermark = high_watermark
+    if safe_high_watermark < 1 {
+        safe_high_watermark = 1
     }
-
-    match policy {
-        OverflowPolicy::Reject => return safe_depth,
-        OverflowPolicy::DropOldest => return safe_capacity,
-        OverflowPolicy::DropNewest => return safe_depth,
-        _ => return safe_depth,
+    if safe_high_watermark > safe_capacity {
+        return safe_capacity
     }
+    return safe_high_watermark
 }
 
-fn backpressure_score(signal: Backpressure) -> i32 {
-    match signal {
-        Backpressure::None => return 3,
-        Backpressure::HighWatermark => return 17,
-        Backpressure::Saturated => return 31,
-        _ => return 3,
+fn policy(capacity: i32, overflow: OverflowPolicy) -> ChannelPolicy {
+    let safe_capacity = sanitize_capacity(capacity)
+    return ChannelPolicy {
+        capacity: safe_capacity,
+        high_watermark: default_high_watermark(safe_capacity),
+        overflow: overflow,
     }
 }
 
-fn consume_depth(depth: i32) -> i32 {
-    let safe_depth = sanitize_depth(depth)
-    if safe_depth <= 0 then return 0
-    return safe_depth - 1
+fn policy_with_high_watermark(capacity: i32, high_watermark: i32, overflow: OverflowPolicy) -> ChannelPolicy {
+    let safe_capacity = sanitize_capacity(capacity)
+    return ChannelPolicy {
+        capacity: safe_capacity,
+        high_watermark: sanitize_high_watermark(safe_capacity, high_watermark),
+        overflow: overflow,
+    }
 }
 
-fn sample() -> i32 {
-    let state = init_state(64)
-    let d1 = enqueue_depth(state.depth, state.capacity, OverflowPolicy::DropOldest)
-    let d2 = enqueue_depth(d1, state.capacity, OverflowPolicy::DropOldest)
-    let sig = classify_backpressure(d2, state.capacity, state.high_watermark)
-    let d3 = consume_depth(d2)
-    return (d3 + backpressure_score(sig)) % 251
+fn reject_policy(capacity: i32) -> ChannelPolicy {
+    return policy(capacity, OverflowPolicy::Reject)
+}
+
+fn reject_policy_with_high_watermark(capacity: i32, high_watermark: i32) -> ChannelPolicy {
+    return policy_with_high_watermark(capacity, high_watermark, OverflowPolicy::Reject)
+}
+
+fn drop_oldest_policy(capacity: i32) -> ChannelPolicy {
+    return policy(capacity, OverflowPolicy::DropOldest)
+}
+
+fn drop_oldest_policy_with_high_watermark(capacity: i32, high_watermark: i32) -> ChannelPolicy {
+    return policy_with_high_watermark(capacity, high_watermark, OverflowPolicy::DropOldest)
+}
+
+fn drop_newest_policy(capacity: i32) -> ChannelPolicy {
+    return policy(capacity, OverflowPolicy::DropNewest)
+}
+
+fn drop_newest_policy_with_high_watermark(capacity: i32, high_watermark: i32) -> ChannelPolicy {
+    return policy_with_high_watermark(capacity, high_watermark, OverflowPolicy::DropNewest)
+}
+
+fn pressure(depth: i32, item: ChannelPolicy) -> ChannelPressure {
+    let safe_depth = sanitize_depth(depth)
+    if safe_depth >= item.capacity {
+        return ChannelPressure::Saturated
+    }
+    if safe_depth >= item.high_watermark {
+        return ChannelPressure::HighWatermark
+    }
+    return ChannelPressure::Ready
+}
+
+fn snapshot(depth: i32, item: ChannelPolicy) -> ChannelSnapshot {
+    let safe_depth = sanitize_depth(depth)
+    return ChannelSnapshot {
+        depth: safe_depth,
+        capacity: item.capacity,
+        high_watermark: item.high_watermark,
+        pressure: pressure(safe_depth, item),
+    }
+}
+
+fn can_send(state: ChannelSnapshot) -> i32 {
+    if state.depth < state.capacity {
+        return 1
+    }
+    match state.pressure {
+        ChannelPressure::Saturated => return 0,
+        _ => return 1,
+    }
+}
+
+fn is_ready(state: ChannelSnapshot) -> i32 {
+    match state.pressure {
+        ChannelPressure::Ready => return 1,
+        _ => return 0,
+    }
+}
+
+fn is_high_watermark(state: ChannelSnapshot) -> i32 {
+    match state.pressure {
+        ChannelPressure::HighWatermark => return 1,
+        _ => return 0,
+    }
+}
+
+fn is_saturated(state: ChannelSnapshot) -> i32 {
+    match state.pressure {
+        ChannelPressure::Saturated => return 1,
+        _ => return 0,
+    }
+}
+
+fn depth_after_send(state: ChannelSnapshot, item: ChannelPolicy) -> i32 {
+    if state.depth < state.capacity {
+        return state.depth + 1
+    }
+    match item.overflow {
+        OverflowPolicy::Reject => return state.depth,
+        OverflowPolicy::DropOldest => return state.capacity,
+        OverflowPolicy::DropNewest => return state.depth,
+        _ => return state.depth,
+    }
+}
+
+fn depth_after_recv(state: ChannelSnapshot) -> i32 {
+    if state.depth < 1 {
+        return 0
+    }
+    return state.depth - 1
 }

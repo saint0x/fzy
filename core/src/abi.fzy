@@ -1,20 +1,26 @@
-struct Pair {
-    left: i32,
-    right: i32,
-}
-
 struct AbiVersion {
     major: i32,
     minor: i32,
     patch: i32,
 }
 
-fn normalize_component(value: i32) -> i32 {
-    let modulo = value % 251
-    if modulo < 0 {
-        return modulo + 251
-    }
-    return modulo
+struct LayoutContract {
+    size: i32,
+    align: i32,
+    pointer_width: i32,
+    stable_ffi: i32,
+}
+
+enum LayoutIssue {
+    None,
+    AlignmentExceedsSize,
+    PointerWidthTooSmall,
+    SizeAlignmentMismatch,
+}
+
+struct LayoutAssessment {
+    contract: LayoutContract,
+    issue: LayoutIssue,
 }
 
 fn clamp_nonnegative(value: i32) -> i32 {
@@ -22,6 +28,13 @@ fn clamp_nonnegative(value: i32) -> i32 {
         return 0
     }
     return value
+}
+
+fn normalize_flag(value: i32) -> i32 {
+    if value == 0 {
+        return 0
+    }
+    return 1
 }
 
 fn normalize_alignment(align: i32) -> i32 {
@@ -68,51 +81,77 @@ fn version_code(v: AbiVersion) -> i32 {
     return ((major * 1000000) + (minor * 1000) + patch)
 }
 
+fn layout_contract(size: i32, align: i32, pointer_width: i32, stable_ffi: i32) -> LayoutContract {
+    return LayoutContract {
+        size: clamp_nonnegative(size),
+        align: normalize_alignment(align),
+        pointer_width: normalize_pointer_width(pointer_width),
+        stable_ffi: normalize_flag(stable_ffi),
+    }
+}
+
+fn assess_layout(value: LayoutContract) -> LayoutAssessment {
+    let safe = layout_contract(value.size, value.align, value.pointer_width, value.stable_ffi)
+    let mut issue = LayoutIssue::None
+    if safe.size != 0 && safe.align > safe.size {
+        issue = LayoutIssue::AlignmentExceedsSize
+    } else {
+        if safe.pointer_width < safe.align {
+            issue = LayoutIssue::PointerWidthTooSmall
+        } else {
+            if safe.size != 0 && (safe.size % safe.align) != 0 {
+                issue = LayoutIssue::SizeAlignmentMismatch
+            }
+        }
+    }
+    return LayoutAssessment {
+        contract: safe,
+        issue: issue,
+    }
+}
+
 fn layout_is_valid(size: i32, align: i32, pointer_width: i32) -> i32 {
-    let safe_size = clamp_nonnegative(size)
-    let safe_align = normalize_alignment(align)
-    let safe_width = normalize_pointer_width(pointer_width)
-    if safe_size == 0 {
+    let assessment = assess_layout(layout_contract(size, align, pointer_width, 0))
+    if assessment.issue == LayoutIssue::None {
         return 1
     }
-    if safe_align > safe_size {
-        return 0
-    }
-    if safe_width < safe_align {
-        return 0
-    }
-    if (safe_size % safe_align) != 0 {
-        return 0
-    }
-    return 1
+    return 0
 }
 
-fn layout_score(size: i32, align: i32, pointer_width: i32, stable_ffi: i32) -> i32 {
-    let safe_size = clamp_nonnegative(size)
-    let safe_align = normalize_alignment(align)
-    let safe_width = normalize_pointer_width(pointer_width)
-    let mut score = normalize_component(safe_size + (safe_align * 7) + (safe_width * 11))
-    if layout_is_valid(safe_size, safe_align, safe_width) == 1 {
-        score = normalize_component(score + 61)
+fn layout_issue_name(issue: LayoutIssue) -> str {
+    match issue {
+        LayoutIssue::AlignmentExceedsSize => return "alignment_exceeds_size",
+        LayoutIssue::PointerWidthTooSmall => return "pointer_width_too_small",
+        LayoutIssue::SizeAlignmentMismatch => return "size_alignment_mismatch",
+        _ => return "none",
     }
-    if stable_ffi == 1 {
-        score = normalize_component(score + 97)
-    }
-    return score
 }
 
-fn combine(left: i32, right: i32) -> i32 {
-    let pair = Pair {
-        left: normalize_component(left),
-        right: normalize_component(right),
+fn layout_error(value: LayoutContract) -> result.Error {
+    let assessment = assess_layout(value)
+    if assessment.issue == LayoutIssue::None {
+        return result.clear()
     }
-    return normalize_component((pair.left * 3) + (pair.right * 5))
-}
-
-fn sample() -> i32 {
-    let abi = version(1, 2, 3)
-    let packed = version_code(abi)
-    let layout = layout_score(32, 8, 8, 1)
-    let pair_score = combine(11, 17)
-    return normalize_component(pair_score + layout + (packed % 251))
+    let safe = assessment.contract
+    let summary = str.concat("layout contract invalid: ", layout_issue_name(assessment.issue))
+    let context = str.concat(
+        "size=",
+        str.concat(
+            str.from_i32(safe.size),
+            str.concat(
+                " align=",
+                str.concat(
+                    str.from_i32(safe.align),
+                    str.concat(
+                        " ptr=",
+                        str.concat(
+                            str.from_i32(safe.pointer_width),
+                            str.concat(" stable=", str.from_i32(safe.stable_ffi)),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    return result.with_context(result.from_ffi_failure(summary), context)
 }

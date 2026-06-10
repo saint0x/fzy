@@ -10,6 +10,7 @@ This guide covers production C interoperability for Fozzy in both directions:
 - `pubext async c fn` exports use async-handle ABI (`*_async_start/poll/await/drop`).
 - `ext unsafe c fn` is the unsafe C-import surface.
 - `ext c fn` is reserved for safe import contracts.
+- There is no public `core.*` FFI facade; FFI is a language/tooling boundary, not a canonical stdlib namespace.
 - `fozzy.toml` is the policy source of truth for C panic boundary:
   - `[ffi] panic_boundary = "abort"` or `"error"` is required for projects with C interop symbols.
 - `#[ffi_panic(...)]` is per-symbol override only.
@@ -112,12 +113,7 @@ Generated headers expose lifecycle and callback ABI:
 
 Callback signature is validated by C type contract (`fz_callback_i32_v0`).
 
-On the Fozzy-facing stdlib surface, `core.c.bind_callback(slot, context_id)` constructs the
-stable callback binding record passed through higher-level interop helpers. It maps directly to:
-
-```text
-CallbackBinding { slot, context_id }
-```
+Fozzy source does not import a public `core.c` helper shelf for callback metadata. Callback slot contracts live in generated embedding/header artifacts and in host-side support code.
 
 Embedding contract:
 - Call `fz_host_init()` before invoking exported Fozzy functions from an in-process host.

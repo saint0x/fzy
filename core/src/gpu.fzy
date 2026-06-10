@@ -150,20 +150,3 @@ device fn barrier() -> void {
     discard gpu.barrier()
 }
 
-fn sample() -> i32 {
-    let count = device_count()
-    if count < 0 {
-        return 1
-    }
-    if count == 0 {
-        return slice_bounds_score(-1, -1)
-    }
-    let dev = default_device()
-    let name = device_name(dev)
-    let bytes = device_memory_bytes(dev)
-    let alloc_score = safe_allocation_len(-7) + slice_bounds_score(-2, 8) + has_device()
-    if str.len(name) < 0 || bytes < 0 {
-        return 2
-    }
-    return alloc_score % 251
-}

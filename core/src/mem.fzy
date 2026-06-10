@@ -16,6 +16,3 @@ fn phase_fence() -> i32 {
     return 0
 }
 
-fn sample() -> i32 {
-    return phase_fence()
-}

@@ -8,8 +8,38 @@ enum ExitClass {
     Signaled,
 }
 
+struct CurrentProcess {
+    argc: i32,
+    command: str,
+}
+
+struct ProcessLimits {
+    wait_timeout_ms: i32,
+    max_output_bytes: i32,
+    max_children: i32,
+}
+
+struct ProcessObservation {
+    wait_status: i32,
+    polled_ready: i32,
+    exit_code: i32,
+    timed_out: i32,
+    cancelled: i32,
+    signal: i32,
+    class: ExitClass,
+    stdout: str,
+    stderr: str,
+}
+
+fn current() -> CurrentProcess {
+    return CurrentProcess {
+        argc: proc.argv_count(),
+        command: proc.argv_get(0),
+    }
+}
+
 fn argv_count() -> i32 {
-    return proc.argv_count()
+    return current().argc
 }
 
 fn argv(index: i32) -> str {
@@ -25,7 +55,7 @@ fn argv_or(index: i32, fallback: str) -> str {
 }
 
 fn command_name() -> str {
-    return argv_or(0, "")
+    return current().command
 }
 
 fn has_flag(flag: str) -> i32 {
@@ -44,29 +74,39 @@ fn close(handle: ProcessHandle) -> i32 {
     return proc.close(handle)
 }
 
-struct ProcessLimits {
-    timeout_ms: i32,
-    max_output_bytes: i32,
-    max_children: i32,
+fn poll(handle: ProcessHandle) -> i32 {
+    return proc.poll(handle)
+}
+
+fn stdout(handle: ProcessHandle) -> str {
+    return proc.stdout(handle)
+}
+
+fn stderr(handle: ProcessHandle) -> str {
+    return proc.stderr(handle)
+}
+
+fn exit_code(handle: ProcessHandle) -> i32 {
+    return proc.exit_code(handle)
 }
 
 fn default_limits() -> ProcessLimits {
     return ProcessLimits {
-        timeout_ms: 30000,
+        wait_timeout_ms: 30000,
         max_output_bytes: 1048576,
         max_children: 16,
     }
 }
 
 fn sanitize_limits(limits: ProcessLimits) -> ProcessLimits {
-    let mut timeout_ms = limits.timeout_ms
+    let mut wait_timeout_ms = limits.wait_timeout_ms
     let mut max_output_bytes = limits.max_output_bytes
     let mut max_children = limits.max_children
-    if timeout_ms < 1 { timeout_ms = 1 }
+    if wait_timeout_ms < 1 { wait_timeout_ms = 1 }
     if max_output_bytes < 0 { max_output_bytes = 0 }
     if max_children < 1 { max_children = 1 }
     return ProcessLimits {
-        timeout_ms: timeout_ms,
+        wait_timeout_ms: wait_timeout_ms,
         max_output_bytes: max_output_bytes,
         max_children: max_children,
     }
@@ -80,74 +120,27 @@ fn classify_exit(exit_code: i32, timed_out: i32, cancelled: i32, signal: i32) ->
     return ExitClass::Failure
 }
 
-fn class_score(class: ExitClass) -> i32 {
-    match class {
-        ExitClass::Ok => return 11,
-        ExitClass::Failure => return 19,
-        ExitClass::Timeout => return 23,
-        ExitClass::Cancelled => return 29,
-        ExitClass::Signaled => return 31,
-        _ => return 19,
+fn observe(handle: ProcessHandle, timeout_ms: i32) -> ProcessObservation {
+    let safe_timeout_ms = sanitize_limits(ProcessLimits {
+        wait_timeout_ms: timeout_ms,
+        max_output_bytes: 0,
+        max_children: 1,
+    }).wait_timeout_ms
+    let wait_status = proc.wait(handle, safe_timeout_ms)
+    let polled_ready = proc.poll(handle)
+    let stdout = proc.stdout(handle)
+    let stderr = proc.stderr(handle)
+    let exit_code = proc.exit_code(handle)
+    let timed_out = if wait_status == 0 { 0 } else { 1 }
+    return ProcessObservation {
+        wait_status: wait_status,
+        polled_ready: polled_ready,
+        exit_code: exit_code,
+        timed_out: timed_out,
+        cancelled: 0,
+        signal: 0,
+        class: classify_exit(exit_code, timed_out, 0, 0),
+        stdout: stdout,
+        stderr: stderr,
     }
-}
-
-fn budget_score(argv_count: i32, env_count: i32, limits: ProcessLimits) -> i32 {
-    let safe_limits = sanitize_limits(limits)
-    let mut score = (argv_count * 7) + (env_count * 5)
-    score = score + (safe_limits.max_children % 97)
-    score = score + (safe_limits.timeout_ms % 89)
-    score = score + (safe_limits.max_output_bytes % 83)
-    return score % 251
-}
-
-fn budget_score_fast(
-    argv_count: i32,
-    env_count: i32,
-    timeout_ms: i32,
-    max_output_bytes: i32,
-    max_children: i32
-) -> i32 {
-    return budget_score(
-        argv_count,
-        env_count,
-        ProcessLimits {
-            timeout_ms: timeout_ms,
-            max_output_bytes: max_output_bytes,
-            max_children: max_children,
-        },
-    )
-}
-
-fn retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
-    let mut delay = base_ms
-    let mut capped_max = max_ms
-    if delay < 1 {
-        delay = 1
-    }
-    if capped_max < delay {
-        capped_max = delay
-    }
-    if attempt <= 1 {
-        return delay
-    }
-    let mut i = 1
-    while i < attempt {
-        delay = delay * 2
-        if delay > capped_max {
-            delay = capped_max
-        }
-        i = i + 1
-    }
-    return delay
-}
-
-fn sample() -> i32 {
-    let limits = sanitize_limits(default_limits())
-    let class = classify_exit(0, 0, 0, 0)
-    let a = class_score(class)
-    let b = budget_score(4, 12, limits)
-    let c = retry_delay_ms(5, 4, 128)
-    let d = argv_count()
-    let e = if has_flag("--sample") == 1 { 17 } else { 0 }
-    return (a + b + c + d + e) % 251
 }

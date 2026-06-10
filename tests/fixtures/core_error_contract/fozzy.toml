@@ -1,0 +1,7 @@
+[package]
+name = "core_error_contract"
+version = "0.1.0"
+
+[[target.bin]]
+name = "core_error_contract"
+path = "src/main.fzy"

@@ -49,7 +49,7 @@ fn class_score(class: ErrorClass) -> i32 {
     }
 }
 
-fn resultx_workload() -> i32 {
+fn result_workload() -> i32 {
     let codes = [
         ErrorCode::InvalidInput,
         ErrorCode::NotFound,
@@ -969,9 +969,9 @@ fn error_workload() -> i32 {
 fn main() {
     let mode = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "resultx".to_string());
+        .unwrap_or_else(|| "result".to_string());
     let checksum = match mode.as_str() {
-        "resultx" => resultx_workload(),
+        "result" => result_workload(),
         "text" => text_workload(),
         "capability" => capability_workload(),
         "task_retry" => task_retry_workload(),
@@ -990,7 +990,7 @@ fn main() {
         "error" => error_workload(),
         other => {
             eprintln!(
-                "unknown mode `{other}`; expected one of: resultx,text,capability,task_retry,arithmetic,bytes,duration,abi_pair,c_interop_contract,http_oneoff,http_persistent,network,concurrency,process,security,log,error"
+                "unknown mode `{other}`; expected one of: result,text,capability,task_retry,arithmetic,bytes,duration,abi_pair,c_interop_contract,http_oneoff,http_persistent,network,concurrency,process,security,log,error"
             );
             std::process::exit(2);
         }

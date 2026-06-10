@@ -74,25 +74,3 @@ fn lower_ascii(v: str) -> str {
     return str.lower_ascii(v)
 }
 
-fn sample() -> i32 {
-    let a = trim("  alpha,beta,gamma  ")
-    let b = replace(a, ",", "|")
-    let c = pad_left("7", 3)
-    let d = pad_right("ok", 4)
-    let e = indent("x\ny", "> ")
-    let f = visible_len_ansi("\x1b[31mred\x1b[0m")
-    let g = upper_ascii("tool_arg_name")
-    let h = lower_ascii("TOOL_ARG_NAME")
-    let mut acc = 0
-    acc = acc + contains(b, "beta")
-    acc = acc + starts_with(b, "alpha")
-    acc = acc + ends_with(b, "gamma")
-    acc = acc + len(a)
-    acc = acc + len(c)
-    acc = acc + len(d)
-    acc = acc + len(e)
-    acc = acc + f
-    acc = acc + len(g)
-    acc = acc + len(h)
-    return acc
-}

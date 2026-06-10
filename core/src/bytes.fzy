@@ -13,6 +13,3 @@ fn read_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
     return byte0 + (byte1 << 8) + (byte2 << 16) + (byte3 << 24)
 }
 
-fn sample() -> i32 {
-    return read_u32_le(1, 2, 3, 4)
-}

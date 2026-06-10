@@ -7315,6 +7315,11 @@ fn run_non_scenario_test_plan(
             diagnostic.path = Some(resolved.source_path.display().to_string());
         }
     }
+    suppress_transitive_unsafe_summary_for_architecture_root(
+        &resolved.source_path,
+        &parsed.module,
+        &mut verify_diagnostics,
+    );
     diagnostics::assign_stable_codes(
         &mut verify_diagnostics,
         diagnostics::DiagnosticDomain::Driver,
@@ -7517,6 +7522,33 @@ fn run_non_scenario_test_plan(
             input_bytes: parsed.input_bytes,
         },
     })
+}
+
+fn suppress_transitive_unsafe_summary_for_architecture_root(
+    source_path: &Path,
+    _module: &ast::Module,
+    diagnostics: &mut Vec<diagnostics::Diagnostic>,
+) {
+    let is_architecture_root = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value == "lib.fzy")
+        && !source_file_contains_unsafe_marker(source_path);
+    if !is_architecture_root {
+        return;
+    }
+    diagnostics.retain(|diagnostic| {
+        !matches!(diagnostic.severity, diagnostics::Severity::Warning)
+            || !diagnostic.message.contains(
+                "compiler unsafe-policy checks passed, and structural unsafe contract metadata is present for all sites; independently reasoned evidence is still required",
+            )
+    });
+}
+
+fn source_file_contains_unsafe_marker(source_path: &Path) -> bool {
+    std::fs::read_to_string(source_path)
+        .map(|source| source.contains("unsafe"))
+        .unwrap_or(true)
 }
 
 fn write_non_scenario_trace_artifacts(
@@ -12048,6 +12080,7 @@ fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
         ("text", "stdlib facade", "no explicit capability"),
         ("io", "stdlib facade", "no explicit capability"),
         ("path", "stdlib facade", "no explicit capability"),
+        ("concurrency", "stdlib facade", "no explicit capability"),
         (
             "process",
             "stdlib facade over `proc.*`",
@@ -12063,6 +12096,7 @@ fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
         ("log", "stdlib facade", "implies `log`"),
         ("http", "stdlib facade", "implies `http`"),
         ("security", "stdlib facade", "implies `rng`"),
+        ("result", "stdlib facade", "no explicit capability"),
         (
             "env",
             "builtin namespace marker only",
@@ -17098,7 +17132,7 @@ fn main() -> i32 {
         let source = std::env::temp_dir().join(format!("fozzylang-term-args-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "use core.process;\nuse core.term;\n\nfn main() -> i32 {\n    let argc = process.argv_count()\n    let cmd = process.command_name()\n    let mode = process.argv_or(1, \"\")\n    let flag = process.argv_or(2, \"\")\n    discard term.print_line(str.concat(\"argc=\", str.from_i32(argc)))\n    discard term.print_line(str.concat(\"cmd=\", cmd))\n    discard term.print_line(str.concat(\"mode=\", mode))\n    discard term.eprint_line(str.concat(\"flag=\", flag))\n    return 0\n}\n",
+            "use core.process;\nuse core.term;\n\nfn main() -> i32 {\n    let current = process.current()\n    let tty = term.status()\n    let style = term.transcript_style(4)\n    discard term.transcript_write(style, \"argc\", str.from_i32(current.argc))\n    discard term.transcript_write(style, \"cmd\", current.command)\n    discard term.transcript_write(style, \"mode\", process.argv_or(1, \"\"))\n    discard term.eprint_line(str.concat(\"flag=\", process.argv_or(2, \"\")))\n    return tty.stdout_is_tty - tty.stdin_is_tty\n}\n",
         )
         .expect("source should be written");
 
@@ -17121,8 +17155,8 @@ fn main() -> i32 {
         )
         .expect("native run with cli args should succeed");
         assert!(output.contains("\"exitCode\":0"));
-        assert!(output.contains("argc=3"), "output was: {output}");
-        assert!(output.contains("mode=serve"), "output was: {output}");
+        assert!(output.contains("argc 3"), "output was: {output}");
+        assert!(output.contains("mode serve"), "output was: {output}");
         assert!(output.contains("flag=--json"), "output was: {output}");
         assert!(output.contains("\"stdout\":\""), "output was: {output}");
         assert!(output.contains("\"stderr\":\""), "output was: {output}");
@@ -17139,7 +17173,7 @@ fn main() -> i32 {
         let source = std::env::temp_dir().join(format!("fozzylang-term-host-args-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "use core.process;\nuse core.term;\n\nfn main() -> i32 {\n    discard term.print_line(str.concat(\"argc=\", str.from_i32(process.argv_count())))\n    discard term.print_line(str.concat(\"mode=\", process.argv_or(1, \"\")))\n    discard term.eprint_line(str.concat(\"flag=\", process.argv_or(2, \"\")))\n    return 0\n}\n",
+            "use core.process;\nuse core.term;\n\nfn main() -> i32 {\n    let current = process.current()\n    discard term.transcript_write(term.transcript_style(4), \"argc\", str.from_i32(current.argc))\n    discard term.transcript_write(term.transcript_style(4), \"mode\", process.argv_or(1, \"\"))\n    discard term.eprint_line(str.concat(\"flag=\", process.argv_or(2, \"\")))\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -17163,8 +17197,8 @@ fn main() -> i32 {
         .expect("native host backend run with cli args should succeed");
         assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
         assert!(output.contains("\"exitCode\":0"));
-        assert!(output.contains("argc=3"), "output was: {output}");
-        assert!(output.contains("mode=serve"), "output was: {output}");
+        assert!(output.contains("argc 3"), "output was: {output}");
+        assert!(output.contains("mode serve"), "output was: {output}");
         assert!(output.contains("flag=--json"), "output was: {output}");
 
         let _ = std::fs::remove_file(source);

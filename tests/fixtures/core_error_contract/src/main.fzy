@@ -1,0 +1,55 @@
+use core.crypto;
+use core.error;
+use core.result;
+
+fn main() -> i32 {
+    let http_err = result.from_http_status(503, "upstream unavailable")
+    if http_err.status != 503 {
+        return 11
+    }
+    if http_err.retryable != 1 {
+        return 13
+    }
+    if result.code_name(http_err.code) != "unavailable" {
+        return 17
+    }
+
+    let io_err = result.from_io_status(2, "read", "/tmp/missing", "missing file")
+    if result.code_name(io_err.code) != "not_found" {
+        return 19
+    }
+    let contextual = result.with_context(io_err, "bootstrap")
+    if str.contains(contextual.context, "bootstrap") == 0 {
+        return 23
+    }
+
+    let proc_err = result.from_process_failure("worker", 0, 1, 0, 0, "timed out")
+    if result.should_retry(proc_err, 1, 3) != 1 {
+        return 29
+    }
+
+    let denied = result.from_security_failure("denied")
+    let wrapped = result.with_cause(denied, http_err)
+    if str.contains(result.render(wrapped), "upstream unavailable") == 0 {
+        return 31
+    }
+
+    if crypto.base64_decode("A===") != "" {
+        return 37
+    }
+    let runtime_err = result.current_runtime_error()
+    if runtime_err.machine_code == 0 {
+        return 41
+    }
+    if runtime_err.message == "" {
+        return 43
+    }
+
+    if result.is_clear(result.clear()) != 1 {
+        return 47
+    }
+    if result.render(result.clear()) != "ok" {
+        return 53
+    }
+    return 0
+}

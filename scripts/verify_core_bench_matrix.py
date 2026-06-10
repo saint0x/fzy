@@ -6,7 +6,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BENCHES = [
-    ("resultx_classify", "resultx", ROOT / "examples" / "benchmarks" / "resultx_scratch_bench.fzy"),
+    ("result_classify", "result", ROOT / "examples" / "benchmarks" / "result_scratch_bench.fzy"),
     ("text_kernel", "text", ROOT / "examples" / "benchmarks" / "text_scratch_bench.fzy"),
     ("capability_parse", "capability", ROOT / "examples" / "benchmarks" / "capability_parse_scratch_bench.fzy"),
     ("task_retry_backoff", "task_retry", ROOT / "examples" / "benchmarks" / "task_retry_backoff_scratch_bench.fzy"),

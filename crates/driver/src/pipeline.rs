@@ -750,6 +750,11 @@ fn validate_file_with_root_source(
             diagnostic.path = Some(resolved.source_path.display().to_string());
         }
     }
+    suppress_transitive_unsafe_summary_for_architecture_root(
+        &resolved.source_path,
+        &parsed.module,
+        &mut diagnostics,
+    );
     enrich_diagnostics_context(&mut diagnostics);
     diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Driver);
 
@@ -772,6 +777,33 @@ fn validate_file_with_root_source(
             input_bytes: parsed.input_bytes,
         },
     })
+}
+
+fn suppress_transitive_unsafe_summary_for_architecture_root(
+    source_path: &Path,
+    _module: &ast::Module,
+    diagnostics: &mut Vec<diagnostics::Diagnostic>,
+) {
+    let is_architecture_root = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value == "lib.fzy")
+        && !source_file_contains_unsafe_marker(source_path);
+    if !is_architecture_root {
+        return;
+    }
+    diagnostics.retain(|diagnostic| {
+        !matches!(diagnostic.severity, diagnostics::Severity::Warning)
+            || !diagnostic.message.contains(
+                "compiler unsafe-policy checks passed, and structural unsafe contract metadata is present for all sites; independently reasoned evidence is still required",
+            )
+    });
+}
+
+fn source_file_contains_unsafe_marker(source_path: &Path) -> bool {
+    std::fs::read_to_string(source_path)
+        .map(|source| source.contains("unsafe"))
+        .unwrap_or(true)
 }
 
 fn resolve_validation_source_path(input: &Path) -> Result<ResolvedSource> {
@@ -11148,16 +11180,18 @@ mod embedded_stdlib_dx_tests {
 
 pub(crate) fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str> {
     match module_name {
+        "concurrency" => Some(include_str!("../../../core/src/concurrency.fzy")),
         "process" => Some(include_str!("../../../core/src/process.fzy")),
-        "term" => Some(include_str!("../../../core/src/termkit.fzy")),
-        "thread" => Some(include_str!("../../../core/src/threadkit.fzy")),
-        "log" => Some(include_str!("../../../core/src/logkit.fzy")),
-        "mem" => Some(include_str!("../../../core/src/memkit.fzy")),
+        "term" => Some(include_str!("../../../core/src/term.fzy")),
+        "thread" => Some(include_str!("../../../core/src/thread.fzy")),
+        "log" => Some(include_str!("../../../core/src/log.fzy")),
+        "mem" => Some(include_str!("../../../core/src/mem.fzy")),
         "security" => Some(include_str!("../../../core/src/security.fzy")),
+        "result" => Some(include_str!("../../../core/src/result.fzy")),
         "simd" => Some(include_str!("../../../core/src/simd.fzy")),
         "text" => Some(include_str!("../../../core/src/text.fzy")),
         "io" => Some(include_str!("../../../core/src/io.fzy")),
-        "http" => Some(include_str!("../../../core/src/httpkit.fzy")),
+        "http" => Some(include_str!("../../../core/src/http.fzy")),
         _ => None,
     }
 }

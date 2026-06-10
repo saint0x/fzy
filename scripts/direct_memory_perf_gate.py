@@ -10,7 +10,7 @@ BENCH_JSON = ROOT / "artifacts" / "bench_core_rust_vs_fzy.json"
 
 KERNEL_THRESHOLDS = {
     "bytes_kernel": 1.40,
-    "resultx_classify": 1.30,
+    "result_classify": 1.30,
     "text_kernel": 1.25,
 }
 

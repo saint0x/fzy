@@ -15,9 +15,9 @@ ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
 BENCHES = [
     {
-        "name": "resultx_classify",
-        "rust_mode": "resultx",
-        "fzy_src": ROOT / "examples" / "benchmarks" / "resultx_scratch_bench.fzy",
+        "name": "result_classify",
+        "rust_mode": "result",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "result_scratch_bench.fzy",
         "iterations": 8_000_000,
     },
     {

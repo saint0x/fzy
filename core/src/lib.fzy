@@ -1,199 +1,32 @@
-use core.http;
-use core.log;
-use core.thread;
+use core.error;
 
-mod resultx;
+// Canonical public stdlib surface.
 mod text;
-mod capability;
-mod retry;
 mod bytes;
 mod duration;
+mod io;
+mod process;
+mod term;
+mod http;
+mod log;
+mod mem;
+mod thread;
+mod security;
+mod result;
+mod simd;
+mod network;
+
+// Internal support modules. These are implementation detail shelves, not
+// canonical product-facing namespaces.
+mod capability;
+mod retry;
+mod concurrency;
+// FFI contracts live in language/tooling surfaces, not in a public `core.*`
+// import path.
 mod abi;
 mod cinterop;
-mod httpkit;
-mod network;
-mod concurrency;
-mod process;
-mod termkit;
-mod memkit;
-mod threadkit;
-mod security;
-mod logkit;
-mod errorkit;
 mod util;
-mod io;
-
-fn http_kernel_sample() -> i32 {
-    let status = http.last_status()
-    if status < 0 {
-        return 0
-    }
-    return status % 251
-}
 
 pub fn version() -> str {
-    return "0.1.0"
+    return "0.2.0"
 }
-
-pub fn selftest() -> i32 {
-    let mut acc = 0
-    acc = (acc + resultx.sample()) % 251
-    acc = (acc + text.sample()) % 251
-    acc = (acc + capability.sample()) % 251
-    acc = (acc + retry.sample()) % 251
-    acc = (acc + bytes.sample()) % 251
-    acc = (acc + duration.sample()) % 251
-    acc = (acc + abi.sample()) % 251
-    acc = (acc + cinterop.sample()) % 251
-    acc = (acc + http_kernel_sample()) % 251
-    acc = (acc + httpkit.sample()) % 251
-    acc = (acc + network.sample()) % 251
-    acc = (acc + concurrency.sample()) % 251
-    acc = (acc + process.sample()) % 251
-    acc = (acc + termkit.sample()) % 251
-    acc = (acc + memkit.sample()) % 251
-    acc = (acc + threadkit.sample()) % 251
-    acc = (acc + security.sample()) % 251
-    acc = (acc + logkit.sample()) % 251
-    acc = (acc + errorkit.sample()) % 251
-    acc = (acc + util.sample()) % 251
-    acc = (acc + io.sample()) % 251
-    return acc
-}
-
-pub fn text_trim(value: str) -> str { return text.trim(value) }
-pub fn text_replace(value: str, needle: str, with: str) -> str { return text.replace(value, needle, with) }
-pub fn text_contains(value: str, needle: str) -> i32 { return text.contains(value, needle) }
-pub fn text_starts_with(value: str, needle: str) -> i32 { return text.starts_with(value, needle) }
-pub fn text_ends_with(value: str, needle: str) -> i32 { return text.ends_with(value, needle) }
-pub fn text_len(value: str) -> i32 { return text.len(value) }
-pub fn text_repeat(piece: str, count: i32) -> str { return text.repeat(piece, count) }
-pub fn text_pad_left(value: str, width: i32) -> str { return text.pad_left(value, width) }
-pub fn text_pad_right(value: str, width: i32) -> str { return text.pad_right(value, width) }
-pub fn text_indent(value: str, prefix: str) -> str { return text.indent(value, prefix) }
-pub fn text_visible_len_ansi(value: str) -> i32 { return text.visible_len_ansi(value) }
-pub fn text_upper_ascii(value: str) -> str { return text.upper_ascii(value) }
-pub fn text_lower_ascii(value: str) -> str { return text.lower_ascii(value) }
-
-pub fn capability_parse(name: str) -> i32 { return capability.parse(name) }
-pub fn retry_delay_for_attempt(attempt: i32, initial: i32, max_delay: i32, factor: i32) -> i32 {
-    return retry.delay_for_attempt(attempt, initial, max_delay, factor)
-}
-pub fn bytes_read_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
-    return bytes.read_u32_le(b0, b1, b2, b3)
-}
-pub fn duration_add(a: i32, b: i32) -> i32 { return duration.add(a, b) }
-pub fn duration_sub(a: i32, b: i32) -> i32 { return duration.sub(a, b) }
-pub fn abi_layout_score(size: i32, align: i32, pointer_width: i32, stable_ffi: i32) -> i32 {
-    return abi.layout_score(size, align, pointer_width, stable_ffi)
-}
-pub fn abi_layout_is_valid(size: i32, align: i32, pointer_width: i32) -> i32 {
-    return abi.layout_is_valid(size, align, pointer_width)
-}
-pub fn cinterop_contract_score(owner: str, nullable: i32, mutable_mode: i32, panic_abort: i32) -> i32 {
-    return cinterop.contract_score(owner, nullable, mutable_mode, panic_abort)
-}
-pub fn result_status_retryable(status: i32) -> i32 {
-    let record = resultx.status_record(status)
-    return record.retryable
-}
-pub fn result_status_class_score(status: i32) -> i32 {
-    let record = resultx.status_record(status)
-    return resultx.score(record.class)
-}
-
-pub fn io_read_text(file_path: str) -> str { return io.read_text(file_path) }
-pub fn io_write_text(file_path: str, value: str) -> i32 { return io.write_text(file_path, value) }
-pub fn io_exists(file_path: str) -> i32 { return io.exists(file_path) }
-pub fn io_is_file(file_path: str) -> i32 { return io.is_file(file_path) }
-pub fn io_is_dir(file_path: str) -> i32 { return io.is_dir(file_path) }
-pub fn io_remove(file_path: str) -> i32 { return io.remove(file_path) }
-pub fn io_remove_file(file_path: str) -> i32 { return io.remove_file(file_path) }
-pub fn io_stat_size(file_path: str) -> i32 { return io.stat_size(file_path) }
-pub fn io_stat_mtime(file_path: str) -> i32 { return io.stat_mtime(file_path) }
-pub fn io_temp_file(prefix: str) -> str { return io.temp_file(prefix) }
-pub fn io_copy_file(src: str, dst: str) -> i32 { return io.copy_file(src, dst) }
-pub fn io_copy_tree(src: str, dst: str) -> i32 { return io.copy_tree(src, dst) }
-pub fn io_stage_tree(src: str, dst: str) -> i32 { return io.stage_tree(src, dst) }
-
-pub fn process_argv_count() -> i32 { return process.argv_count() }
-pub fn process_argv(index: i32) -> str { return process.argv(index) }
-pub fn process_argv_or(index: i32, fallback: str) -> str { return process.argv_or(index, fallback) }
-pub fn process_command_name() -> str { return process.command_name() }
-pub fn process_has_flag(flag: str) -> i32 { return process.has_flag(flag) }
-pub fn process_retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
-    return process.retry_delay_ms(attempt, base_ms, max_ms)
-}
-pub fn process_budget_score(argv_count: i32, env_count: i32, timeout_ms: i32, max_output_bytes: i32, max_children: i32) -> i32 {
-    return process.budget_score_fast(argv_count, env_count, timeout_ms, max_output_bytes, max_children)
-}
-
-pub fn security_random_hex(bytes: i32) -> str { return security.random_hex(bytes) }
-pub fn security_random_base64(bytes: i32) -> str { return security.random_base64(bytes) }
-pub fn security_random_base64_url(bytes: i32) -> str { return security.random_base64_url(bytes) }
-pub fn security_sha256_hex(data: str) -> str { return security.sha256_hex(data) }
-pub fn security_hmac_sha256_hex(key: str, data: str) -> str { return security.hmac_sha256_hex(key, data) }
-pub fn security_secure_eq(left: str, right: str) -> i32 { return security.secure_eq(left, right) }
-pub fn security_sign_value(key: str, data: str) -> str { return security.sign_value(key, data) }
-pub fn security_verify_value(key: str, data: str, mac_hex: str) -> i32 {
-    return security.verify_value(key, data, mac_hex)
-}
-pub fn security_base64_encode(data: str) -> str { return security.base64_encode(data) }
-pub fn security_base64_decode(data: str) -> str { return security.base64_decode(data) }
-pub fn security_base64_url_encode(data: str) -> str { return security.base64_url_encode(data) }
-pub fn security_base64_url_decode(data: str) -> str { return security.base64_url_decode(data) }
-pub fn security_rate_limit_allow(tokens: i32, cost: i32) -> i32 { return security.allow_cost(tokens, cost) }
-pub fn security_rate_limit_refill(tokens: i32, elapsed_ms: i32, burst: i32, refill_per_sec: i32, max_tokens: i32) -> i32 {
-    return security.refill_tokens_fast(tokens, elapsed_ms, burst, refill_per_sec, max_tokens)
-}
-
-pub fn http_route_fingerprint_fast(
-    method_score: i32,
-    path_len: i32,
-    query_len: i32,
-    body_bytes: i32,
-    timeout_ms: i32,
-    max_header_bytes: i32,
-    max_body_bytes: i32
-) -> i32 {
-    return httpkit.route_fingerprint_fast(
-        method_score,
-        path_len,
-        query_len,
-        body_bytes,
-        timeout_ms,
-        max_header_bytes,
-        max_body_bytes,
-    )
-}
-
-pub fn log_request_info(message: str, request_id: str, route_path: str, method: str, sample_counter: i32) -> i32 {
-    return logkit.request_log_sampled(
-        logkit.default_config(),
-        logkit.LogLevel::Info,
-        message,
-        request_id,
-        route_path,
-        method,
-        sample_counter,
-    )
-}
-
-pub fn error_status_retryable(status: i32, message: str, attempt: i32, max_attempts: i32) -> i32 {
-    let err = errorkit.normalize(errorkit.from_http_status(status, message))
-    return errorkit.should_retry(err, attempt, max_attempts)
-}
-pub fn network_endpoint_score(hostname: str, port: i32, tls: i32, ipv6: i32, socket_kind: str) -> i32 {
-    return network.endpoint_score_fast(hostname, port, tls, ipv6, socket_kind)
-}
-pub fn concurrency_backpressure_score(depth: i32, capacity: i32) -> i32 {
-    let state = concurrency.init_state(capacity)
-    let signal = concurrency.classify_backpressure(depth, state.capacity, state.high_watermark)
-    return concurrency.backpressure_score(signal)
-}
-pub fn thread_context_id_or(fallback: i32) -> i32 { return threadkit.context_id_or(fallback) }
-pub fn thread_batch_size(work_items: i32, workers: i32) -> i32 { return threadkit.batch_size(work_items, workers) }
-pub fn thread_should_spawn(work_items: i32, workers: i32, threshold: i32) -> i32 {
-    return threadkit.should_spawn(work_items, workers, threshold)
-}
-pub fn memory_phase_fence() -> i32 { return memkit.phase_fence() }

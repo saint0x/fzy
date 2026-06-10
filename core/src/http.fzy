@@ -1,0 +1,305 @@
+use core.http;
+
+enum Method {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
+}
+
+enum StatusClass {
+    Informational,
+    Success,
+    Redirect,
+    ClientError,
+    ServerError,
+    Unknown,
+}
+
+enum ConnectionMode {
+    OneOff,
+    Persistent,
+}
+
+struct HttpLimits {
+    max_header_bytes: i32,
+    max_body_bytes: i32,
+    request_timeout_ms: i32,
+    idle_timeout_ms: i32,
+}
+
+struct ConnectionPolicy {
+    max_accept_retries: i32,
+    read_stall_limit: i32,
+    write_stall_limit: i32,
+    keep_alive_max_requests: i32,
+}
+
+struct JsonPayload {
+    map_handle: MapHandle,
+}
+
+struct SseEvent {
+    event_type: str,
+    data: str,
+    done: i32,
+}
+
+fn normalize_header_value(value: str) -> str {
+    return str.lower_ascii(str.trim(value))
+}
+
+fn parse_method(name: str) -> Method {
+    let normalized = str.upper_ascii(str.trim(name))
+    if normalized == "GET" then return Method::Get
+    if normalized == "POST" then return Method::Post
+    if normalized == "PUT" then return Method::Put
+    if normalized == "DELETE" then return Method::Delete
+    if normalized == "PATCH" then return Method::Patch
+    if normalized == "HEAD" then return Method::Head
+    return Method::Options
+}
+
+fn method_name(method: Method) -> str {
+    match method {
+        Method::Get => return "GET",
+        Method::Post => return "POST",
+        Method::Put => return "PUT",
+        Method::Delete => return "DELETE",
+        Method::Patch => return "PATCH",
+        Method::Head => return "HEAD",
+        Method::Options => return "OPTIONS",
+        _ => return "OPTIONS",
+    }
+}
+
+fn limits(max_header_bytes: i32, max_body_bytes: i32, request_timeout_ms: i32, idle_timeout_ms: i32) -> HttpLimits {
+    return HttpLimits {
+        max_header_bytes: max_header_bytes,
+        max_body_bytes: max_body_bytes,
+        request_timeout_ms: request_timeout_ms,
+        idle_timeout_ms: idle_timeout_ms,
+    }
+}
+
+fn default_limits() -> HttpLimits {
+    return limits(16384, 1048576, 2500, 10000)
+}
+
+fn sanitize_limits(current: HttpLimits) -> HttpLimits {
+    let mut header_bytes = current.max_header_bytes
+    let mut body_bytes = current.max_body_bytes
+    let mut request_timeout = current.request_timeout_ms
+    let mut idle_timeout = current.idle_timeout_ms
+    if header_bytes < 1024 {
+        header_bytes = 1024
+    }
+    if body_bytes < 0 {
+        body_bytes = 0
+    }
+    if request_timeout < 1 {
+        request_timeout = 1
+    }
+    if idle_timeout < request_timeout {
+        idle_timeout = request_timeout
+    }
+    return limits(header_bytes, body_bytes, request_timeout, idle_timeout)
+}
+
+fn connection_policy(max_accept_retries: i32, read_stall_limit: i32, write_stall_limit: i32, keep_alive_max_requests: i32) -> ConnectionPolicy {
+    return ConnectionPolicy {
+        max_accept_retries: max_accept_retries,
+        read_stall_limit: read_stall_limit,
+        write_stall_limit: write_stall_limit,
+        keep_alive_max_requests: keep_alive_max_requests,
+    }
+}
+
+fn default_connection_policy() -> ConnectionPolicy {
+    return connection_policy(32, 64, 64, 16)
+}
+
+fn sanitize_connection_policy(current: ConnectionPolicy) -> ConnectionPolicy {
+    let mut retries = current.max_accept_retries
+    let mut read_stalls = current.read_stall_limit
+    let mut write_stalls = current.write_stall_limit
+    let mut keep_alive = current.keep_alive_max_requests
+    if retries < 1 {
+        retries = 1
+    }
+    if retries > 1000000 {
+        retries = 1000000
+    }
+    if read_stalls < 1 {
+        read_stalls = 1
+    }
+    if read_stalls > 1000000 {
+        read_stalls = 1000000
+    }
+    if write_stalls < 1 {
+        write_stalls = 1
+    }
+    if write_stalls > 1000000 {
+        write_stalls = 1000000
+    }
+    if keep_alive < 1 {
+        keep_alive = 1
+    }
+    if keep_alive > 1000000 {
+        keep_alive = 1000000
+    }
+    return connection_policy(retries, read_stalls, write_stalls, keep_alive)
+}
+
+fn next_accept_backoff_ms(fail_streak: i32) -> i32 {
+    if fail_streak < 1 then return 1
+    if fail_streak < 8 then return 2
+    if fail_streak < 64 then return 4
+    if fail_streak < 512 then return 8
+    return 16
+}
+
+fn connection_allows_keep_alive(connection_header: str, mode: ConnectionMode, handled: i32, policy: ConnectionPolicy) -> i32 {
+    let safe_policy = sanitize_connection_policy(policy)
+    let normalized = normalize_header_value(connection_header)
+    if mode == ConnectionMode::OneOff then return 0
+    if str.contains(normalized, "close") == 1 then return 0
+    if handled >= safe_policy.keep_alive_max_requests then return 0
+    return 1
+}
+
+fn status_class(status: i32) -> StatusClass {
+    if status >= 100 {
+        if status < 200 {
+            return StatusClass::Informational
+        }
+    }
+    if status >= 200 {
+        if status < 300 {
+            return StatusClass::Success
+        }
+    }
+    if status >= 300 {
+        if status < 400 {
+            return StatusClass::Redirect
+        }
+    }
+    if status >= 400 {
+        if status < 500 {
+            return StatusClass::ClientError
+        }
+    }
+    if status >= 500 {
+        if status < 600 {
+            return StatusClass::ServerError
+        }
+    }
+    return StatusClass::Unknown
+}
+
+fn json_payload_new() -> JsonPayload {
+    return JsonPayload {
+        map_handle: map.new(),
+    }
+}
+
+fn json_payload_set_str(payload: JsonPayload, key: str, value: str) -> i32 {
+    return map.set(payload.map_handle, key, json.str(value))
+}
+
+fn json_payload_set_raw(payload: JsonPayload, key: str, value_json: str) -> i32 {
+    return map.set(payload.map_handle, key, value_json)
+}
+
+fn json_payload_encode(payload: JsonPayload) -> str {
+    return json.object(payload.map_handle)
+}
+
+fn write_json_payload(conn: HttpHandle, status: i32, payload: JsonPayload) -> i32 {
+    return http.write_json(conn, status, json_payload_encode(payload))
+}
+
+fn post_json_capture_payload(endpoint: str, payload: JsonPayload) -> str {
+    return http.post_json_capture(endpoint, json_payload_encode(payload))
+}
+
+fn post_json_stream_payload(endpoint: str, payload: JsonPayload) -> HttpStreamHandle {
+    return http.post_json_stream(endpoint, json_payload_encode(payload))
+}
+
+fn sse_event(event_type: str, data: str, done: i32) -> SseEvent {
+    return SseEvent {
+        event_type: event_type,
+        data: data,
+        done: done,
+    }
+}
+
+fn sse_trim_field_value(line: str, prefix_len: i32) -> str {
+    let mut value = str.slice(line, prefix_len, str.len(line))
+    if str.len(value) > 0 {
+        if str.slice(value, 0, 1) == " " {
+            value = str.slice(value, 1, str.len(value))
+        }
+    }
+    return value
+}
+
+fn sse_next(stream: HttpStreamHandle) -> SseEvent {
+    let mut event_type = ""
+    let mut data = ""
+    let mut seen = 0
+    loop {
+        if http.stream_eof(stream) == 1 {
+            if seen == 1 {
+                if event_type == "" {
+                    event_type = "message"
+                }
+                return sse_event(event_type, data, 0)
+            }
+            return sse_event("", "", 1)
+        }
+
+        let line = http.stream_read_line(stream)
+        if line == "" {
+            if http.stream_eof(stream) == 1 {
+                if seen == 1 {
+                    if event_type == "" {
+                        event_type = "message"
+                    }
+                    return sse_event(event_type, data, 0)
+                }
+                return sse_event("", "", 1)
+            }
+            if seen == 1 {
+                if event_type == "" {
+                    event_type = "message"
+                }
+                return sse_event(event_type, data, 0)
+            }
+            continue
+        }
+
+        if str.starts_with(line, ":") == 1 {
+            continue
+        }
+        if str.starts_with(line, "event:") == 1 {
+            event_type = sse_trim_field_value(line, 6)
+            seen = 1
+            continue
+        }
+        if str.starts_with(line, "data:") == 1 {
+            let chunk = sse_trim_field_value(line, 5)
+            if data == "" {
+                data = chunk
+            } else {
+                data = str.concat(data, "\n", chunk)
+            }
+            seen = 1
+            continue
+        }
+    }
+}

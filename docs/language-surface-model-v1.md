@@ -47,6 +47,10 @@ Canonical facades:
 - `use core.http;`
 - `use core.security;`
 
+Non-facades:
+
+- There is no `use core.c;` or `use core.ffi;` public stdlib import. C interop is modeled by language declarations plus tooling artifacts.
+
 ## 3. Capability-Gated Surface
 
 These names participate in the module capability model:
@@ -65,7 +69,7 @@ Examples:
 
 - `use core.http;` imports the HTTP facade and satisfies the `http` capability contract.
 - `use core.log;` imports the logging facade and satisfies the `log` capability contract.
-- `use core.thread;` imports concurrency helpers and satisfies the `thread` capability contract.
+- `use core.thread;` imports the canonical task/thread facade and satisfies the `thread` capability contract.
 
 ## 4. Tooling
 

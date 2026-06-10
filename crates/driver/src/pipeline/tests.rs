@@ -6515,7 +6515,8 @@ fn compile_library_supports_raw_pointer_indexed_writes() {
     let artifact = compile_library_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
         .expect("raw pointer indexed write library build should succeed");
     assert_eq!(
-        artifact.status, "ok",
+        artifact.status,
+        "ok",
         "{:?}",
         artifact
             .diagnostic_details
@@ -7208,7 +7209,7 @@ fn compile_file_runs_typed_core_io_metadata_and_tree_ops() {
     std::fs::write(
         &source,
         format!(
-            "use core.io;\nuse core.path;\n\nfn main() -> i32 {{\n    let root = \"{quoted_root}\"\n    let src = path.join(root, \"src\")\n    let copied = path.join(root, \"copied.txt\")\n    let staged = path.join(root, \"staged\")\n    let dist = path.join(root, \"dist\")\n    let file_meta = io.metadata(path.join(src, \"a.txt\"))\n    if file_meta.exists != 1 {{ return 10 }}\n    if file_meta.is_file != 1 {{ return 11 }}\n    if file_meta.size != 5 {{ return 12 }}\n    let entries = io.list_dir_entries(src)\n    if io.dir_len(entries) != 2 {{ return 13 }}\n    if io.dir_name(entries, 0) != \"a.txt\" {{ return 14 }}\n    let nested = io.dir_entry(entries, 1)\n    if nested.name != \"nested\" {{ return 15 }}\n    if nested.is_dir != 1 {{ return 16 }}\n    if io.copy_file(path.join(src, \"a.txt\"), copied) != 0 {{ return 17 }}\n    if io.copy_tree(src, dist) != 0 {{ return 18 }}\n    if io.stage_tree(src, staged) != 0 {{ return 19 }}\n    let dist_nested = io.metadata(path.join(dist, \"nested\"))\n    let staged_nested = io.metadata(path.join(staged, \"nested\"))\n    if dist_nested.is_dir != 1 {{ return 20 }}\n    if staged_nested.is_dir != 1 {{ return 21 }}\n    if io.remove(dist) != 0 {{ return 22 }}\n    if io.exists(dist) != 0 {{ return 23 }}\n    if io.remove(staged) != 0 {{ return 24 }}\n    if io.exists(staged) != 0 {{ return 25 }}\n    return 0\n}}\n"
+            "use core.io;\nuse core.path;\n\nfn main() -> i32 {{\n    let root = \"{quoted_root}\"\n    let src = path.join(root, \"src\")\n    let copied = path.join(root, \"copied.txt\")\n    let staged = path.join(root, \"staged\")\n    let dist = path.join(root, \"dist\")\n    let file_meta = io.metadata(path.join(src, \"a.txt\"))\n    if file_meta.exists != 1 {{ return 10 }}\n    if file_meta.is_file != 1 {{ return 11 }}\n    if file_meta.size != 5 {{ return 12 }}\n    let entries = io.list_dir_entries(src)\n    if io.dir_len(entries) != 2 {{ return 13 }}\n    if io.dir_name(entries, 0) != \"a.txt\" {{ return 14 }}\n    let nested = io.dir_entry(entries, 1)\n    if nested.name != \"nested\" {{ return 15 }}\n    if nested.is_dir != 1 {{ return 16 }}\n    let copied_plan = io.copy_plan(path.join(src, \"a.txt\"), copied, 0)\n    if io.execute_copy(copied_plan) != 0 {{ return 17 }}\n    let dist_plan = io.copy_plan(src, dist, 1)\n    if io.execute_copy(dist_plan) != 0 {{ return 18 }}\n    if io.stage_tree(src, staged) != 0 {{ return 19 }}\n    let dist_nested = io.metadata(path.join(dist, \"nested\"))\n    let staged_nested = io.metadata(path.join(staged, \"nested\"))\n    if dist_nested.is_dir != 1 {{ return 20 }}\n    if staged_nested.is_dir != 1 {{ return 21 }}\n    if io.remove_target(io.remove_plan(dist, 1)) != 0 {{ return 22 }}\n    if io.exists(dist) != 0 {{ return 23 }}\n    if io.remove_target(io.remove_plan(staged, 1)) != 0 {{ return 24 }}\n    if io.exists(staged) != 0 {{ return 25 }}\n    return 0\n}}\n"
         ),
     )
     .expect("source should be written");
@@ -10531,12 +10532,12 @@ fn emit_ir_can_target_a_single_backend_without_breaking_default_dual_output() {
 }
 
 #[test]
-fn benchmark_resultx_fixture_stays_buildable_under_release_llvm_gate() {
+fn benchmark_result_fixture_stays_buildable_under_release_llvm_gate() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .expect("repo root should resolve");
-    let benchmark = repo_root.join("examples/benchmarks/resultx_scratch_bench.fzy");
+    let benchmark = repo_root.join("examples/benchmarks/result_scratch_bench.fzy");
 
     let artifact = compile_file_with_backend(&benchmark, BuildProfile::Release, Some("llvm"))
         .expect("benchmark fixture should compile");

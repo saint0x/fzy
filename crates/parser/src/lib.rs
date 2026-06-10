@@ -2945,6 +2945,10 @@ fn core_stdlib_binding(name: &str) -> Option<CoreStdlibBinding> {
             name: "thread",
             module_name: Some("thread"),
         }),
+        "concurrency" => Some(CoreStdlibBinding {
+            name: "concurrency",
+            module_name: Some("concurrency"),
+        }),
         "log" => Some(CoreStdlibBinding {
             name: "log",
             module_name: Some("log"),
@@ -2976,6 +2980,10 @@ fn core_stdlib_binding(name: &str) -> Option<CoreStdlibBinding> {
         "http" => Some(CoreStdlibBinding {
             name: "http",
             module_name: Some("http"),
+        }),
+        "result" => Some(CoreStdlibBinding {
+            name: "result",
+            module_name: Some("result"),
         }),
         "env" => Some(CoreStdlibBinding {
             name: "env",
@@ -5399,6 +5407,7 @@ mod tests {
             use core.io;
             use core.path;
             use core.http;
+            use core.result;
         "#;
         let module = parse(source, "imports").expect("parse should succeed");
         assert_eq!(
@@ -5454,6 +5463,12 @@ mod tests {
                 && !entry.wildcard
                 && entry.alias.is_none()
                 && entry.path == vec!["path".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["result".to_string()]
         }));
     }
 
@@ -5962,7 +5977,7 @@ mod tests {
 
     #[test]
     fn parses_embedded_core_log_module_source() {
-        let source = include_str!("../../../core/src/logkit.fzy");
+        let source = include_str!("../../../core/src/log.fzy");
         parse(source, "log").expect("embedded core.log module should parse");
     }
 }

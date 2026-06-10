@@ -13,6 +13,3 @@ fn sub(a: i32, b: i32) -> i32 {
     return add(a, 0 - b)
 }
 
-fn sample() -> i32 {
-    return sub(add(3, 17), 3)
-}

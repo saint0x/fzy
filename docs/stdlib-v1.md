@@ -8,7 +8,7 @@ The v1 stdlib provides production baseline primitives for:
 - structured observability (logs, metrics, spans)
 - process/config/signal controls
 - durable filesystem and bounded streaming IO
-- bounded concurrency/synchronization/pooling
+- task/thread orchestration with deterministic scheduling semantics
 - security defaults and capability-gated privileged operations
 - deploy/runtime profile and manifest conventions
 
@@ -18,6 +18,14 @@ The v1 stdlib provides production baseline primitives for:
 - `Host` and `Deterministic` runtime modes preserve app API parity; only decision sources differ.
 - Security defaults are fail-closed for limits and capability gates.
 - Durability primitives keep atomic-write and lock-contention behavior stable.
+
+## Surface Architecture
+
+- Canonical `core.*` modules are the only supported stdlib import story for language-facing APIs.
+- First-class subsystem names are sacred product surface: `core.http`, `core.log`, `core.thread`, `core.term`, `core.mem`, `core.io`, `core.process`, `core.text`, `core.security`, `core.simd`, `core.duration`, and `core.bytes`.
+- Helper-shelf naming such as `*kit` is not part of the public contract.
+- `core/src/lib.fzy` defines architecture and internal layering only; it is not a wrapper shelf and does not aggregate `sample()` or `selftest()` behavior.
+- Internal support modules may exist in `core/src`, but they are reorganizable implementation details and must not be required for normal stdlib use.
 
 ## Module Contracts
 
@@ -31,13 +39,14 @@ The v1 stdlib provides production baseline primitives for:
   - `CapabilityError::Missing(<cap>)`
   - `CapabilityError::Parse(<name>)`
 
-### `c`
+### FFI / C Interop
 
-- Provides C-boundary helper primitives:
-  - pointer+length borrowed/out views
-  - ownership labels (`owned|borrowed|out|inout`)
-  - callback/context binding metadata helpers
-- Intended as the canonical interop utility surface for `pubext` exports.
+- There is no canonical public `core.*` FFI facade in the language-facing stdlib.
+- C interop is expressed through language/tooling contracts:
+  - `pubext c fn` for exports
+  - `ext unsafe c fn` for imports
+  - generated headers, ABI manifests, and embedding inspection artifacts
+- Internal shelves such as `core/src/abi.fzy` and `core/src/cinterop.fzy` exist only to support compiler/runtime interop policy and are not part of the import story.
 
 ### `io`
 
@@ -48,9 +57,12 @@ The v1 stdlib provides production baseline primitives for:
 - `remove(path) -> Result<(), IoError>`
 - Language-facing `core.io` wrappers expose typed metadata plus native copy/remove staging helpers:
   - `io.metadata(path)` with `exists`, `is_file`, `is_dir`, `is_symlink`, `size`, `modified_unix_secs`
+  - `io.write_text_plan(path, value)` plus `io.write_text(path, value)` / `io.apply_write_text(plan)`
+  - `io.copy_plan(src, dst, recursive)` plus `io.execute_copy(plan)`
   - `io.copy_file(src, dst)`
   - `io.copy_tree(src, dst)`
   - `io.stage_tree(src, dst)`
+  - `io.remove_plan(path, recursive)` plus `io.remove_target(plan)`
   - `io.remove(path)` for recursive file-or-directory cleanup
   - `io.list_dir_entries(path)` plus `io.dir_len/io.dir_name/io.dir_path/io.dir_entry`
 - `read_stream` / `write_stream` APIs are bounded and deterministic-backend compatible.
@@ -92,17 +104,13 @@ The v1 stdlib provides production baseline primitives for:
   - `json_payload_new/set_str/set_raw/encode`
   - `write_json_payload(status, reason, payload, keep_alive, limits)`
   - `post_json_payload(path, payload, keep_alive, limits)`
-- Canonical JSON wrapper helpers are provided via `core.util`:
-  - `http_write_json_map(conn, status, map_handle)`
-  - `http_post_json_capture_map(endpoint, map_handle)`
 
-### `concurrency`
+### `thread`
 
-- `BoundedChannel<T>` supports backpressure and overflow policies.
-- Synchronization primitives include mutex/condvar/semaphore/barrier/once-cell surfaces.
-- Deterministic hooks provide replay-visible synchronization decisions.
-- Errors:
-  - Channel send/recv return explicit queue/full/disconnected state variants.
+- `use core.thread;` is the canonical language-facing task/thread import.
+- The public contract covers task spawning, context binding, task groups, cancellation, yielding, checkpoints, and timeout/deadline coordination helpers.
+- Coordination-policy math that exists only as an internal implementation shelf is not part of the supported `core.*` import surface.
+- Future first-class channels or synchronization primitives must ship behind a real public subsystem rather than a helper shelf.
 
 ### `process`
 
@@ -111,6 +119,7 @@ The v1 stdlib provides production baseline primitives for:
 - Timeout and cancellation states are explicit in returned process status.
 - Canonical current-process wrapper module is `core.process`.
 - Current-process argv helpers are first-class:
+  - `process.current()`
   - `proc.argv_count()`
   - `proc.argv_get(index)`
 - Common `core.process` helpers:
@@ -119,6 +128,11 @@ The v1 stdlib provides production baseline primitives for:
   - `process.argv_or(index, fallback)`
   - `process.command_name()`
   - `process.has_flag(flag)`
+- Canonical typed observation surface:
+  - `process.default_limits()`
+  - `process.sanitize_limits(limits)`
+  - `process.classify_exit(exit_code, timed_out, cancelled, signal)`
+  - `process.observe(handle, timeout_ms)`
 - Canonical language-facing process builders map to structured handles:
   - `proc.argv_new/push`
   - `proc.env_new/set`
@@ -138,11 +152,11 @@ discard proc.argv_push(argv, "json")
 let env_map = proc.env_new()
 discard proc.env_set(env_map, "MODE", "prod")
 let handle = proc.spawn_cmd("/usr/bin/tool", argv, env_map, "")
-defer proc.close(handle)
-discard proc.wait(handle, 1000)
-let exit = proc.exit_code(handle)
-let out = proc.stdout(handle)
-let err = proc.stderr(handle)
+defer process.close(handle)
+let observed = process.observe(handle, 1000)
+let exit = observed.exit_code
+let out = observed.stdout
+let err = observed.stderr
 ```
 
 ## Resource-Management Guidance
@@ -195,12 +209,15 @@ let err = proc.stderr(handle)
   - EOF returns `""` with `term.stdin_eof() == 1`
 - Canonical standard-library wrapper module is `core.term`.
 - Common `core.term` helpers:
+  - `term.status()`
   - `term.print(text)`
   - `term.print_line(text)`
   - `term.eprint(text)`
   - `term.eprint_line(text)`
   - `term.prompt_line(prompt)`
   - `term.is_interactive()`
+  - `term.transcript_style(label_width)`
+  - `term.transcript_write(style, label, value)`
   - `term.transcript_line(text)`
   - `term.transcript_kv(label, value, label_width)`
 
@@ -212,8 +229,9 @@ use core.term;
 
 fn main() -> i32 {
     let mode = process.argv_or(1, "serve")
-    discard term.transcript_kv("mode", mode, 8)
-    if term.is_interactive() == 1 {
+    let tty = term.status()
+    discard term.transcript_write(term.transcript_style(8), "mode", mode)
+    if tty.interactive == 1 {
         discard term.eprint_line("interactive terminal detected")
     }
     return 0
@@ -229,6 +247,11 @@ Transcript guidance:
 ### `log`
 
 - `use core.log;` is both the capability declaration and the stdlib logging facade.
+- Canonical structured concepts are first-class:
+  - `LoggerConfig`
+  - `SamplingPolicy`
+  - `Correlation`
+  - `Event`
 - Raw runtime logging controls remain first-class:
   - `log.info(message, fields_json)`
   - `log.warn(message, fields_json)`
@@ -239,6 +262,13 @@ Transcript guidance:
   - `log.set_level(level_name)`
   - `log.set_sink(sink_name)`
 - Common `core.log` helpers:
+  - `log.event(level, message)`
+  - `log.field(event, key, value)`
+  - `log.secret_field(event, key, value)`
+  - `log.correlation(request_id, trace_id, span_id)`
+  - `log.with_correlation(event, correlation)`
+  - `log.emit(config, event)`
+  - `log.emit_sampled(config, sampling, counter, event)`
   - `log.set_level_name(level_name)`
   - `log.set_sink_name(sink_name)`
   - `log.use_stdout()`
@@ -246,7 +276,9 @@ Transcript guidance:
   - `log.quiet()`
   - `log.verbose()`
   - `log.default_config()`
+  - `log.default_sampling()`
   - `log.request_log(...)`
+- Redacted fields render deterministically as a stable placeholder instead of leaking partial secret material.
 - Importing `core.log` and calling its configuration helpers is ordinary supported production usage; it must not introduce verifier-only ownership diagnostics by itself.
 
 ### `text`
@@ -360,7 +392,25 @@ Transcript guidance:
   - `crypto.base64_url_encode(data)`
   - `crypto.base64_url_decode(data)`
 - `use core.security;` is the higher-level web/security helper facade on top of `core.crypto`.
+- Canonical security concepts are first-class:
+  - `AuthContext`
+  - `AuthDecision`
+  - `SignerConfig`
+  - `RateLimitPolicy`
+  - `RateLimitBucket`
+  - `RateLimitDecision`
 - Common `core.security` helpers:
+  - `security.auth_context(...)`
+  - `security.authorize(context)`
+  - `security.default_signer()`
+  - `security.signer(version_prefix)`
+  - `security.sign(config, key, data)`
+  - `security.verify(config, key, data, mac_hex)`
+  - `security.default_rate_limit()`
+  - `security.rate_limit_policy(burst, refill_per_sec, capacity)`
+  - `security.rate_limit_bucket(tokens, last_refill_ms)`
+  - `security.refill_bucket(bucket, elapsed_ms, policy)`
+  - `security.consume_bucket(bucket, cost)`
   - `security.random_hex(bytes)`
   - `security.random_base64(bytes)`
   - `security.random_base64_url(bytes)`
@@ -373,16 +423,40 @@ Transcript guidance:
   - `security.base64_decode(data)`
   - `security.base64_url_encode(data)`
   - `security.base64_url_decode(data)`
+- Blessed signing defaults are version-prefixed, and verification accepts either the canonical prefixed form or the raw MAC for boundary compatibility.
 - This checkout intentionally exposes textual crypto encodings rather than raw binary string APIs; native Fzy strings are NUL-terminated, so `hex`/`base64`/`base64url` are the production-safe surface for random output, token transport, and digest transport.
 
 ### `thread`
 
-- `use core.thread;` is the canonical concurrency-context helper import.
+- `use core.thread;` is the canonical task-runtime coordination import.
 - Common helpers:
+  - `thread.ThreadContext`
+  - `thread.current_context()`
   - `thread.context_id()`
-  - `thread.is_context_bound()`
+  - `thread.has_context()`
+  - `thread.context_id_or(fallback)`
+  - `thread.spawn_task(worker)`
+  - `thread.spawn_task_in_context(worker, context_id)`
+  - `thread.join_task(handle)`
+  - `thread.detach_task(handle)`
+  - `thread.cancel_task_handle(handle)`
+  - `thread.read_task_result(handle)`
+  - `thread.group_begin()`
+  - `thread.group_spawn(group, worker)`
+  - `thread.group_spawn_n(group, worker, count)`
+  - `thread.group_join(group)`
+  - `thread.group_join_all(group)`
+  - `thread.group_cancel(group)`
+  - `thread.parallel_map(group, worker)`
+  - `thread.checkpoint_now()`
+  - `thread.yield_now()`
+  - `thread.pulse_now()`
+  - `thread.cancel_now()`
+  - `thread.timeout_after(ms)`
+  - `thread.deadline_after(ms)`
 - `thread.context_id()` returns the `context_id` supplied to `spawn_ctx(...)`.
 - Outside a context-bound spawned worker, `thread.context_id()` returns `0`.
+- Bare intrinsics such as `spawn(...)`, `join(...)`, `task.group_*`, `checkpoint()`, `timeout(...)`, and `deadline(...)` remain the execution substrate; `core.thread` is the canonical wrapper surface for production code.
 
 ### `path`
 
