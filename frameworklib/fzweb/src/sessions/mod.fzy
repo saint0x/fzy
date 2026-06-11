@@ -66,7 +66,7 @@ fn decode(raw: str) -> SessionRecord {
 }
 
 fn issue_id() -> str {
-    return security.random_base64_url(24)
+    return security.opaque_token(24)
 }
 
 fn create(cfg: SessionConfig, user: str) -> SessionRecord {

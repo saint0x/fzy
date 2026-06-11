@@ -88,12 +88,6 @@ fn event(level: LogLevel, message: str) -> Event {
     }
 }
 
-fn request_event(level: LogLevel, message: str, request_id: str, path: str, method: str) -> Event {
-    let with_path = field(event(level, message), "path", path)
-    let with_method = field(with_path, "method", method)
-    return with_correlation(with_method, correlation(request_id, "", ""))
-}
-
 fn level_name(level: LogLevel) -> str {
     match level {
         LogLevel::Warn => return "warn",
@@ -314,26 +308,4 @@ fn emit_sampled(config: LoggerConfig, policy: SamplingPolicy, counter: i32, even
         return 0
     }
     return emit(config, event_value)
-}
-
-fn request_log_sampled(
-    config: LoggerConfig,
-    level: LogLevel,
-    message: str,
-    request_id: str,
-    path: str,
-    method: str,
-    counter: i32
-) -> i32 {
-    let safe = sanitize_config(config)
-    return emit_sampled(
-        safe,
-        sampling_policy(safe.sample_every_n),
-        counter,
-        request_event(level, message, request_id, path, method),
-    )
-}
-
-fn request_log(config: LoggerConfig, level: LogLevel, message: str, request_id: str, path: str, method: str) -> i32 {
-    return emit(config, request_event(level, message, request_id, path, method))
 }

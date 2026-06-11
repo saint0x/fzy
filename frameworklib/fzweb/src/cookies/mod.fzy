@@ -101,7 +101,7 @@ fn clear_cookie(conn: HttpHandle, name: str, path: str) -> i32 {
 
 fn sign_cookie_value(secret: str, name: str, value: str) -> str {
     let payload = str.concat(name, ":", value)
-    let mac = security.sign_value(secret, payload)
+    let mac = security.sign(security.default_signer(), secret, payload)
     return str.concat(value, ".", mac)
 }
 
@@ -112,7 +112,7 @@ fn verify_signed_cookie_value(secret: str, name: str, signed_value: str) -> str 
             let value = str.slice(signed_value, 0, idx)
             let mac = str.slice(signed_value, idx + 1, str.len(signed_value))
             let payload = str.concat(name, ":", value)
-            if security.verify_value(secret, payload, mac) == 1 {
+            if security.verify(security.default_signer(), secret, payload, mac) == 1 {
                 return value
             }
             return ""

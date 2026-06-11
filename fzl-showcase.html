@@ -455,10 +455,11 @@ fn c_view_demo() -> i32 {
 fn crypto_security_demo() -> i32 {
     let digest = crypto.sha256("abc");
     let mac = crypto.hmac_sha256("key", "value");
-    let url_token = security.random_base64_url(24);
-    let signed = security.sign_value("secret", "session:saint");
-    let verified = security.verify_value("secret", "session:saint", signed);
-    if security.secure_eq(digest, digest) == 1 && verified == 1 {
+    let url_token = security.opaque_token(24);
+    let signer = security.default_signer();
+    let signed = security.sign(signer, "secret", "session:saint");
+    let verified = security.verify(signer, "secret", "session:saint", signed);
+    if crypto.constant_time_eq(digest, digest) == 1 && verified == 1 {
         return str.len(digest) + str.len(mac) + str.len(url_token);
     }
     return 0;

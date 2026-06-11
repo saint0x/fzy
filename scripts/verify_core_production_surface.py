@@ -100,26 +100,22 @@ def main() -> None:
                     return 14
                 }
 
-                let same = security.secure_eq(mac, mac)
-                if same != 1 {
+                let session_token = security.opaque_token(18)
+                if session_token == "" || str.contains(session_token, "=") == 1 {
                     return 15
                 }
 
-                let bucket = security.refill_bucket(
-                    security.rate_limit_bucket(2, 0),
-                    1000,
-                    security.rate_limit_policy(2, 4, 8),
-                )
-                let decision = security.consume_bucket(bucket, 3)
-                if decision.allowed != 1 {
+                if security.verify(signer, "key", "value", "2b23ec6907c6a352f26ba7d5f2721c8a4f13ec0fcb1607e1043bfc2e3110c170") != 0 {
                     return 17
                 }
 
-                let request = log.request_event(
-                    log.LogLevel::Info,
-                    "core.consumer",
-                    "req-1",
-                    "/health",
+                let request = log.field(
+                    log.field(
+                        log.field(log.event(log.LogLevel::Info, "core.consumer"), "request_id", "req-1"),
+                        "path",
+                        "/health",
+                    ),
+                    "method",
                     "GET",
                 )
                 let enriched = log.secret_field(

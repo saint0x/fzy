@@ -14236,7 +14236,7 @@ fn strict_stdlib_capability_policy_diagnostics(
                     if is_secret_bearing_crypto_expr(left) || is_secret_bearing_crypto_expr(right) {
                         self.warn(
                             "strict stdlib policy: secret-bearing values are compared with `==`/`!=`",
-                            "Use `crypto.constant_time_eq(...)` or `security.secure_eq(...)` for MAC, digest, or signature comparisons so timing behavior stays production-safe.",
+                            "Use `crypto.constant_time_eq(...)` for MAC, digest, or signature comparisons so timing behavior stays production-safe.",
                         );
                     }
                     ast::walk_expr(self, expr);

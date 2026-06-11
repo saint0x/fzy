@@ -699,7 +699,7 @@ fn verify_strict_stdlib_policy_surfaces_path_temp_and_crypto_hazards() {
     ));
     std::fs::write(
         &path,
-        "use core.fs;\nuse core.security;\nfn main() -> i32 {\n    discard fs.write_file(\"../secrets.txt\", \"oops\")\n    discard fs.write_file(\"/tmp/out.txt\", \"temp\")\n    if security.sign_value(\"k\", \"v\") == security.sign_value(\"k\", \"v\") {\n        return 0\n    }\n    return 1\n}\n",
+        "use core.fs;\nuse core.security;\nfn main() -> i32 {\n    discard fs.write_file(\"../secrets.txt\", \"oops\")\n    discard fs.write_file(\"/tmp/out.txt\", \"temp\")\n    let signer = security.default_signer()\n    if security.sign(signer, \"k\", \"v\") == security.sign(signer, \"k\", \"v\") {\n        return 0\n    }\n    return 1\n}\n",
     )
     .expect("source should be written");
 
@@ -8124,7 +8124,7 @@ fn embedded_core_security_module_merges_qualified_helpers() {
     let path = std::env::temp_dir().join(format!("fozzylang-core-security-{suffix}.fzy"));
     std::fs::write(
         &path,
-        "use core.security;\nfn main() -> i32 {\n    if security.verify_value(\"k\", \"v\", security.sign_value(\"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
+        "use core.security;\nfn main() -> i32 {\n    let signer = security.default_signer()\n    if security.verify(signer, \"k\", \"v\", security.sign(signer, \"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
     )
     .expect("source should be written");
 
@@ -8140,10 +8140,9 @@ fn embedded_core_security_module_merges_qualified_helpers() {
         .collect::<Vec<_>>();
     assert!(function_names
         .iter()
-        .any(|name| name == "security.verify_value"));
-    assert!(function_names
-        .iter()
-        .any(|name| name == "security.sign_value"));
+        .any(|name| name == "security.default_signer"));
+    assert!(function_names.iter().any(|name| name == "security.sign"));
+    assert!(function_names.iter().any(|name| name == "security.verify"));
 
     let _ = std::fs::remove_file(path);
 }
@@ -8157,7 +8156,7 @@ fn embedded_core_security_module_typechecks_urlsafe_and_signing_helpers() {
     let path = std::env::temp_dir().join(format!("fozzylang-core-security-typecheck-{suffix}.fzy"));
     std::fs::write(
         &path,
-        "use core.security;\nfn main() -> i32 {\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    if roundtrip == \"ok\" && security.verify_value(\"k\", \"v\", security.sign_value(\"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
+        "use core.security;\nfn main() -> i32 {\n    let signer = security.default_signer()\n    let token = security.opaque_token(16)\n    if str.contains(token, \"=\") == 0 && security.verify(signer, \"k\", \"v\", security.sign(signer, \"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
     )
     .expect("source should be written");
 
@@ -8181,7 +8180,7 @@ fn native_lowerability_accepts_embedded_core_security_helpers() {
     let path = std::env::temp_dir().join(format!("fozzylang-core-security-native-{suffix}.fzy"));
     std::fs::write(
         &path,
-        "use core.security;\nfn main() -> i32 {\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    if roundtrip == \"ok\" && security.verify_value(\"k\", \"v\", security.sign_value(\"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
+        "use core.security;\nfn main() -> i32 {\n    let signer = security.default_signer()\n    let token = security.opaque_token(16)\n    if str.contains(token, \"=\") == 0 && security.verify(signer, \"k\", \"v\", security.sign(signer, \"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
     )
     .expect("source should be written");
 
@@ -8327,7 +8326,7 @@ fn cross_backend_crypto_runtime_and_security_facade_execute_consistently() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "use core.crypto;\nuse core.error;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let crypto_url = crypto.base64_url_encode(\"ok\")\n    let crypto_roundtrip = crypto.base64_url_decode(crypto_url)\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" { return 11 }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" { return 13 }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" { return 17 }\n    if crypto_url != \"b2s\" || crypto_roundtrip != \"ok\" { return 18 }\n    if url != \"b2s\" || roundtrip != \"ok\" { return 19 }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 { return 23 }\n    if crypto.constant_time_eq(digest, digest) != 1 { return 29 }\n    if crypto.constant_time_eq(digest, mac) != 0 { return 31 }\n    if security.verify_value(\"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 1 { return 37 }\n    if crypto.base64_decode(\"A===\") != \"\" { return 41 }\n    if error.code() == 0 || error.message() == \"\" { return 43 }\n    if security.base64_url_decode(\"A\") != \"\" { return 47 }\n    if error.code() == 0 || error.message() == \"\" { return 49 }\n    if crypto.base64_decode(encoded) != \"fozzy\" { return 53 }\n    if error.code() != 0 || error.message() != \"\" { return 59 }\n    return 0\n}\n",
+        "use core.crypto;\nuse core.error;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let crypto_url = crypto.base64_url_encode(\"ok\")\n    let crypto_roundtrip = crypto.base64_url_decode(crypto_url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    let signer = security.default_signer()\n    let signed = security.sign(signer, \"key\", \"The quick brown fox jumps over the lazy dog\")\n    let opaque = security.opaque_token(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" { return 11 }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" { return 13 }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" { return 17 }\n    if crypto_url != \"b2s\" || crypto_roundtrip != \"ok\" { return 18 }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 { return 23 }\n    if str.len(opaque) != 22 || str.contains(opaque, \"=\") == 1 || str.contains(opaque, \"+\") == 1 || str.contains(opaque, \"/\") == 1 { return 24 }\n    if crypto.constant_time_eq(digest, digest) != 1 { return 29 }\n    if crypto.constant_time_eq(digest, mac) != 0 { return 31 }\n    if security.verify(signer, \"key\", \"The quick brown fox jumps over the lazy dog\", signed) != 1 { return 37 }\n    if str.starts_with(signed, \"v1:\") != 1 { return 38 }\n    if crypto.base64_decode(\"A===\") != \"\" { return 41 }\n    if error.code() == 0 || error.message() == \"\" { return 43 }\n    if security.verify(signer, \"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 0 { return 47 }\n    if crypto.base64_decode(encoded) != \"fozzy\" { return 53 }\n    if error.code() != 0 || error.message() != \"\" { return 59 }\n    return 0\n}\n",
     )
     .expect("source should be written");
 

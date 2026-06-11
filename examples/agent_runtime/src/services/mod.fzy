@@ -55,7 +55,8 @@ fn session_auth_mac(session_json: str) -> str {
 
 fn session_auth_ok(workspace_id: str, session_json: str) -> i32 {
     let signed_session_id = session_id(session_json)
-    return security.verify_value(
+    return security.verify(
+        security.default_signer(),
         "agent-runtime-secret",
         model.session_signing_input(workspace_id, signed_session_id),
         session_auth_mac(session_json),

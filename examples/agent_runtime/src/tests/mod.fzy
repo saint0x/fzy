@@ -5,7 +5,12 @@ test "det_signed_session" {
     let parsed = json.parse(session)
     let session_id = json.get_str(parsed, "session_id")
     let auth_mac = json.get_str(parsed, "auth_mac")
-    if security.verify_value("agent-runtime-secret", str.concat("workspace-main", str.concat(":", session_id)), auth_mac) != 1 {
+    if security.verify(
+        security.default_signer(),
+        "agent-runtime-secret",
+        str.concat("workspace-main", str.concat(":", session_id)),
+        auth_mac,
+    ) != 1 {
         checkpoint()
     }
 }

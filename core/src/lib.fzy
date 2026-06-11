@@ -25,7 +25,6 @@ mod concurrency;
 // import path.
 mod abi;
 mod cinterop;
-mod util;
 
 pub fn version() -> str {
     return "0.2.0"

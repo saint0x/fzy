@@ -1,62 +1,7 @@
 use core.crypto;
 
-enum AuthDecision {
-    Allow,
-    Deny,
-    Challenge,
-}
-
-struct AuthContext {
-    has_token: i32,
-    expired: i32,
-    scope_ok: i32,
-    mfa_required: i32,
-    mfa_present: i32,
-}
-
 struct SignerConfig {
     version_prefix: str,
-}
-
-struct RateLimitPolicy {
-    burst: i32,
-    refill_per_sec: i32,
-    capacity: i32,
-}
-
-struct RateLimitBucket {
-    tokens: i32,
-    last_refill_ms: i32,
-}
-
-struct RateLimitDecision {
-    allowed: i32,
-    remaining_tokens: i32,
-}
-
-fn normalize_flag(value: i32) -> i32 {
-    if value == 0 {
-        return 0
-    }
-    return 1
-}
-
-fn auth_context(has_token: i32, expired: i32, scope_ok: i32, mfa_required: i32, mfa_present: i32) -> AuthContext {
-    return AuthContext {
-        has_token: normalize_flag(has_token),
-        expired: normalize_flag(expired),
-        scope_ok: normalize_flag(scope_ok),
-        mfa_required: normalize_flag(mfa_required),
-        mfa_present: normalize_flag(mfa_present),
-    }
-}
-
-fn authorize(context: AuthContext) -> AuthDecision {
-    if context.has_token == 0 then return AuthDecision::Challenge
-    if context.expired == 1 then return AuthDecision::Deny
-    if context.scope_ok == 0 then return AuthDecision::Deny
-    if context.mfa_required == 1 && context.mfa_present == 0 then return AuthDecision::Challenge
-    return AuthDecision::Allow
 }
 
 fn default_signer() -> SignerConfig {
@@ -75,161 +20,19 @@ fn signer(version_prefix: str) -> SignerConfig {
     }
 }
 
-fn signer_prefix(config: SignerConfig) -> str {
-    let prefix = str.trim(config.version_prefix)
-    if prefix == "" {
-        return default_signer().version_prefix
-    }
-    return prefix
-}
-
-fn default_rate_limit() -> RateLimitPolicy {
-    return rate_limit_policy(8, 4, 16)
-}
-
-fn rate_limit_policy(burst: i32, refill_per_sec: i32, capacity: i32) -> RateLimitPolicy {
-    let mut safe_burst = burst
-    let mut safe_refill = refill_per_sec
-    let mut safe_capacity = capacity
-    if safe_burst < 1 { safe_burst = 1 }
-    if safe_refill < 1 { safe_refill = 1 }
-    if safe_capacity < safe_burst { safe_capacity = safe_burst }
-    return RateLimitPolicy {
-        burst: safe_burst,
-        refill_per_sec: safe_refill,
-        capacity: safe_capacity,
-    }
-}
-
-fn rate_limit_bucket(tokens: i32, last_refill_ms: i32) -> RateLimitBucket {
-    let mut safe_tokens = tokens
-    if safe_tokens < 0 {
-        safe_tokens = 0
-    }
-    return RateLimitBucket {
-        tokens: safe_tokens,
-        last_refill_ms: last_refill_ms,
-    }
-}
-
-fn refill_bucket(bucket: RateLimitBucket, elapsed_ms: i32, policy: RateLimitPolicy) -> RateLimitBucket {
-    let safe_policy = rate_limit_policy(policy.burst, policy.refill_per_sec, policy.capacity)
-    let mut next = bucket.tokens
-    if elapsed_ms > 0 {
-        next = next + ((elapsed_ms * safe_policy.refill_per_sec) / 1000)
-    }
-    if next > safe_policy.capacity {
-        next = safe_policy.capacity
-    }
-    if next < 0 {
-        next = 0
-    }
-    return RateLimitBucket {
-        tokens: next,
-        last_refill_ms: bucket.last_refill_ms + elapsed_ms,
-    }
-}
-
-fn consume_bucket(bucket: RateLimitBucket, cost: i32) -> RateLimitDecision {
-    if cost < 0 {
-        return RateLimitDecision {
-            allowed: 0,
-            remaining_tokens: bucket.tokens,
-        }
-    }
-    if bucket.tokens < cost {
-        return RateLimitDecision {
-            allowed: 0,
-            remaining_tokens: bucket.tokens,
-        }
-    }
-    return RateLimitDecision {
-        allowed: 1,
-        remaining_tokens: bucket.tokens - cost,
-    }
-}
-
-fn random_hex(bytes: i32) -> str {
-    return crypto.random_hex(bytes)
-}
-
-fn random_base64(bytes: i32) -> str {
-    return crypto.random_base64(bytes)
-}
-
-fn random_base64_url(bytes: i32) -> str {
+fn opaque_token(bytes: i32) -> str {
     let standard = crypto.random_base64(bytes)
     let no_pad = str.replace(standard, "=", "")
     let step1 = str.replace(no_pad, "+", "-")
     return str.replace(step1, "/", "_")
 }
 
-fn sha256_hex(data: str) -> str {
-    return crypto.sha256(data)
-}
-
-fn hmac_sha256_hex(key: str, data: str) -> str {
-    return crypto.hmac_sha256(key, data)
-}
-
-fn secure_eq(a: str, b: str) -> i32 {
-    return crypto.constant_time_eq(a, b)
-}
-
 fn sign(config: SignerConfig, key: str, data: str) -> str {
-    return str.concat(signer_prefix(config), hmac_sha256_hex(key, data))
+    let prefix = str.trim(config.version_prefix)
+    let effective_prefix = if prefix == "" { default_signer().version_prefix } else { prefix }
+    return str.concat(effective_prefix, crypto.hmac_sha256(key, data))
 }
 
-fn verify(config: SignerConfig, key: str, data: str, mac_hex: str) -> i32 {
-    let prefix = signer_prefix(config)
-    let expected = sign(config, key, data)
-    if str.starts_with(mac_hex, prefix) == 1 {
-        return secure_eq(expected, mac_hex)
-    }
-    return secure_eq(hmac_sha256_hex(key, data), mac_hex)
-}
-
-fn sign_value(key: str, data: str) -> str {
-    return sign(default_signer(), key, data)
-}
-
-fn verify_value(key: str, data: str, mac_hex: str) -> i32 {
-    return verify(default_signer(), key, data, mac_hex)
-}
-
-fn base64_encode(data: str) -> str {
-    return crypto.base64_encode(data)
-}
-
-fn base64_decode(data: str) -> str {
-    return crypto.base64_decode(data)
-}
-
-fn base64_url_encode(data: str) -> str {
-    return crypto.base64_url_encode(data)
-}
-
-fn base64_url_decode(data: str) -> str {
-    return crypto.base64_url_decode(data)
-}
-
-fn refill_tokens(tokens: i32, elapsed_ms: i32, policy: RateLimitPolicy) -> i32 {
-    let bucket = rate_limit_bucket(tokens, 0)
-    return refill_bucket(bucket, elapsed_ms, policy).tokens
-}
-
-fn consume_tokens(tokens: i32, cost: i32) -> i32 {
-    let decision = consume_bucket(rate_limit_bucket(tokens, 0), cost)
-    if decision.allowed == 0 {
-        return -1
-    }
-    return decision.remaining_tokens
-}
-
-fn allow_cost(tokens: i32, cost: i32) -> i32 {
-    return consume_bucket(rate_limit_bucket(tokens, 0), cost).allowed
-}
-
-fn refill_tokens_fast(tokens: i32, elapsed_ms: i32, burst: i32, refill_per_sec: i32, capacity: i32) -> i32 {
-    return refill_tokens(tokens, elapsed_ms, rate_limit_policy(burst, refill_per_sec, capacity))
+fn verify(config: SignerConfig, key: str, data: str, signed_value: str) -> i32 {
+    return crypto.constant_time_eq(sign(config, key, data), signed_value)
 }

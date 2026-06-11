@@ -9,10 +9,11 @@ fn main() -> i32 {
     let decoded = crypto.base64_decode(encoded)
     let crypto_url = crypto.base64_url_encode("ok")
     let crypto_roundtrip = crypto.base64_url_decode(crypto_url)
-    let url = security.base64_url_encode("ok")
-    let roundtrip = security.base64_url_decode(url)
     let hex_token = crypto.random_hex(16)
     let b64_token = crypto.random_base64(16)
+    let signer = security.default_signer()
+    let signed = security.sign(signer, "key", "The quick brown fox jumps over the lazy dog")
+    let opaque = security.opaque_token(16)
     if digest != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
         return 11
     }
@@ -25,11 +26,11 @@ fn main() -> i32 {
     if crypto_url != "b2s" || crypto_roundtrip != "ok" {
         return 18
     }
-    if url != "b2s" || roundtrip != "ok" {
-        return 19
-    }
     if str.len(hex_token) != 32 || str.len(b64_token) != 24 {
         return 23
+    }
+    if str.len(opaque) != 22 || str.contains(opaque, "=") == 1 || str.contains(opaque, "+") == 1 || str.contains(opaque, "/") == 1 {
+        return 24
     }
     if crypto.constant_time_eq(digest, digest) != 1 {
         return 29
@@ -37,8 +38,11 @@ fn main() -> i32 {
     if crypto.constant_time_eq(digest, mac) != 0 {
         return 31
     }
-    if security.verify_value("key", "The quick brown fox jumps over the lazy dog", mac) != 1 {
+    if security.verify(signer, "key", "The quick brown fox jumps over the lazy dog", signed) != 1 {
         return 37
+    }
+    if str.starts_with(signed, "v1:") != 1 {
+        return 38
     }
     if crypto.base64_decode("A===") != "" {
         return 41
@@ -46,11 +50,8 @@ fn main() -> i32 {
     if error.code() == 0 || error.message() == "" {
         return 43
     }
-    if security.base64_url_decode("A") != "" {
+    if security.verify(signer, "key", "The quick brown fox jumps over the lazy dog", mac) != 0 {
         return 47
-    }
-    if error.code() == 0 || error.message() == "" {
-        return 49
     }
     if crypto.base64_decode(encoded) != "fozzy" {
         return 53

@@ -46,8 +46,9 @@ fn session_signing_input(workspace_id: str, session_id: str) -> str {
 }
 
 fn session_json(workspace_id: str, user: str) -> str {
-    let session_id = security.random_base64_url(18)
-    let signed = security.sign_value("agent-runtime-secret", session_signing_input(workspace_id, session_id))
+    let signer = security.default_signer()
+    let session_id = security.opaque_token(18)
+    let signed = security.sign(signer, "agent-runtime-secret", session_signing_input(workspace_id, session_id))
     let payload = map.new()
     discard map.set(payload, "session_id", json.str(session_id))
     discard map.set(payload, "workspace_id", json.str(workspace_id))

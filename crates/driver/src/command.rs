@@ -12844,6 +12844,41 @@ mod tests {
     }
 
     #[test]
+    fn inspect_stdlib_log_and_gpu_exclude_removed_convenience_helpers() {
+        let log_output = run(
+            Command::InspectStdlib {
+                module: "log".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("inspect stdlib log should run");
+        let log_value: serde_json::Value =
+            serde_json::from_str(&log_output).expect("log json should parse");
+        let log_source = log_value["source"]
+            .as_str()
+            .expect("log source should be present");
+        assert!(!log_source.contains("request_log("));
+        assert!(!log_source.contains("request_log_sampled("));
+        assert!(!log_source.contains("request_event("));
+        let gpu_source = include_str!("../../../core/src/gpu.fzy");
+        assert!(!gpu_source.contains("slice_bounds_score("));
+    }
+
+    #[test]
+    fn inspect_stdlib_rejects_internal_util_module() {
+        let err = run(
+            Command::InspectStdlib {
+                module: "util".to_string(),
+            },
+            Format::Json,
+        )
+        .expect_err("internal util module should not be inspectable");
+        assert!(err
+            .to_string()
+            .contains("unknown embedded core stdlib module `util`"));
+    }
+
+    #[test]
     fn detects_scenario_paths() {
         assert!(is_fozzy_scenario(Path::new("tests/example.fozzy.json")));
         assert!(!is_fozzy_scenario(Path::new("examples/main.fzy")));
@@ -15207,7 +15242,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "use core.crypto;\nuse core.error;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let crypto_url = crypto.base64_url_encode(\"ok\")\n    let crypto_roundtrip = crypto.base64_url_decode(crypto_url)\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" {\n        return 11\n    }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" {\n        return 13\n    }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" {\n        return 17\n    }\n    if crypto_url != \"b2s\" || crypto_roundtrip != \"ok\" {\n        return 18\n    }\n    if url != \"b2s\" || roundtrip != \"ok\" {\n        return 19\n    }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 {\n        return 23\n    }\n    if crypto.constant_time_eq(digest, digest) != 1 {\n        return 29\n    }\n    if crypto.constant_time_eq(digest, mac) != 0 {\n        return 31\n    }\n    if security.verify_value(\"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 1 {\n        return 37\n    }\n    if crypto.base64_decode(\"A===\") != \"\" {\n        return 41\n    }\n    if error.code() == 0 || error.message() == \"\" {\n        return 43\n    }\n    if security.base64_url_decode(\"A\") != \"\" {\n        return 47\n    }\n    if error.code() == 0 || error.message() == \"\" {\n        return 49\n    }\n    if crypto.base64_decode(encoded) != \"fozzy\" {\n        return 53\n    }\n    if error.code() != 0 || error.message() != \"\" {\n        return 59\n    }\n    return 0\n}\n",
+            "use core.crypto;\nuse core.error;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let crypto_url = crypto.base64_url_encode(\"ok\")\n    let crypto_roundtrip = crypto.base64_url_decode(crypto_url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    let signer = security.default_signer()\n    let signed = security.sign(signer, \"key\", \"The quick brown fox jumps over the lazy dog\")\n    let opaque = security.opaque_token(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" {\n        return 11\n    }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" {\n        return 13\n    }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" {\n        return 17\n    }\n    if crypto_url != \"b2s\" || crypto_roundtrip != \"ok\" {\n        return 18\n    }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 {\n        return 23\n    }\n    if str.len(opaque) != 22 || str.contains(opaque, \"=\") == 1 || str.contains(opaque, \"+\") == 1 || str.contains(opaque, \"/\") == 1 {\n        return 24\n    }\n    if crypto.constant_time_eq(digest, digest) != 1 {\n        return 29\n    }\n    if crypto.constant_time_eq(digest, mac) != 0 {\n        return 31\n    }\n    if security.verify(signer, \"key\", \"The quick brown fox jumps over the lazy dog\", signed) != 1 {\n        return 37\n    }\n    if str.starts_with(signed, \"v1:\") != 1 {\n        return 38\n    }\n    if crypto.base64_decode(\"A===\") != \"\" {\n        return 41\n    }\n    if error.code() == 0 || error.message() == \"\" {\n        return 43\n    }\n    if security.verify(signer, \"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 0 {\n        return 47\n    }\n    if crypto.base64_decode(encoded) != \"fozzy\" {\n        return 53\n    }\n    if error.code() != 0 || error.message() != \"\" {\n        return 59\n    }\n    return 0\n}\n",
         )
         .expect("source should be written");
 

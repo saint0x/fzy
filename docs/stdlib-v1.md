@@ -391,40 +391,19 @@ Transcript guidance:
   - `crypto.base64_decode(data)`
   - `crypto.base64_url_encode(data)`
   - `crypto.base64_url_decode(data)`
-- `use core.security;` is the higher-level web/security helper facade on top of `core.crypto`.
+- `use core.security;` is the blessed application-security facade on top of `core.crypto`.
 - Canonical security concepts are first-class:
-  - `AuthContext`
-  - `AuthDecision`
   - `SignerConfig`
-  - `RateLimitPolicy`
-  - `RateLimitBucket`
-  - `RateLimitDecision`
 - Common `core.security` helpers:
-  - `security.auth_context(...)`
-  - `security.authorize(context)`
   - `security.default_signer()`
   - `security.signer(version_prefix)`
+  - `security.opaque_token(bytes)`
   - `security.sign(config, key, data)`
-  - `security.verify(config, key, data, mac_hex)`
-  - `security.default_rate_limit()`
-  - `security.rate_limit_policy(burst, refill_per_sec, capacity)`
-  - `security.rate_limit_bucket(tokens, last_refill_ms)`
-  - `security.refill_bucket(bucket, elapsed_ms, policy)`
-  - `security.consume_bucket(bucket, cost)`
-  - `security.random_hex(bytes)`
-  - `security.random_base64(bytes)`
-  - `security.random_base64_url(bytes)`
-  - `security.sha256_hex(data)`
-  - `security.hmac_sha256_hex(key, data)`
-  - `security.sign_value(key, data)`
-  - `security.verify_value(key, data, mac_hex)`
-  - `security.secure_eq(a, b)`
-  - `security.base64_encode(data)`
-  - `security.base64_decode(data)`
-  - `security.base64_url_encode(data)`
-  - `security.base64_url_decode(data)`
-- Blessed signing defaults are version-prefixed, and verification accepts either the canonical prefixed form or the raw MAC for boundary compatibility.
-- This checkout intentionally exposes textual crypto encodings rather than raw binary string APIs; native Fzy strings are NUL-terminated, so `hex`/`base64`/`base64url` are the production-safe surface for random output, token transport, and digest transport.
+  - `security.verify(config, key, data, signed_value)`
+- `core.security` is intentionally small: raw digests, MAC primitives, constant-time comparison, and base64/hex codecs live in `core.crypto`.
+- Blessed signing defaults are version-prefixed, and verification requires the canonical prefixed signed value.
+- `security.opaque_token(bytes)` is the standard-library token issuance helper for transport-safe opaque identifiers.
+- This checkout intentionally exposes textual crypto encodings rather than raw binary string APIs; native Fzy strings are NUL-terminated, so `hex`/`base64`/`base64url` are the production-safe raw crypto surface in `core.crypto`.
 
 ### `thread`
 

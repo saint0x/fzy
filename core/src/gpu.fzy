@@ -24,12 +24,6 @@ host fn safe_slice_len(len: i32) -> i32 {
     return clamp_nonnegative(len)
 }
 
-host fn slice_bounds_score(offset: i32, len: i32) -> i32 {
-    let safe_offset = safe_slice_offset(offset)
-    let safe_len = safe_slice_len(len)
-    return (safe_offset + (safe_len * 7)) % 251
-}
-
 host fn device_count() -> i32 {
     return gpu.device_count()
 }
@@ -149,4 +143,3 @@ device fn grid_dim_z() -> i32 { return gpu.grid_dim_z() }
 device fn barrier() -> void {
     discard gpu.barrier()
 }
-
