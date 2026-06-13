@@ -9,7 +9,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variab
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Once, OnceLock, RwLock};
@@ -294,11 +294,27 @@ pub struct ValidationTelemetry {
     pub input_bytes: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ModuleStamp {
     path: PathBuf,
     bytes: u64,
     modified_ns: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SuccessfulBuildCacheEntry {
+    schema_version: String,
+    source_path: PathBuf,
+    module_name: String,
+    profile: String,
+    backend: String,
+    manifest_fingerprint: Option<String>,
+    dependency_graph_hash: Option<String>,
+    pgo_signature: String,
+    source_stamps: Vec<ModuleStamp>,
+    output: Option<PathBuf>,
+    static_lib: Option<PathBuf>,
+    shared_lib: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

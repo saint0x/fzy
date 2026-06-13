@@ -111,25 +111,69 @@ enum TokenKind {
 }
 
 pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>> {
+    analyze_module(source, module_name).into_parse_result()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentifierLexeme {
+    pub name: String,
+    pub line: usize,
+    pub col: usize,
+    pub len: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleAnalysis {
+    pub module: Option<Module>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub identifiers: Vec<IdentifierLexeme>,
+}
+
+impl ModuleAnalysis {
+    pub fn into_parse_result(mut self) -> Result<Module, Vec<Diagnostic>> {
+        if self.diagnostics.is_empty() {
+            if let Some(module) = self.module.take() {
+                Ok(module)
+            } else {
+                Err(vec![Diagnostic::new(
+                    Severity::Error,
+                    "source is empty",
+                    Some("provide at least one declaration".to_string()),
+                )])
+            }
+        } else {
+            Err(self.diagnostics)
+        }
+    }
+}
+
+pub fn analyze_module(source: &str, module_name: &str) -> ModuleAnalysis {
     if source.trim().is_empty() {
-        return Err(vec![Diagnostic::new(
-            Severity::Error,
-            "source is empty",
-            Some("provide at least one declaration".to_string()),
-        )]);
+        return ModuleAnalysis {
+            module: None,
+            diagnostics: vec![Diagnostic::new(
+                Severity::Error,
+                "source is empty",
+                Some("provide at least one declaration".to_string()),
+            )],
+            identifiers: Vec::new(),
+        };
     }
 
     let mut lexer = Lexer::new(source);
     let tokens = lexer.lex();
     let mut diagnostics = lexer.diagnostics;
+    let identifiers = lexer.identifiers;
     let mut parser = Parser::new(tokens, module_name);
     let module = parser.parse_module();
     diagnostics.extend(parser.diagnostics);
-    if diagnostics.is_empty() {
-        Ok(module)
-    } else {
+    if !diagnostics.is_empty() {
         assign_stable_codes(&mut diagnostics, DiagnosticDomain::Parser);
-        Err(diagnostics)
+    }
+    ModuleAnalysis {
+        module: Some(module),
+        diagnostics,
+        identifiers,
     }
 }
 
@@ -141,4 +185,3 @@ struct Parser {
     pending_repr: Option<String>,
     pending_ffi_panic: Option<String>,
 }
-

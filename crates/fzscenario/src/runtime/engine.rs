@@ -24,6 +24,20 @@ use crate::host::{
 };
 use crate::{FozzyError, FozzyResult};
 
+const EVENT_SCHED_PICK: &str = "sched_pick";
+const EVENT_SPAN_START: &str = "span_start";
+const EVENT_SPAN_END: &str = "span_end";
+const FIELD_TASK_ID: &str = "task_id";
+const FIELD_STEP_INDEX: &str = "step_index";
+const FIELD_STEP_KIND: &str = "step_kind";
+const FIELD_SPAN: &str = "span";
+const FIELD_TASK: &str = "task";
+const FIELD_STATUS: &str = "status";
+const FIELD_DURATION_MS: &str = "duration_ms";
+const FIELD_TASK_STEP: &str = "step";
+const STATUS_OK: &str = "ok";
+const STATUS_ERROR: &str = "error";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcBackend {
@@ -360,6 +374,7 @@ pub(crate) fn run_embedded_scenario_inner(
         fs_backend,
         http_backend,
         memory,
+        scenario_event_capacity(&scenario.steps),
     );
     let start_virtual_ms = ctx.clock.now_ms();
     let mut scheduler = crate::DeterministicScheduler::new(crate::SchedulerMode::Fifo, seed);
@@ -384,49 +399,10 @@ pub(crate) fn run_embedded_scenario_inner(
             task_id: item.id,
             label: item.label,
         });
-        let step_kind = step.kind_name().to_string();
-        let span_id = format!("step-{idx}");
-        let step_start_ms = ctx.clock.now_ms();
-        ctx.events.push(TraceEvent {
-            time_ms: step_start_ms,
-            name: "sched_pick".to_string(),
-            fields: serde_json::Map::from_iter([
-                ("task_id".to_string(), serde_json::json!(item.id)),
-                ("step_index".to_string(), serde_json::json!(idx as u64)),
-                (
-                    "step_kind".to_string(),
-                    serde_json::json!(step_kind.clone()),
-                ),
-            ]),
-        });
-        ctx.events.push(TraceEvent {
-            time_ms: step_start_ms,
-            name: "span_start".to_string(),
-            fields: serde_json::Map::from_iter([
-                ("span".to_string(), serde_json::json!(span_id.clone())),
-                ("task".to_string(), serde_json::json!("step")),
-                ("step_index".to_string(), serde_json::json!(idx as u64)),
-                (
-                    "step_kind".to_string(),
-                    serde_json::json!(step_kind.clone()),
-                ),
-            ]),
-        });
         ctx.set_active_step(&scenario_path, idx);
-        if let Err(finding) = ctx.exec_step(step) {
-            let end_ms = ctx.clock.now_ms();
-            ctx.events.push(TraceEvent {
-                time_ms: end_ms,
-                name: "span_end".to_string(),
-                fields: serde_json::Map::from_iter([
-                    ("span".to_string(), serde_json::json!(span_id)),
-                    ("status".to_string(), serde_json::json!("error")),
-                    (
-                        "duration_ms".to_string(),
-                        serde_json::json!(end_ms.saturating_sub(step_start_ms)),
-                    ),
-                ]),
-            });
+        if let Err(finding) =
+            ctx.exec_step_with_runtime_events(item.id, idx, step.kind_name(), step)
+        {
             let status = if finding_is_timeout(&finding) {
                 ExitStatus::Timeout
             } else {
@@ -435,19 +411,6 @@ pub(crate) fn run_embedded_scenario_inner(
             ctx.findings.push(finding);
             return Ok(ctx.finish(status, scenario_path, scenario));
         }
-        let end_ms = ctx.clock.now_ms();
-        ctx.events.push(TraceEvent {
-            time_ms: end_ms,
-            name: "span_end".to_string(),
-            fields: serde_json::Map::from_iter([
-                ("span".to_string(), serde_json::json!(span_id)),
-                ("status".to_string(), serde_json::json!("ok")),
-                (
-                    "duration_ms".to_string(),
-                    serde_json::json!(end_ms.saturating_sub(step_start_ms)),
-                ),
-            ]),
-        });
 
         if timeout_reached(&ctx, det, timeout, deadline, start_virtual_ms) {
             ctx.findings.push(Finding {
@@ -505,6 +468,10 @@ fn finding_is_timeout(finding: &Finding) -> bool {
     finding.kind == FindingKind::Hang && finding.title == "timeout"
 }
 
+fn scenario_event_capacity(steps: &[crate::Step]) -> usize {
+    steps.len().saturating_mul(4)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_scenario_replay_inner<'a>(
     _config: &Config,
@@ -544,6 +511,7 @@ pub(crate) fn run_scenario_replay_inner<'a>(
         fs_backend,
         http_backend,
         memory,
+        scenario_event_capacity(&scenario.steps),
     );
     if let Some(d) = decisions {
         ctx.replay = Some(ReplayCursor::new(d));
@@ -581,48 +549,9 @@ pub(crate) fn run_scenario_replay_inner<'a>(
             }
 
             ctx.expect_scheduler_pick(item.id, &item.label)?;
-            let step_kind = step_def.kind_name().to_string();
-            let span_id = format!("step-{idx}");
-            let step_start_ms = ctx.clock.now_ms();
-            ctx.events.push(TraceEvent {
-                time_ms: step_start_ms,
-                name: "sched_pick".to_string(),
-                fields: serde_json::Map::from_iter([
-                    ("task_id".to_string(), serde_json::json!(item.id)),
-                    ("step_index".to_string(), serde_json::json!(idx as u64)),
-                    (
-                        "step_kind".to_string(),
-                        serde_json::json!(step_kind.clone()),
-                    ),
-                ]),
-            });
-            ctx.events.push(TraceEvent {
-                time_ms: step_start_ms,
-                name: "span_start".to_string(),
-                fields: serde_json::Map::from_iter([
-                    ("span".to_string(), serde_json::json!(span_id.clone())),
-                    ("task".to_string(), serde_json::json!("step")),
-                    ("step_index".to_string(), serde_json::json!(idx as u64)),
-                    (
-                        "step_kind".to_string(),
-                        serde_json::json!(step_kind.clone()),
-                    ),
-                ]),
-            });
-            if let Err(finding) = ctx.exec_step(step_def) {
-                let end_ms = ctx.clock.now_ms();
-                ctx.events.push(TraceEvent {
-                    time_ms: end_ms,
-                    name: "span_end".to_string(),
-                    fields: serde_json::Map::from_iter([
-                        ("span".to_string(), serde_json::json!(span_id)),
-                        ("status".to_string(), serde_json::json!("error")),
-                        (
-                            "duration_ms".to_string(),
-                            serde_json::json!(end_ms.saturating_sub(step_start_ms)),
-                        ),
-                    ]),
-                });
+            if let Err(finding) =
+                ctx.exec_step_with_runtime_events(item.id, idx, step_def.kind_name(), step_def)
+            {
                 let status = if finding_is_timeout(&finding) {
                     ExitStatus::Timeout
                 } else {
@@ -631,19 +560,6 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                 ctx.findings.push(finding);
                 return Ok(ctx.finish(status, PathBuf::from(scenario_path), scenario.clone()));
             }
-            let end_ms = ctx.clock.now_ms();
-            ctx.events.push(TraceEvent {
-                time_ms: end_ms,
-                name: "span_end".to_string(),
-                fields: serde_json::Map::from_iter([
-                    ("span".to_string(), serde_json::json!(span_id)),
-                    ("status".to_string(), serde_json::json!("ok")),
-                    (
-                        "duration_ms".to_string(),
-                        serde_json::json!(end_ms.saturating_sub(step_start_ms)),
-                    ),
-                ]),
-            });
         }
     } else {
         for (idx, step_def) in scenario.steps.iter().enumerate() {
@@ -671,48 +587,12 @@ pub(crate) fn run_scenario_replay_inner<'a>(
             }
 
             ctx.expect_step(idx)?;
-            let step_kind = step_def.kind_name().to_string();
-            let span_id = format!("step-{idx}");
-            let step_start_ms = ctx.clock.now_ms();
-            ctx.events.push(TraceEvent {
-                time_ms: step_start_ms,
-                name: "sched_pick".to_string(),
-                fields: serde_json::Map::from_iter([
-                    ("task_id".to_string(), serde_json::json!(idx as u64 + 1)),
-                    ("step_index".to_string(), serde_json::json!(idx as u64)),
-                    (
-                        "step_kind".to_string(),
-                        serde_json::json!(step_kind.clone()),
-                    ),
-                ]),
-            });
-            ctx.events.push(TraceEvent {
-                time_ms: step_start_ms,
-                name: "span_start".to_string(),
-                fields: serde_json::Map::from_iter([
-                    ("span".to_string(), serde_json::json!(span_id.clone())),
-                    ("task".to_string(), serde_json::json!("step")),
-                    ("step_index".to_string(), serde_json::json!(idx as u64)),
-                    (
-                        "step_kind".to_string(),
-                        serde_json::json!(step_kind.clone()),
-                    ),
-                ]),
-            });
-            if let Err(finding) = ctx.exec_step(step_def) {
-                let end_ms = ctx.clock.now_ms();
-                ctx.events.push(TraceEvent {
-                    time_ms: end_ms,
-                    name: "span_end".to_string(),
-                    fields: serde_json::Map::from_iter([
-                        ("span".to_string(), serde_json::json!(span_id)),
-                        ("status".to_string(), serde_json::json!("error")),
-                        (
-                            "duration_ms".to_string(),
-                            serde_json::json!(end_ms.saturating_sub(step_start_ms)),
-                        ),
-                    ]),
-                });
+            if let Err(finding) = ctx.exec_step_with_runtime_events(
+                idx as u64 + 1,
+                idx,
+                step_def.kind_name(),
+                step_def,
+            ) {
                 let status = if finding_is_timeout(&finding) {
                     ExitStatus::Timeout
                 } else {
@@ -721,19 +601,6 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                 ctx.findings.push(finding);
                 return Ok(ctx.finish(status, PathBuf::from(scenario_path), scenario.clone()));
             }
-            let end_ms = ctx.clock.now_ms();
-            ctx.events.push(TraceEvent {
-                time_ms: end_ms,
-                name: "span_end".to_string(),
-                fields: serde_json::Map::from_iter([
-                    ("span".to_string(), serde_json::json!(span_id)),
-                    ("status".to_string(), serde_json::json!("ok")),
-                    (
-                        "duration_ms".to_string(),
-                        serde_json::json!(end_ms.saturating_sub(step_start_ms)),
-                    ),
-                ]),
-            });
         }
     }
 
@@ -839,6 +706,7 @@ impl<'a> ExecCtx<'a> {
         fs_backend: FsBackend,
         http_backend: HttpBackend,
         memory: MemoryOptions,
+        event_capacity: usize,
     ) -> Self {
         let seed_bytes = blake3::hash(&seed.to_le_bytes()).as_bytes().to_owned();
         let mut seed32 = [0u8; 32];
@@ -870,7 +738,7 @@ impl<'a> ExecCtx<'a> {
             net_reorder: false,
             memory: MemoryState::new(memory),
             decisions: DecisionLog::default(),
-            events: Vec::new(),
+            events: Vec::with_capacity(event_capacity),
             findings: Vec::new(),
             replay: None,
             current_step_index: None,
@@ -894,6 +762,128 @@ impl<'a> ExecCtx<'a> {
     fn remaining_host_timeout(&self) -> Option<Duration> {
         let deadline = self.host_deadline?;
         Some(deadline.saturating_duration_since(Instant::now()))
+    }
+
+    fn push_event_with_fields(
+        &mut self,
+        time_ms: u64,
+        name: &'static str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) {
+        self.events.push(TraceEvent {
+            time_ms,
+            name: name.to_string(),
+            fields,
+        });
+    }
+
+    fn push_sched_pick_event(
+        &mut self,
+        time_ms: u64,
+        task_id: u64,
+        step_index: usize,
+        step_kind: &str,
+    ) {
+        let mut fields = serde_json::Map::with_capacity(3);
+        fields.insert(FIELD_TASK_ID.to_string(), serde_json::Value::from(task_id));
+        fields.insert(
+            FIELD_STEP_INDEX.to_string(),
+            serde_json::Value::from(step_index as u64),
+        );
+        fields.insert(
+            FIELD_STEP_KIND.to_string(),
+            serde_json::Value::String(step_kind.to_string()),
+        );
+        self.push_event_with_fields(time_ms, EVENT_SCHED_PICK, fields);
+    }
+
+    fn push_span_start_event(
+        &mut self,
+        time_ms: u64,
+        step_index: usize,
+        step_kind: &str,
+        span: &str,
+    ) {
+        let mut fields = serde_json::Map::with_capacity(4);
+        fields.insert(
+            FIELD_SPAN.to_string(),
+            serde_json::Value::String(span.to_string()),
+        );
+        fields.insert(
+            FIELD_TASK.to_string(),
+            serde_json::Value::String(FIELD_TASK_STEP.to_string()),
+        );
+        fields.insert(
+            FIELD_STEP_INDEX.to_string(),
+            serde_json::Value::from(step_index as u64),
+        );
+        fields.insert(
+            FIELD_STEP_KIND.to_string(),
+            serde_json::Value::String(step_kind.to_string()),
+        );
+        self.push_event_with_fields(time_ms, EVENT_SPAN_START, fields);
+    }
+
+    fn push_span_end_event(
+        &mut self,
+        time_ms: u64,
+        step_start_ms: u64,
+        span: String,
+        status: &'static str,
+    ) {
+        let mut fields = serde_json::Map::with_capacity(3);
+        fields.insert(FIELD_SPAN.to_string(), serde_json::Value::String(span));
+        fields.insert(
+            FIELD_STATUS.to_string(),
+            serde_json::Value::String(status.to_string()),
+        );
+        fields.insert(
+            FIELD_DURATION_MS.to_string(),
+            serde_json::Value::from(time_ms.saturating_sub(step_start_ms)),
+        );
+        self.push_event_with_fields(time_ms, EVENT_SPAN_END, fields);
+    }
+
+    fn push_cloned_trace_event(
+        &mut self,
+        time_ms: u64,
+        name: &str,
+        fields: &serde_json::Map<String, serde_json::Value>,
+    ) {
+        self.events.push(TraceEvent {
+            time_ms,
+            name: name.to_string(),
+            fields: if fields.is_empty() {
+                serde_json::Map::new()
+            } else {
+                fields.clone()
+            },
+        });
+    }
+
+    fn exec_step_with_runtime_events(
+        &mut self,
+        task_id: u64,
+        step_index: usize,
+        step_kind: &str,
+        step: &crate::Step,
+    ) -> Result<(), Finding> {
+        let span_id = format!("step-{step_index}");
+        let step_start_ms = self.clock.now_ms();
+        self.push_sched_pick_event(step_start_ms, task_id, step_index, step_kind);
+        self.push_span_start_event(step_start_ms, step_index, step_kind, &span_id);
+        match self.exec_step(step) {
+            Ok(()) => {
+                let end_ms = self.clock.now_ms();
+                self.push_span_end_event(end_ms, step_start_ms, span_id, STATUS_OK);
+                Ok(())
+            }
+            Err(finding) => {
+                let end_ms = self.clock.now_ms();
+                self.push_span_end_event(end_ms, step_start_ms, span_id, STATUS_ERROR);
+                Err(finding)
+            }
+        }
     }
 
     fn finish(
@@ -1236,11 +1226,7 @@ impl<'a> ExecCtx<'a> {
     fn exec_step(&mut self, step: &crate::Step) -> Result<(), Finding> {
         match step {
             crate::Step::TraceEvent { name, fields } => {
-                self.events.push(TraceEvent {
-                    time_ms: self.clock.now_ms(),
-                    name: name.clone(),
-                    fields: fields.clone(),
-                });
+                self.push_cloned_trace_event(self.clock.now_ms(), name, fields);
                 Ok(())
             }
 
@@ -3219,6 +3205,77 @@ mod tests {
         assert_eq!(replay_step_delay(), Duration::from_millis(7));
         unsafe {
             std::env::remove_var("FOZZY_REPLAY_STEP_DELAY_MS");
+        }
+    }
+
+    #[test]
+    fn run_and_replay_preserve_runtime_event_schema() {
+        let scenario = ScenarioV1Steps {
+            version: 1,
+            name: "demo".to_string(),
+            steps: vec![crate::Step::TraceEvent {
+                name: "user_event".to_string(),
+                fields: serde_json::Map::from_iter([(
+                    "flag".to_string(),
+                    serde_json::Value::Bool(true),
+                )]),
+            }],
+        };
+
+        let run = run_embedded_scenario_inner(
+            scenario.clone(),
+            PathBuf::from("demo.fozzy.json"),
+            7,
+            true,
+            None,
+            ProcBackend::Scripted,
+            FsBackend::Virtual,
+            HttpBackend::Scripted,
+            MemoryOptions::default(),
+        )
+        .expect("run should succeed");
+
+        assert_eq!(run.status, ExitStatus::Pass);
+        assert_eq!(run.events.len(), 4);
+        assert_eq!(run.events[0].name, EVENT_SCHED_PICK);
+        assert_eq!(run.events[1].name, EVENT_SPAN_START);
+        assert_eq!(run.events[2].name, "user_event");
+        assert_eq!(run.events[3].name, EVENT_SPAN_END);
+        assert_eq!(
+            run.events[0].fields.get(FIELD_STEP_KIND),
+            Some(&serde_json::Value::String("trace_event".to_string()))
+        );
+        assert_eq!(
+            run.events[2].fields.get("flag"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            run.events[3].fields.get(FIELD_STATUS),
+            Some(&serde_json::Value::String(STATUS_OK.to_string()))
+        );
+
+        let replay = run_scenario_replay_inner(
+            &Config::default(),
+            RunMode::Replay,
+            &scenario,
+            "demo.fozzy.json",
+            7,
+            Some(run.decisions.decisions.as_slice()),
+            None,
+            false,
+            ProcBackend::Scripted,
+            FsBackend::Virtual,
+            HttpBackend::Scripted,
+            MemoryOptions::default(),
+        )
+        .expect("replay should succeed");
+
+        assert_eq!(replay.status, ExitStatus::Pass);
+        assert_eq!(replay.events.len(), run.events.len());
+        for (replay_event, run_event) in replay.events.iter().zip(run.events.iter()) {
+            assert_eq!(replay_event.time_ms, run_event.time_ms);
+            assert_eq!(replay_event.name, run_event.name);
+            assert_eq!(replay_event.fields, run_event.fields);
         }
     }
 }

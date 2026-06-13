@@ -55,7 +55,7 @@ pub struct TraceFile {
     pub checksum: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TraceEvent {
     pub time_ms: u64,
     pub name: String,
@@ -275,11 +275,11 @@ impl TraceFile {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let checksum = trace_checksum(self)?;
-
         let pretty = std::env::var("FOZZY_TRACE_PRETTY")
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let payload = serialize_trace_payload(self, pretty)?;
+        let checksum = trace_checksum(self)?;
         // Atomic replace to avoid concurrent writer corruption on shared paths.
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let file_name = path
@@ -293,7 +293,7 @@ impl TraceFile {
         );
         let tmp_path = parent.join(tmp_name);
         let mut file = std::fs::File::create(&tmp_path)?;
-        write_trace_json(&mut file, self, Some(checksum.as_str()), pretty)?;
+        write_trace_payload_with_checksum(&mut file, &payload, checksum.as_str(), pretty)?;
         file.flush()?;
         drop(file);
         std::fs::rename(&tmp_path, path)?;
@@ -350,6 +350,41 @@ fn trace_checksum(trace: &TraceFile) -> FozzyResult<String> {
     let mut writer = Blake3Writer::default();
     write_trace_json(&mut writer, trace, None, false)?;
     Ok(writer.finalize())
+}
+
+fn serialize_trace_payload(trace: &TraceFile, pretty: bool) -> FozzyResult<Vec<u8>> {
+    let mut writer = Vec::new();
+    write_trace_json(&mut writer, trace, None, pretty)?;
+    Ok(writer)
+}
+
+fn write_trace_payload_with_checksum<W: Write>(
+    writer: &mut W,
+    payload: &[u8],
+    checksum: &str,
+    pretty: bool,
+) -> FozzyResult<()> {
+    if payload.last().copied() != Some(b'}') {
+        return Err(FozzyError::Trace(
+            "failed to serialize trace payload as a JSON object".to_string(),
+        ));
+    }
+    if pretty {
+        let mut object_body_len = payload.len() - 1;
+        if object_body_len > 0 && payload[object_body_len - 1] == b'\n' {
+            object_body_len -= 1;
+        }
+        writer.write_all(&payload[..object_body_len])?;
+        writer.write_all(b",\n  \"checksum\": \"")?;
+        writer.write_all(checksum.as_bytes())?;
+        writer.write_all(b"\"\n}")?;
+    } else {
+        writer.write_all(&payload[..payload.len() - 1])?;
+        writer.write_all(b",\"checksum\":\"")?;
+        writer.write_all(checksum.as_bytes())?;
+        writer.write_all(b"\"}")?;
+    }
+    Ok(())
 }
 
 #[derive(Default)]

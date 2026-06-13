@@ -8,9 +8,6 @@ pub fn compile_file_with_backend(
     backend_override: Option<&str>,
 ) -> Result<BuildArtifact> {
     let resolved = resolve_source_path(path)?;
-    let parsed = parse_program_shared(&resolved.source_path)?;
-    let experimental_diagnostics =
-        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let backend = resolve_native_backend(profile, backend_override)?;
     let pgo = configured_pgo();
     if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
@@ -19,6 +16,12 @@ pub fn compile_file_with_backend(
             backend
         );
     }
+    if let Some(cached) = cached_compile_file_artifact(&resolved, profile, &backend, &pgo) {
+        return Ok(cached);
+    }
+    let parsed = parse_program_shared(&resolved.source_path)?;
+    let experimental_diagnostics =
+        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
     let lowered = lower_fir_cached_shared(&parsed);
@@ -91,14 +94,24 @@ pub fn compile_file_with_backend(
     diagnostic_details.extend(gpu_backend_diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let output = if status == "ok" {
-        Some(emit_native_artifact(
+        let output = emit_native_artifact(
             &lowered.fir,
             &resolved.project_root,
             &resolved.artifact_stem,
             profile,
             resolved.manifest.as_ref(),
             Some(backend.as_str()),
-        )?)
+        )?;
+        write_successful_compile_file_cache(
+            &resolved,
+            &parsed,
+            &lowered.fir.name,
+            profile,
+            &backend,
+            &pgo,
+            &output,
+        )?;
+        Some(output)
     } else {
         None
     };
@@ -120,9 +133,6 @@ pub fn compile_library_with_backend(
     backend_override: Option<&str>,
 ) -> Result<LibraryArtifact> {
     let resolved = resolve_source_path_with_target(path, true)?;
-    let parsed = parse_program_shared(&resolved.source_path)?;
-    let experimental_diagnostics =
-        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let backend = resolve_native_backend(profile, backend_override)?;
     let pgo = configured_pgo();
     if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
@@ -131,6 +141,12 @@ pub fn compile_library_with_backend(
             backend
         );
     }
+    if let Some(cached) = cached_compile_library_artifact(&resolved, profile, &backend, &pgo) {
+        return Ok(cached);
+    }
+    let parsed = parse_program_shared(&resolved.source_path)?;
+    let experimental_diagnostics =
+        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
     let lowered = lower_fir_cached_shared(&parsed);
@@ -203,14 +219,25 @@ pub fn compile_library_with_backend(
     diagnostic_details.extend(gpu_backend_diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let (static_lib, shared_lib) = if status == "ok" {
-        emit_native_libraries(
+        let outputs = emit_native_libraries(
             &lowered.fir,
             &resolved.project_root,
             &resolved.artifact_stem,
             profile,
             resolved.manifest.as_ref(),
             Some(backend.as_str()),
-        )?
+        )?;
+        write_successful_compile_library_cache(
+            &resolved,
+            &parsed,
+            &lowered.fir.name,
+            profile,
+            &backend,
+            &pgo,
+            outputs.0.as_ref(),
+            outputs.1.as_ref(),
+        )?;
+        outputs
     } else {
         (None, None)
     };
@@ -225,6 +252,135 @@ pub fn compile_library_with_backend(
         shared_lib,
         dependency_graph_hash: resolved.dependency_graph_hash,
     })
+}
+
+fn cached_compile_file_artifact(
+    resolved: &ResolvedSource,
+    profile: BuildProfile,
+    backend: &str,
+    pgo: &PgoConfig,
+) -> Option<BuildArtifact> {
+    let build_dir = resolved.project_root.join(".fz").join("build");
+    let cache_path = successful_build_cache_path(&build_dir, &resolved.artifact_stem, "bin", backend);
+    let entry = read_successful_build_cache(&cache_path)?;
+    if !successful_build_cache_hit(&entry, resolved, profile, backend, pgo) {
+        return None;
+    }
+    let output = entry.output?;
+    if !output.exists() {
+        return None;
+    }
+    Some(BuildArtifact {
+        module: entry.module_name,
+        profile,
+        status: "ok",
+        diagnostics: 0,
+        diagnostic_details: Vec::new(),
+        output: Some(output),
+        dependency_graph_hash: resolved.dependency_graph_hash.clone(),
+    })
+}
+
+fn cached_compile_library_artifact(
+    resolved: &ResolvedSource,
+    profile: BuildProfile,
+    backend: &str,
+    pgo: &PgoConfig,
+) -> Option<LibraryArtifact> {
+    let build_dir = resolved.project_root.join(".fz").join("build");
+    let cache_path = successful_build_cache_path(&build_dir, &resolved.artifact_stem, "ffi", backend);
+    let entry = read_successful_build_cache(&cache_path)?;
+    if !successful_build_cache_hit(&entry, resolved, profile, backend, pgo) {
+        return None;
+    }
+    let static_lib = entry.static_lib.filter(|path| path.exists());
+    let shared_lib = entry.shared_lib.filter(|path| path.exists());
+    if static_lib.is_none() && shared_lib.is_none() {
+        return None;
+    }
+    Some(LibraryArtifact {
+        module: entry.module_name,
+        profile,
+        status: "ok",
+        diagnostics: 0,
+        diagnostic_details: Vec::new(),
+        static_lib,
+        shared_lib,
+        dependency_graph_hash: resolved.dependency_graph_hash.clone(),
+    })
+}
+
+fn parsed_program_source_stamps(parsed: &ParsedProgram) -> Vec<ModuleStamp> {
+    parsed
+        .cache_paths
+        .iter()
+        .filter_map(|path| module_stamp(path))
+        .collect()
+}
+
+fn write_successful_compile_file_cache(
+    resolved: &ResolvedSource,
+    parsed: &ParsedProgram,
+    module_name: &str,
+    profile: BuildProfile,
+    backend: &str,
+    pgo: &PgoConfig,
+    output: &Path,
+) -> Result<()> {
+    let build_dir = resolved.project_root.join(".fz").join("build");
+    std::fs::create_dir_all(&build_dir)
+        .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
+    let cache_path = successful_build_cache_path(&build_dir, &resolved.artifact_stem, "bin", backend);
+    write_successful_build_cache(
+        &cache_path,
+        &SuccessfulBuildCacheEntry {
+            schema_version: "fozzylang.buildcache.v1".to_string(),
+            source_path: resolved.source_path.clone(),
+            module_name: module_name.to_string(),
+            profile: profile.as_str().to_string(),
+            backend: backend.to_string(),
+            manifest_fingerprint: resolved.manifest_fingerprint.clone(),
+            dependency_graph_hash: resolved.dependency_graph_hash.clone(),
+            pgo_signature: pgo_signature(pgo),
+            source_stamps: parsed_program_source_stamps(parsed),
+            output: Some(output.to_path_buf()),
+            static_lib: None,
+            shared_lib: None,
+        },
+    )
+}
+
+fn write_successful_compile_library_cache(
+    resolved: &ResolvedSource,
+    parsed: &ParsedProgram,
+    module_name: &str,
+    profile: BuildProfile,
+    backend: &str,
+    pgo: &PgoConfig,
+    static_lib: Option<&PathBuf>,
+    shared_lib: Option<&PathBuf>,
+) -> Result<()> {
+    let build_dir = resolved.project_root.join(".fz").join("build");
+    std::fs::create_dir_all(&build_dir)
+        .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
+    let cache_path = successful_build_cache_path(&build_dir, &resolved.artifact_stem, "ffi", backend);
+    write_successful_build_cache(
+        &cache_path,
+        &SuccessfulBuildCacheEntry {
+            schema_version: "fozzylang.buildcache.v1".to_string(),
+            source_path: resolved.source_path.clone(),
+            module_name: module_name.to_string(),
+            profile: profile.as_str().to_string(),
+            backend: backend.to_string(),
+            manifest_fingerprint: resolved.manifest_fingerprint.clone(),
+            dependency_graph_hash: resolved.dependency_graph_hash.clone(),
+            pgo_signature: pgo_signature(pgo),
+            source_stamps: parsed_program_source_stamps(parsed),
+            output: None,
+            static_lib: static_lib.cloned(),
+            shared_lib: shared_lib.cloned(),
+        },
+    )
 }
 
 pub fn check_file(path: &Path) -> Result<Output> {
@@ -668,4 +824,3 @@ fn lower_fir_cached_shared_telemetry(parsed: &ParsedProgram) -> (SharedLoweredPr
 
 // Safety policy and artifact emission helpers live in `pipeline/policy_artifacts.rs`
 // to keep this driver file focused on orchestration, analysis, and lowering.
-

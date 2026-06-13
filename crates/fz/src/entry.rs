@@ -272,6 +272,10 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 output_format: parse_string_flag(args, "--format")?
                     .unwrap_or_else(|| "json".to_string()),
             }),
+            (Some("query"), Some("latest")) => Ok(Command::ReportQueryLatest {
+                jq: parse_string_flag(args, "--jq")?,
+                list_paths: has_flag(args, "--list-paths"),
+            }),
             _ => {
                 print_help();
                 bail!("unknown report subcommand")
@@ -528,6 +532,8 @@ commands:\n\
   perf [--artifact path]\n\
   artifacts ls latest\n\
   report show latest [--format json|text]\n\
+  report query latest --jq <expr>\n\
+  report query latest --list-paths\n\
   stability-dashboard\n\
   parity [path] [--seed N]\n\
   equivalence [path] [--seed N]\n\
@@ -823,6 +829,17 @@ mod tests {
             ])
             .expect("report latest should parse"),
             Command::ReportShowLatest { .. }
+        ));
+        assert!(matches!(
+            parse_command(&[
+                "report".to_string(),
+                "query".to_string(),
+                "latest".to_string(),
+                "--jq".to_string(),
+                "status".to_string()
+            ])
+            .expect("report query latest should parse"),
+            Command::ReportQueryLatest { .. }
         ));
     }
 

@@ -393,7 +393,19 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     let out_dir = out_root.join(".fz");
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed creating unsafe audit dir: {}", out_dir.display()))?;
-    let unsafe_map = if workspace {
+    let standalone_prefix = if !workspace && path.is_file() {
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("source");
+        Some(format!("unsafe-{stem}"))
+    } else {
+        None
+    };
+    let unsafe_map = if let Some(prefix) = &standalone_prefix {
+        out_dir.join(format!("{prefix}.map.json"))
+    } else if workspace {
         out_dir.join("unsafe-map.workspace.json")
     } else {
         out_dir.join("unsafe-map.json")
@@ -440,17 +452,23 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     });
     std::fs::write(&unsafe_map, serde_json::to_vec_pretty(&payload)?)
         .with_context(|| format!("failed writing unsafe map: {}", unsafe_map.display()))?;
-    let unsafe_docs_json = if workspace {
+    let unsafe_docs_json = if let Some(prefix) = &standalone_prefix {
+        out_dir.join(format!("{prefix}.docs.json"))
+    } else if workspace {
         out_dir.join("unsafe-docs.workspace.json")
     } else {
         out_dir.join("unsafe-docs.json")
     };
-    let unsafe_docs_md = if workspace {
+    let unsafe_docs_md = if let Some(prefix) = &standalone_prefix {
+        out_dir.join(format!("{prefix}.docs.md"))
+    } else if workspace {
         out_dir.join("unsafe-docs.workspace.md")
     } else {
         out_dir.join("unsafe-docs.md")
     };
-    let unsafe_docs_html = if workspace {
+    let unsafe_docs_html = if let Some(prefix) = &standalone_prefix {
+        out_dir.join(format!("{prefix}.docs.html"))
+    } else if workspace {
         out_dir.join("unsafe-docs.workspace.html")
     } else {
         out_dir.join("unsafe-docs.html")
@@ -1686,4 +1704,3 @@ fn collect_semantic_unsafe_entries_from_expr(
         _ => {}
     }
 }
-

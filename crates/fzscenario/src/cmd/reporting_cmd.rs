@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Config, FlakeBudget, FozzyError, FozzyResult, Reporter, RunBundleTraceMode, RunSummary,
-    explain_profile_bundle, load_profile_bundle_with_run_bundle, load_run_bundle, render_html,
-    render_junit_xml,
+    explain_profile_bundle, load_profile_bundle_if_ready_with_run_bundle, load_run_bundle,
+    render_html, render_junit_xml,
 };
 
 #[derive(Debug, Subcommand)]
@@ -60,12 +60,14 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
                 .summary
                 .clone()
                 .ok_or_else(|| missing_report_error(run, &bundle))?;
-            let doc = report_doc_with_profile(config, run, &summary, &bundle);
             match format {
-                Reporter::Json => Ok(doc),
+                Reporter::Json => Ok(report_doc(&summary)),
                 Reporter::Pretty => Ok(serde_json::to_value(ReportEnvelope {
                     format: *format,
-                    content: render_pretty_with_profile(&summary, &doc),
+                    content: render_pretty_with_profile(
+                        &summary,
+                        &report_doc_with_cached_profile(config, run, &summary, &bundle),
+                    ),
                 })?),
                 Reporter::Junit => Ok(serde_json::to_value(ReportEnvelope {
                     format: *format,
@@ -88,7 +90,7 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
                 .summary
                 .clone()
                 .ok_or_else(|| missing_report_error(run, &bundle))?;
-            let value = report_doc_with_profile(config, run, &summary, &bundle);
+            let value = report_doc_for_query(config, run, jq.as_deref(), &summary, &bundle);
             if *list_paths {
                 return Ok(serde_json::json!({
                     "paths": list_query_paths(&value)
@@ -112,8 +114,8 @@ fn report_doc_with_profile(
     summary: &RunSummary,
     bundle: &crate::RunBundle,
 ) -> serde_json::Value {
-    let mut value = serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}));
-    let explain = load_profile_bundle_with_run_bundle(
+    let mut value = report_doc(summary);
+    let explain = load_profile_bundle_if_ready_with_run_bundle(
         config,
         run,
         crate::ProfileLoadSpec {
@@ -123,6 +125,7 @@ fn report_doc_with_profile(
         Some(bundle),
     )
     .ok()
+    .flatten()
     .and_then(|profile| explain_profile_bundle(run, &profile));
     if let Some(obj) = value.as_object_mut()
         && let Some(explain) = explain
@@ -133,6 +136,42 @@ fn report_doc_with_profile(
         );
     }
     value
+}
+
+fn report_doc(summary: &RunSummary) -> serde_json::Value {
+    serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn report_doc_with_cached_profile(
+    config: &Config,
+    run: &str,
+    summary: &RunSummary,
+    bundle: &crate::RunBundle,
+) -> serde_json::Value {
+    report_doc_with_profile(config, run, summary, bundle)
+}
+
+fn report_doc_for_query(
+    config: &Config,
+    run: &str,
+    jq: Option<&str>,
+    summary: &RunSummary,
+    bundle: &crate::RunBundle,
+) -> serde_json::Value {
+    if jq.is_some_and(query_needs_profile_diagnosis) {
+        return report_doc_with_cached_profile(config, run, summary, bundle);
+    }
+    report_doc(summary)
+}
+
+fn query_needs_profile_diagnosis(expr: &str) -> bool {
+    normalize_query_expr(expr)
+        .map(|normalized| {
+            normalized == ".profileDiagnosis"
+                || normalized.starts_with(".profileDiagnosis.")
+                || normalized.starts_with(".profileDiagnosis[")
+        })
+        .unwrap_or(false)
 }
 
 fn missing_report_error(run: &str, bundle: &crate::RunBundle) -> FozzyError {
@@ -513,7 +552,7 @@ fn parse_expr(expr: &str) -> FozzyResult<Vec<QueryToken>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ExitStatus, Finding, FindingKind, RunIdentity, RunMode};
+    use crate::{ExitStatus, Finding, FindingKind, RunIdentity, RunManifest, RunMode};
     use uuid::Uuid;
 
     fn write_summary(base: &std::path::Path, run_id: &str, status: ExitStatus) -> String {
@@ -552,6 +591,26 @@ mod tests {
         )
         .expect("write");
         run_id.to_string()
+    }
+
+    fn test_config(root: &std::path::Path) -> crate::Config {
+        crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        }
     }
 
     #[test]
@@ -625,23 +684,7 @@ mod tests {
         std::fs::create_dir_all(&runs).expect("mkdir");
         let a = write_summary(&runs, "r1", ExitStatus::Pass);
         let b = write_summary(&runs, "r2", ExitStatus::Fail);
-        let cfg = crate::Config {
-            base_dir: root.join(".fozzy"),
-            reporter: Reporter::Json,
-            proc_backend: crate::ProcBackend::Scripted,
-            fs_backend: crate::FsBackend::Virtual,
-            http_backend: crate::HttpBackend::Scripted,
-            mem_track: false,
-            mem_limit_mb: None,
-            mem_fail_after: None,
-            fail_on_leak: false,
-            leak_budget: None,
-            mem_artifacts: false,
-            profile_heap_alloc_budget: None,
-            profile_heap_in_use_budget: None,
-            mem_fragmentation_seed: None,
-            mem_pressure_wave: None,
-        };
+        let cfg = test_config(&root);
 
         let out = flaky_command(
             &cfg,
@@ -668,26 +711,141 @@ mod tests {
         std::fs::create_dir_all(&runs).expect("mkdir");
         let a = write_summary(&runs, "r1", ExitStatus::Pass);
         let b = write_summary(&runs, "r2", ExitStatus::Fail);
-        let cfg = crate::Config {
-            base_dir: root.join(".fozzy"),
-            reporter: Reporter::Json,
-            proc_backend: crate::ProcBackend::Scripted,
-            fs_backend: crate::FsBackend::Virtual,
-            http_backend: crate::HttpBackend::Scripted,
-            mem_track: false,
-            mem_limit_mb: None,
-            mem_fail_after: None,
-            fail_on_leak: false,
-            leak_budget: None,
-            mem_artifacts: false,
-            profile_heap_alloc_budget: None,
-            profile_heap_in_use_budget: None,
-            mem_fragmentation_seed: None,
-            mem_pressure_wave: None,
-        };
+        let cfg = test_config(&root);
 
         let err =
             flaky_command(&cfg, &[a.clone(), a, b], None).expect_err("must reject duplicates");
         assert!(err.to_string().contains("duplicate run reference"));
+    }
+
+    #[test]
+    fn report_show_json_skips_profile_diagnosis_when_not_requested() {
+        let root = std::env::temp_dir().join(format!("fozzy-report-json-{}", Uuid::new_v4()));
+        let runs = root.join(".fozzy").join("runs");
+        std::fs::create_dir_all(&runs).expect("mkdir");
+        let run = write_summary(&runs, "r1", ExitStatus::Pass);
+        let cfg = test_config(&root);
+
+        let out = report_command(
+            &cfg,
+            &ReportCommand::Show {
+                run,
+                format: Reporter::Json,
+            },
+        )
+        .expect("report");
+
+        assert!(out.get("status").is_some());
+        assert!(out.get("profileDiagnosis").is_none());
+    }
+
+    #[test]
+    fn report_query_only_loads_profile_on_profile_paths() {
+        let root = std::env::temp_dir().join(format!("fozzy-report-query-{}", Uuid::new_v4()));
+        let runs = root.join(".fozzy").join("runs");
+        std::fs::create_dir_all(&runs).expect("mkdir");
+        let run = write_summary(&runs, "r1", ExitStatus::Pass);
+        let cfg = test_config(&root);
+
+        let status = report_command(
+            &cfg,
+            &ReportCommand::Query {
+                run: run.clone(),
+                jq: Some("status".to_string()),
+                list_paths: false,
+            },
+        )
+        .expect("status query");
+        assert_eq!(status, serde_json::json!("pass"));
+
+        let err = report_command(
+            &cfg,
+            &ReportCommand::Query {
+                run,
+                jq: Some("profileDiagnosis".to_string()),
+                list_paths: false,
+            },
+        )
+        .expect_err("profile diagnosis should stay absent without ready artifacts");
+        assert!(err.to_string().contains("query matched no values"));
+    }
+
+    #[test]
+    fn report_show_json_uses_manifest_inline_summary_when_report_is_absent() {
+        let root = std::env::temp_dir().join(format!("fozzy-report-manifest-{}", Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let summary = RunSummary {
+            status: ExitStatus::Pass,
+            mode: RunMode::Run,
+            identity: RunIdentity {
+                run_id: "r1".to_string(),
+                seed: 7,
+                trace_path: None,
+                report_path: None,
+                artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+            },
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:01Z".to_string(),
+            duration_ms: 1,
+            duration_ns: 1_000_000,
+            tests: None,
+            memory: None,
+            findings: vec![Finding {
+                kind: FindingKind::Assertion,
+                title: "boom".to_string(),
+                message: "x".to_string(),
+                location: None,
+            }],
+        };
+        let manifest = RunManifest {
+            schema_version: "fozzy.run_manifest.v1".to_string(),
+            run_id: "r1".to_string(),
+            mode: RunMode::Run,
+            status: ExitStatus::Pass,
+            seed: 7,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:01Z".to_string(),
+            duration_ms: 1,
+            duration_ns: 1_000_000,
+            trace_path: None,
+            report_path: None,
+            artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+            findings_count: 1,
+            tests_passed: None,
+            tests_failed: None,
+            tests_skipped: None,
+            memory_leaked_bytes: None,
+            memory_leaked_allocs: None,
+            memory_peak_bytes: None,
+            summary: Some(summary),
+            profile_capabilities: Vec::new(),
+            profile_artifacts: std::collections::BTreeMap::new(),
+            profile_schema_versions: std::collections::BTreeMap::new(),
+        };
+        std::fs::write(
+            run_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+        )
+        .expect("manifest write");
+        let cfg = test_config(&root);
+
+        let out = report_command(
+            &cfg,
+            &ReportCommand::Show {
+                run: "r1".to_string(),
+                format: Reporter::Json,
+            },
+        )
+        .expect("report");
+
+        assert_eq!(
+            out.get("identity").and_then(|v| v.get("runId")),
+            Some(&serde_json::json!("r1"))
+        );
+        assert_eq!(
+            out.get("findings").and_then(|v| v.as_array()).map(Vec::len),
+            Some(1)
+        );
     }
 }

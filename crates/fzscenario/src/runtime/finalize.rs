@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::{fs::File, io::BufWriter};
 
 use uuid::Uuid;
 
@@ -8,6 +9,16 @@ use crate::{
     RunIdentity, RunMode, RunSummary, TestCounts, TraceEvent, TraceFile, trace_replay_contract,
     wall_time_iso_utc,
 };
+
+fn write_json_file(path: &Path, value: &(impl serde::Serialize + ?Sized)) -> FozzyResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer(writer, value)?;
+    Ok(())
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_run_summary(
@@ -139,7 +150,7 @@ pub(crate) fn write_summary_report(
     report_path: &Path,
     artifacts_dir: &Path,
 ) -> FozzyResult<()> {
-    std::fs::write(report_path, serde_json::to_vec(summary)?)?;
+    write_json_file(report_path, summary)?;
     crate::write_run_manifest(summary, artifacts_dir)?;
     Ok(())
 }
@@ -168,10 +179,7 @@ pub(crate) fn write_event_artifacts(
     events: &[TraceEvent],
     artifacts_dir: &Path,
 ) -> FozzyResult<()> {
-    std::fs::write(
-        artifacts_dir.join("events.json"),
-        serde_json::to_vec(events)?,
-    )?;
+    write_json_file(&artifacts_dir.join("events.json"), events)?;
     crate::write_timeline(events, &artifacts_dir.join("timeline.json"))?;
     Ok(())
 }

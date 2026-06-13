@@ -58,45 +58,43 @@ impl HttpResponse {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(format!("HTTP/1.1 {} {}\r\n", self.status, self.reason).as_bytes());
+        let mut out = Vec::with_capacity(http_response_capacity_hint(self));
+        let _ = write!(out, "HTTP/1.1 {} {}\r\n", self.status, self.reason);
         let mut has_connection = false;
         let mut has_len = false;
         let mut has_chunked = false;
         for (k, v) in &self.headers {
-            let lower = k.to_ascii_lowercase();
-            if lower == "connection" {
+            if ascii_eq_ignore_case(k, "connection") {
                 has_connection = true;
-            } else if lower == "content-length" {
+            } else if ascii_eq_ignore_case(k, "content-length") {
                 has_len = true;
-            } else if lower == "transfer-encoding" {
+            } else if ascii_eq_ignore_case(k, "transfer-encoding") {
                 has_chunked = true;
             }
-            out.extend_from_slice(format!("{}: {}\r\n", k, v).as_bytes());
+            out.extend_from_slice(k.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(v.as_bytes());
+            out.extend_from_slice(b"\r\n");
         }
         if !has_connection {
-            out.extend_from_slice(
-                format!(
-                    "Connection: {}\r\n",
-                    if self.keep_alive {
-                        "keep-alive"
-                    } else {
-                        "close"
-                    }
-                )
-                .as_bytes(),
-            );
+            out.extend_from_slice(b"Connection: ");
+            out.extend_from_slice(if self.keep_alive {
+                b"keep-alive"
+            } else {
+                b"close"
+            });
+            out.extend_from_slice(b"\r\n");
         }
         if self.chunked {
             if !has_chunked {
                 out.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
             }
         } else if !has_len {
-            out.extend_from_slice(format!("Content-Length: {}\r\n", self.body.len()).as_bytes());
+            let _ = write!(out, "Content-Length: {}\r\n", self.body.len());
         }
         out.extend_from_slice(b"\r\n");
         if self.chunked {
-            out.extend_from_slice(encode_chunked(&self.body).as_slice());
+            append_chunked(&mut out, &self.body);
         } else {
             out.extend_from_slice(&self.body);
         }
@@ -136,66 +134,10 @@ impl Default for HttpServeOptions {
 }
 
 pub fn parse_http_request(raw: &[u8], limits: &HttpServerLimits) -> Result<HttpRequest, NetError> {
-    let headers_end = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| NetError::Parse("missing header terminator".to_string()))?;
-    if headers_end > limits.max_header_bytes {
-        return Err(NetError::LimitsExceeded(
-            "header limit exceeded".to_string(),
-        ));
+    match parse_http_request_frame(raw, limits)? {
+        HttpRequestFrame::Complete { request } => Ok(request),
+        HttpRequestFrame::Incomplete => Err(NetError::Parse("incomplete request body".to_string())),
     }
-
-    let head = String::from_utf8(raw[..headers_end].to_vec())
-        .map_err(|_| NetError::Parse("header bytes are not valid utf8".to_string()))?;
-    let mut lines = head.lines();
-    let request_line = lines
-        .next()
-        .ok_or_else(|| NetError::Parse("missing request line".to_string()))?;
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-    if parts.len() != 3 {
-        return Err(NetError::Parse("invalid request line".to_string()));
-    }
-
-    let mut headers = BTreeMap::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.trim().to_string(), value.trim().to_string());
-        }
-    }
-
-    let mut body = raw[(headers_end + 4)..].to_vec();
-    if headers
-        .get("Transfer-Encoding")
-        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
-    {
-        body = decode_chunked(&body)?;
-    } else if let Some(content_length) = headers
-        .get("Content-Length")
-        .and_then(|value| value.parse::<usize>().ok())
-    {
-        if body.len() < content_length {
-            return Err(NetError::Parse("incomplete request body".to_string()));
-        }
-        body.truncate(content_length);
-    }
-    if body.len() > limits.max_body_bytes {
-        return Err(NetError::LimitsExceeded("body limit exceeded".to_string()));
-    }
-
-    let connection = headers
-        .get("Connection")
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_else(|| "keep-alive".to_string());
-
-    Ok(HttpRequest {
-        method: parts[0].to_string(),
-        path: parts[1].to_string(),
-        version: parts[2].to_string(),
-        headers,
-        body,
-        keep_alive: connection != "close",
-    })
 }
 
 pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
@@ -356,8 +298,9 @@ pub fn serve_http_connection_with_options<B: NetBackend, R: HttpRouter>(
             }
             read_stalls = 0;
             raw.extend_from_slice(&chunk);
-            if is_http_request_complete(&raw, limits)? {
-                break parse_http_request(&raw, limits)?;
+            match parse_http_request_frame(&raw, limits)? {
+                HttpRequestFrame::Incomplete => continue,
+                HttpRequestFrame::Complete { request } => break request,
             }
         };
 
@@ -407,43 +350,6 @@ pub fn serve_http_connection_with_options<B: NetBackend, R: HttpRouter>(
     Ok(total_wrote)
 }
 
-fn is_http_request_complete(raw: &[u8], limits: &HttpServerLimits) -> Result<bool, NetError> {
-    let Some(headers_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return Ok(false);
-    };
-    if headers_end > limits.max_header_bytes {
-        return Err(NetError::LimitsExceeded(
-            "header limit exceeded".to_string(),
-        ));
-    }
-    let head = String::from_utf8_lossy(&raw[..headers_end]);
-    let mut content_length = None::<usize>;
-    let mut chunked = false;
-    for line in head.lines().skip(1) {
-        if let Some((name, value)) = line.split_once(':') {
-            let name = name.trim().to_ascii_lowercase();
-            let value = value.trim();
-            if name == "content-length" {
-                content_length = value.parse::<usize>().ok();
-            } else if name == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked")
-            {
-                chunked = true;
-            }
-        }
-    }
-    let body = &raw[(headers_end + 4)..];
-    if chunked {
-        Ok(body.windows(5).any(|w| w == b"0\r\n\r\n"))
-    } else if let Some(len) = content_length {
-        if len > limits.max_body_bytes {
-            return Err(NetError::LimitsExceeded("body limit exceeded".to_string()));
-        }
-        Ok(body.len() >= len)
-    } else {
-        Ok(true)
-    }
-}
-
 fn decode_chunked(raw: &[u8]) -> Result<Vec<u8>, NetError> {
     let mut index = 0usize;
     let mut out = Vec::new();
@@ -475,23 +381,169 @@ fn decode_chunked(raw: &[u8]) -> Result<Vec<u8>, NetError> {
     Ok(out)
 }
 
-fn encode_chunked(raw: &[u8]) -> Vec<u8> {
-    if raw.is_empty() {
-        return b"0\r\n\r\n".to_vec();
+enum HttpRequestFrame {
+    Incomplete,
+    Complete { request: HttpRequest },
+}
+
+fn parse_http_request_frame(
+    raw: &[u8],
+    limits: &HttpServerLimits,
+) -> Result<HttpRequestFrame, NetError> {
+    let Some(headers_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+        if raw.len() > limits.max_header_bytes {
+            return Err(NetError::LimitsExceeded(
+                "header limit exceeded".to_string(),
+            ));
+        }
+        return Ok(HttpRequestFrame::Incomplete);
+    };
+    if headers_end > limits.max_header_bytes {
+        return Err(NetError::LimitsExceeded(
+            "header limit exceeded".to_string(),
+        ));
     }
-    let mut out = Vec::new();
+
+    let head = std::str::from_utf8(&raw[..headers_end])
+        .map_err(|_| NetError::Parse("header bytes are not valid utf8".to_string()))?;
+    let mut lines = head.split("\r\n");
+    let request_line = lines
+        .next()
+        .ok_or_else(|| NetError::Parse("missing request line".to_string()))?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| NetError::Parse("invalid request line".to_string()))?;
+    let path = parts
+        .next()
+        .ok_or_else(|| NetError::Parse("invalid request line".to_string()))?;
+    let version = parts
+        .next()
+        .ok_or_else(|| NetError::Parse("invalid request line".to_string()))?;
+    if parts.next().is_some() {
+        return Err(NetError::Parse("invalid request line".to_string()));
+    }
+
+    let mut headers = BTreeMap::new();
+    let mut content_length = None::<usize>;
+    let mut chunked = false;
+    let mut keep_alive = true;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if ascii_eq_ignore_case(name, "content-length") {
+            content_length = value.parse::<usize>().ok();
+        } else if ascii_eq_ignore_case(name, "transfer-encoding") {
+            chunked = value
+                .split(',')
+                .any(|segment| segment.trim().eq_ignore_ascii_case("chunked"));
+        } else if ascii_eq_ignore_case(name, "connection") {
+            keep_alive = !value.eq_ignore_ascii_case("close");
+        }
+        headers.insert(name.to_string(), value.to_string());
+    }
+
+    let body_slice = &raw[(headers_end + 4)..];
+    let body = if chunked {
+        let Some(payload_len) = chunked_payload_len(body_slice) else {
+            return Ok(HttpRequestFrame::Incomplete);
+        };
+        decode_chunked(&body_slice[..payload_len])?
+    } else if let Some(content_length) = content_length {
+        if content_length > limits.max_body_bytes {
+            return Err(NetError::LimitsExceeded("body limit exceeded".to_string()));
+        }
+        if body_slice.len() < content_length {
+            return Ok(HttpRequestFrame::Incomplete);
+        }
+        body_slice[..content_length].to_vec()
+    } else {
+        Vec::new()
+    };
+    if body.len() > limits.max_body_bytes {
+        return Err(NetError::LimitsExceeded("body limit exceeded".to_string()));
+    }
+
+    Ok(HttpRequestFrame::Complete {
+        request: HttpRequest {
+            method: method.to_string(),
+            path: path.to_string(),
+            version: version.to_string(),
+            headers,
+            body,
+            keep_alive,
+        },
+    })
+}
+
+fn chunked_payload_len(raw: &[u8]) -> Option<usize> {
+    let mut index = 0usize;
+    while index < raw.len() {
+        let line_end = raw[index..]
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .map(|offset| index + offset)?;
+        let size_str = std::str::from_utf8(&raw[index..line_end]).ok()?;
+        let size = usize::from_str_radix(size_str.trim().split(';').next()?, 16).ok()?;
+        index = line_end + 2;
+        if size == 0 {
+            if raw.get(index..index + 2)? != b"\r\n" {
+                return None;
+            }
+            return Some(index + 2);
+        }
+        let chunk_end = index.checked_add(size)?;
+        if chunk_end + 2 > raw.len() {
+            return None;
+        }
+        if &raw[chunk_end..chunk_end + 2] != b"\r\n" {
+            return None;
+        }
+        index = chunk_end + 2;
+    }
+    None
+}
+
+fn append_chunked(out: &mut Vec<u8>, raw: &[u8]) {
+    if raw.is_empty() {
+        out.extend_from_slice(b"0\r\n\r\n");
+        return;
+    }
     let mut index = 0usize;
     const CHUNK: usize = 16 * 1024;
     while index < raw.len() {
         let end = (index + CHUNK).min(raw.len());
         let chunk = &raw[index..end];
-        out.extend_from_slice(format!("{:X}\r\n", chunk.len()).as_bytes());
+        let _ = write!(out, "{:X}\r\n", chunk.len());
         out.extend_from_slice(chunk);
         out.extend_from_slice(b"\r\n");
         index = end;
     }
     out.extend_from_slice(b"0\r\n\r\n");
-    out
+}
+
+fn http_response_capacity_hint(response: &HttpResponse) -> usize {
+    let header_bytes = response
+        .headers
+        .iter()
+        .map(|(k, v)| k.len() + v.len() + 4)
+        .sum::<usize>();
+    let body_bytes = if response.chunked {
+        response.body.len() + ((response.body.len() / (16 * 1024)) + 2) * 12
+    } else {
+        response.body.len()
+    };
+    64 + header_bytes + body_bytes
+}
+
+fn ascii_eq_ignore_case(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

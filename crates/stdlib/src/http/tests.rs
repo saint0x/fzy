@@ -106,6 +106,28 @@ fn parse_http_request_parses_chunked_request_and_expect_continue() {
 }
 
 #[test]
+fn http_response_to_bytes_respects_existing_connection_and_length_headers() {
+    let response = HttpResponse {
+        status: 200,
+        reason: "OK".to_string(),
+        headers: [
+            ("cOnNection".to_string(), "close".to_string()),
+            ("Content-Length".to_string(), "4".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        body: b"pong".to_vec(),
+        keep_alive: true,
+        chunked: false,
+    };
+
+    let encoded = String::from_utf8(response.to_bytes()).expect("response should be utf8-safe");
+    assert_eq!(encoded.matches("Connection:").count(), 0);
+    assert_eq!(encoded.matches("cOnNection: close").count(), 1);
+    assert_eq!(encoded.matches("Content-Length: 4").count(), 1);
+}
+
+#[test]
 fn http_serve_once_routes_request() {
     let mut backend = DeterministicNet::with_scripted_accepts(1);
     let listener = backend.bind("127.0.0.1:9191").expect("bind should work");
@@ -154,6 +176,41 @@ fn http_serve_persistent_once_handles_multiple_requests() {
         .decisions()
         .iter()
         .any(|d| matches!(d, NetDecision::Close { socket } if *socket == connection)));
+}
+
+#[test]
+fn http_serve_connection_waits_for_complete_body_without_double_parsing() {
+    let mut backend = DeterministicNet::with_scripted_accepts(1);
+    let listener = backend.bind("127.0.0.1:9494").expect("bind should work");
+    backend.listen(listener, 64).expect("listen should work");
+    let connection = backend
+        .accept(listener)
+        .expect("accept call should work")
+        .expect("scripted connection should exist");
+    backend.push_read_chunk(
+        connection,
+        b"POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhe".to_vec(),
+    );
+    backend.push_read_chunk(connection, b"llo".to_vec());
+
+    struct BodyRouter;
+    impl HttpRouter for BodyRouter {
+        fn route(&self, req: &super::HttpRequest) -> HttpResponse {
+            assert_eq!(req.body, b"hello");
+            HttpResponse::ok(req.body.clone())
+        }
+    }
+
+    let bytes = super::serve_http_connection(
+        &mut backend,
+        connection,
+        &BodyRouter,
+        &HttpServerLimits::default(),
+        super::HttpConnectionMode::OneOff,
+    )
+    .expect("connection serve should work");
+
+    assert!(bytes > 0);
 }
 
 #[test]

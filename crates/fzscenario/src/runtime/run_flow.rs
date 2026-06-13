@@ -91,14 +91,28 @@ pub fn run_scenario(
         memory.as_ref().map(|m| m.summary.clone()),
         findings,
     );
+    let mut retained_decisions = Some(decisions.decisions);
+    let mut retained_events = Some(events);
     let mut trace = if should_record || emit_profile || heap_policy_enabled(config) {
-        let replay_contract = trace_replay_contract(seed, &decisions.decisions, &events);
+        let replay_contract = trace_replay_contract(
+            seed,
+            retained_decisions
+                .as_deref()
+                .expect("decisions present before trace assembly"),
+            retained_events
+                .as_deref()
+                .expect("events present before trace assembly"),
+        );
         let mut trace = TraceFile::new_with_contract(
             RunMode::Run,
             Some(scenario_path_string),
             Some(scenario_embedded),
-            decisions.decisions,
-            events.clone(),
+            retained_decisions
+                .take()
+                .expect("decisions moved into trace once"),
+            retained_events
+                .take()
+                .expect("events moved into trace once"),
             replay_contract,
             report_summary.clone(),
         );
@@ -115,7 +129,12 @@ pub fn run_scenario(
         }
     }
     if emit_heavy {
-        write_event_artifacts(&events, &artifacts_dir)?;
+        let events = trace
+            .as_ref()
+            .map(|trace| trace.events.as_slice())
+            .or_else(|| retained_events.as_deref())
+            .expect("heavy artifact emission requires events");
+        write_event_artifacts(events, &artifacts_dir)?;
         if let Some(mem) = memory.as_ref()
             && opt.memory.artifacts
         {
@@ -272,14 +291,28 @@ pub fn replay_loaded_trace(
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
     let emit_profile =
         crate::should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture);
+    let mut retained_decisions = Some(decisions.decisions);
+    let mut retained_events = Some(events);
     let mut profile_trace = if emit_profile || heap_policy_enabled(config) {
-        let replay_contract = trace_replay_contract(seed, &decisions.decisions, &events);
+        let replay_contract = trace_replay_contract(
+            seed,
+            retained_decisions
+                .as_deref()
+                .expect("decisions present before trace assembly"),
+            retained_events
+                .as_deref()
+                .expect("events present before trace assembly"),
+        );
         let mut profile_trace = TraceFile::new_with_contract(
             RunMode::Replay,
             Some(scenario_path.clone()),
             Some(scenario.clone()),
-            decisions.decisions,
-            events.clone(),
+            retained_decisions
+                .take()
+                .expect("decisions moved into trace once"),
+            retained_events
+                .take()
+                .expect("events moved into trace once"),
             replay_contract,
             summary.clone(),
         );
@@ -298,7 +331,12 @@ pub fn replay_loaded_trace(
 
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if emit_heavy {
-        write_event_artifacts(&events, &artifacts_dir)?;
+        let events = profile_trace
+            .as_ref()
+            .map(|trace| trace.events.as_slice())
+            .or_else(|| retained_events.as_deref())
+            .expect("heavy artifact emission requires events");
+        write_event_artifacts(events, &artifacts_dir)?;
         if let Some(mem) = memory.as_ref()
             && mem.options.artifacts
         {

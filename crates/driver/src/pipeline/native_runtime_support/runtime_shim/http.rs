@@ -379,32 +379,35 @@ int32_t fz_native_json_from_list(int32_t list_handle) {
     pthread_mutex_unlock(&fz_list_lock);
     return fz_intern_slice("[]", 2);
   }
-  size_t total = 3;
-  for (int i = 0; i < list->count; i++) {
-    const char* raw = list->items[i];
-    total += strlen(raw == NULL || raw[0] == '\0' ? "null" : raw) + 1;
-  }
-  char* out = (char*)malloc(total);
-  if (out == NULL) {
+  fz_bytes_buf out;
+  fz_bytes_buf_init(&out);
+  if (fz_bytes_buf_append(&out, "[", 1) != 0) {
     pthread_mutex_unlock(&fz_list_lock);
     return 0;
   }
-  size_t used = 0;
-  out[used++] = '[';
   for (int i = 0; i < list->count; i++) {
-    if (i > 0) out[used++] = ',';
+    if (i > 0 && fz_bytes_buf_append(&out, ",", 1) != 0) {
+      fz_bytes_buf_free(&out);
+      pthread_mutex_unlock(&fz_list_lock);
+      return 0;
+    }
     const char* raw = list->items[i];
     if (raw == NULL || raw[0] == '\0') {
       raw = "null";
     }
-    size_t n = strlen(raw);
-    memcpy(out + used, raw, n);
-    used += n;
+    if (fz_bytes_buf_append(&out, raw, strlen(raw)) != 0) {
+      fz_bytes_buf_free(&out);
+      pthread_mutex_unlock(&fz_list_lock);
+      return 0;
+    }
   }
-  out[used++] = ']';
-  out[used] = '\0';
+  if (fz_bytes_buf_append(&out, "]", 1) != 0) {
+    fz_bytes_buf_free(&out);
+    pthread_mutex_unlock(&fz_list_lock);
+    return 0;
+  }
   pthread_mutex_unlock(&fz_list_lock);
-  return fz_intern_owned(out);
+  return fz_intern_owned(out.data);
 }
 
 int32_t fz_native_json_from_map(int32_t map_handle) {
@@ -414,53 +417,42 @@ int32_t fz_native_json_from_map(int32_t map_handle) {
     pthread_mutex_unlock(&fz_map_lock);
     return fz_intern_slice("{}", 2);
   }
-  size_t total = 3;
-  for (int i = 0; i < map->count; i++) {
-    char* k = fz_json_escape_owned(map->keys[i] == NULL ? "" : map->keys[i]);
-    const char* raw = map->values[i];
-    if (k != NULL) {
-      total += strlen(k) + strlen(raw == NULL || raw[0] == '\0' ? "null" : raw) + 5;
-    }
-    free(k);
-  }
-  char* out = (char*)malloc(total);
-  if (out == NULL) {
+  fz_bytes_buf out;
+  fz_bytes_buf_init(&out);
+  if (fz_bytes_buf_append(&out, "{", 1) != 0) {
     pthread_mutex_unlock(&fz_map_lock);
     return 0;
   }
-  size_t used = 0;
-  out[used++] = '{';
   for (int i = 0; i < map->count; i++) {
-    if (i > 0) out[used++] = ',';
-    char* k = fz_json_escape_owned(map->keys[i] == NULL ? "" : map->keys[i]);
-    if (k == NULL) {
-      free(k);
-      out[used++] = '\"';
-      out[used++] = '\"';
-      out[used++] = ':';
-      memcpy(out + used, "null", 4);
-      used += 4;
-      continue;
+    if (i > 0 && fz_bytes_buf_append(&out, ",", 1) != 0) {
+      fz_bytes_buf_free(&out);
+      pthread_mutex_unlock(&fz_map_lock);
+      return 0;
     }
-    out[used++] = '\"';
-    size_t kn = strlen(k);
-    memcpy(out + used, k, kn);
-    used += kn;
-    out[used++] = '\"';
-    out[used++] = ':';
+    if (fz_bytes_buf_append(&out, "\"", 1) != 0
+        || fz_bytes_buf_append_json_escaped(&out, map->keys[i] == NULL ? "" : map->keys[i]) != 0
+        || fz_bytes_buf_append(&out, "\":", 2) != 0) {
+      fz_bytes_buf_free(&out);
+      pthread_mutex_unlock(&fz_map_lock);
+      return 0;
+    }
     const char* raw = map->values[i];
     if (raw == NULL || raw[0] == '\0') {
       raw = "null";
     }
-    size_t vn = strlen(raw);
-    memcpy(out + used, raw, vn);
-    used += vn;
-    free(k);
+    if (fz_bytes_buf_append(&out, raw, strlen(raw)) != 0) {
+      fz_bytes_buf_free(&out);
+      pthread_mutex_unlock(&fz_map_lock);
+      return 0;
+    }
   }
-  out[used++] = '}';
-  out[used] = '\0';
+  if (fz_bytes_buf_append(&out, "}", 1) != 0) {
+    fz_bytes_buf_free(&out);
+    pthread_mutex_unlock(&fz_map_lock);
+    return 0;
+  }
   pthread_mutex_unlock(&fz_map_lock);
-  return fz_intern_owned(out);
+  return fz_intern_owned(out.data);
 }
 
 int32_t fz_native_json_to_list(int32_t json_id) {
@@ -1680,13 +1672,16 @@ int32_t fz_native_error_context(int32_t ctx_id) {
   if (msg == NULL) {
     msg = "";
   }
-  size_t n = strlen(msg) + strlen(ctx) + 4;
-  char* out = (char*)malloc(n);
-  if (out == NULL) {
+  if (msg[0] == '\0') {
+    fz_last_error_message_id = ctx_id;
+    return 0;
+  }
+  const char* parts[3] = {msg, ": ", ctx};
+  int32_t joined = fz_native_str_concat_parts(parts, 3);
+  if (joined == 0) {
     return -1;
   }
-  snprintf(out, n, "%s: %s", msg, ctx);
-  fz_last_error_message_id = fz_intern_owned(out);
+  fz_last_error_message_id = joined;
   return 0;
 }
 

@@ -742,6 +742,19 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             .map_err(scenario_error)?;
             render_report_show_output(format, reporter, output)
         }
+        Command::ReportQueryLatest { jq, list_paths } => {
+            let config = scenario_config()?;
+            let output = fzscenario::report_command(
+                &config,
+                &fzscenario::ReportCommand::Query {
+                    run: "latest".to_string(),
+                    jq,
+                    list_paths,
+                },
+            )
+            .map_err(scenario_error)?;
+            render_value_output(format, &output)
+        }
         Command::StabilityDashboard => stability_dashboard_command(format),
         Command::Parity { path, seed } => parity_command(&path, seed.unwrap_or(1), format),
         Command::Equivalence { path, seed } => {
@@ -1252,4 +1265,3 @@ struct NativeRunOutcome {
     stdout: String,
     stderr: String,
 }
-

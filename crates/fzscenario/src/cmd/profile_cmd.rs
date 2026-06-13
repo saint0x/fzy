@@ -31,12 +31,13 @@ use profile_build::{
 use profile_render::{
     folded_to_speedscope, folded_to_svg, folded_to_text, heap_folded, timeline_html,
 };
+pub(crate) use profile_support::explain_profile_bundle;
+pub(crate) use profile_support::load_profile_bundle_if_ready_with_run_bundle;
 use profile_support::{
     empty_domain, enforce_cpu_contract, load_profile_bundle, load_profile_bundle_group,
     normalize_domains, parse_selector_group, profile_doctor, profile_env_report,
     resolve_profile_trace, top_by_tag, write_json, write_text,
 };
-pub(crate) use profile_support::{explain_profile_bundle, load_profile_bundle_with_run_bundle};
 pub use profile_types::*;
 
 pub use profile_build::heap_budget_findings_from_trace;

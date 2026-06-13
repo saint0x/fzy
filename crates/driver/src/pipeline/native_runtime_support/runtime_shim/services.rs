@@ -7,8 +7,16 @@ static int32_t fz_log_level_value(const char* level) {
   return 0;
 }
 
+static int32_t fz_log_stream_mode = -1;
+
 static FILE* fz_log_stream(void) {
-  return fz_log_sink == 1 ? stderr : stdout;
+  int32_t target = fz_log_sink == 1 ? 1 : 0;
+  FILE* stream = target == 1 ? stderr : stdout;
+  if (fz_log_stream_mode != target) {
+    setvbuf(stream, NULL, _IOLBF, 0);
+    fz_log_stream_mode = target;
+  }
+  return stream;
 }
 
 static int32_t fz_log_emit(const char* level, const char* message, const char* fields) {
@@ -35,7 +43,6 @@ static int32_t fz_log_emit(const char* level, const char* message, const char* f
   } else {
     fprintf(stream, "[%lld] %s %s\n", (long long)ts, level, message);
   }
-  fflush(stream);
   return 0;
 }
 
@@ -1549,6 +1556,8 @@ int32_t fz_native_net_read_headers(int32_t conn_fd) {
       state->request_chunk_remaining = 0;
       state->request_body_eof = 1;
     }
+    state->request_meta_buf = req;
+    state->request_meta_len = (size_t)total;
     if (prefetched_body_len > 0) {
       state->request_body_buf = (char*)malloc(prefetched_body_len + 1);
       if (state->request_body_buf != NULL) {
@@ -1577,8 +1586,10 @@ int32_t fz_native_net_read_headers(int32_t conn_fd) {
       if (colon != NULL) {
         const char* v = colon + 1;
         while (v < next && (*v == ' ' || *v == '\t')) v++;
-        state->header_key_ids[state->header_count] = fz_intern_slice(cursor, (size_t)(colon - cursor));
-        state->header_value_ids[state->header_count] = fz_intern_slice(v, (size_t)(next - v));
+        state->header_key_offsets[state->header_count] = (uint32_t)(cursor - req);
+        state->header_key_lens[state->header_count] = (uint32_t)(colon - cursor);
+        state->header_value_offsets[state->header_count] = (uint32_t)(v - req);
+        state->header_value_lens[state->header_count] = (uint32_t)(next - v);
         state->header_count++;
       }
       cursor = next + 2;
@@ -1591,12 +1602,16 @@ int32_t fz_native_net_read_headers(int32_t conn_fd) {
         const char* token_end = amp == NULL ? q_end : amp;
         const char* eq = memchr(q, '=', (size_t)(token_end - q));
         if (eq == NULL) {
-          state->query_key_ids[state->query_count] = fz_intern_slice(q, (size_t)(token_end - q));
-          state->query_value_ids[state->query_count] = fz_intern_slice("", 0);
+          state->query_key_offsets[state->query_count] = (uint32_t)(q - req);
+          state->query_key_lens[state->query_count] = (uint32_t)(token_end - q);
+          state->query_value_offsets[state->query_count] = 0;
+          state->query_value_lens[state->query_count] = 0;
           state->query_count++;
         } else {
-          state->query_key_ids[state->query_count] = fz_intern_slice(q, (size_t)(eq - q));
-          state->query_value_ids[state->query_count] = fz_intern_slice(eq + 1, (size_t)(token_end - (eq + 1)));
+          state->query_key_offsets[state->query_count] = (uint32_t)(q - req);
+          state->query_key_lens[state->query_count] = (uint32_t)(eq - q);
+          state->query_value_offsets[state->query_count] = (uint32_t)((eq + 1) - req);
+          state->query_value_lens[state->query_count] = (uint32_t)(token_end - (eq + 1));
           state->query_count++;
         }
         if (amp == NULL) break;
@@ -1607,7 +1622,9 @@ int32_t fz_native_net_read_headers(int32_t conn_fd) {
   pthread_mutex_unlock(&fz_conn_lock);
 
   fz_set_last_error(0, 0, "");
-  free(req);
+  if (state == NULL) {
+    free(req);
+  }
   return 0;
 }
 
@@ -1917,9 +1934,14 @@ int32_t fz_native_net_header(int32_t conn_fd, int32_t key_id) {
     return fz_intern_slice("", 0);
   }
   for (int i = 0; i < state->header_count; i++) {
-    const char* k = fz_lookup_string(state->header_key_ids[i]);
-    if (k != NULL && strcasecmp(k, key) == 0) {
-      int32_t value = state->header_value_ids[i];
+    if (fz_conn_state_meta_key_eq(
+            state,
+            state->header_key_offsets[i],
+            state->header_key_lens[i],
+            key,
+            1)) {
+      int32_t value = fz_conn_state_intern_meta_slice(
+          state, state->header_value_offsets[i], state->header_value_lens[i]);
       pthread_mutex_unlock(&fz_conn_lock);
       return value;
     }
@@ -1937,9 +1959,14 @@ int32_t fz_native_net_query(int32_t conn_fd, int32_t key_id) {
     return fz_intern_slice("", 0);
   }
   for (int i = 0; i < state->query_count; i++) {
-    const char* k = fz_lookup_string(state->query_key_ids[i]);
-    if (k != NULL && strcmp(k, key) == 0) {
-      int32_t value = state->query_value_ids[i];
+    if (fz_conn_state_meta_key_eq(
+            state,
+            state->query_key_offsets[i],
+            state->query_key_lens[i],
+            key,
+            0)) {
+      int32_t value = fz_conn_state_intern_meta_slice(
+          state, state->query_value_offsets[i], state->query_value_lens[i]);
       pthread_mutex_unlock(&fz_conn_lock);
       return value;
     }
@@ -1980,12 +2007,19 @@ int32_t fz_native_net_headers(int32_t conn_fd) {
   fz_list_state* list = fz_list_get(list_handle);
   if (list != NULL) {
     for (int i = 0; i < state->header_count; i++) {
-      const char* k = fz_lookup_string(state->header_key_ids[i]);
-      const char* v = fz_lookup_string(state->header_value_ids[i]);
-      size_t n = strlen(k == NULL ? "" : k) + strlen(v == NULL ? "" : v) + 3;
+      size_t key_len = 0;
+      size_t value_len = 0;
+      const char* k = fz_conn_state_meta_slice_ptr(
+          state, state->header_key_offsets[i], state->header_key_lens[i], &key_len);
+      const char* v = fz_conn_state_meta_slice_ptr(
+          state, state->header_value_offsets[i], state->header_value_lens[i], &value_len);
+      size_t n = key_len + value_len + 2;
       char* kv = (char*)malloc(n);
       if (kv == NULL) continue;
-      snprintf(kv, n, "%s:%s", k == NULL ? "" : k, v == NULL ? "" : v);
+      if (key_len > 0) memcpy(kv, k, key_len);
+      kv[key_len] = ':';
+      if (value_len > 0) memcpy(kv + key_len + 1, v, value_len);
+      kv[key_len + value_len + 1] = '\0';
       (void)fz_list_push_cstr(list, kv);
       free(kv);
     }
@@ -2077,40 +2111,69 @@ int32_t fz_native_net_websocket_accept(int32_t conn_fd) {
     return -1;
   }
   const char* upgrade = "";
+  size_t upgrade_len = 0;
   const char* connection = "";
+  size_t connection_len = 0;
   const char* ws_key = "";
+  size_t ws_key_len = 0;
   const char* ws_version = "";
+  size_t ws_version_len = 0;
   for (int i = 0; i < state->header_count; i++) {
-    const char* key = fz_lookup_string(state->header_key_ids[i]);
-    const char* value = fz_lookup_string(state->header_value_ids[i]);
-    if (key == NULL || value == NULL) {
-      continue;
-    }
-    if (strcasecmp(key, "upgrade") == 0) {
+    size_t value_len = 0;
+    const char* value = fz_conn_state_meta_slice_ptr(
+        state, state->header_value_offsets[i], state->header_value_lens[i], &value_len);
+    if (fz_conn_state_meta_key_eq(
+            state,
+            state->header_key_offsets[i],
+            state->header_key_lens[i],
+            "upgrade",
+            1)) {
       upgrade = value;
-    } else if (strcasecmp(key, "connection") == 0) {
+      upgrade_len = value_len;
+    } else if (fz_conn_state_meta_key_eq(
+                   state,
+                   state->header_key_offsets[i],
+                   state->header_key_lens[i],
+                   "connection",
+                   1)) {
       connection = value;
-    } else if (strcasecmp(key, "sec-websocket-key") == 0) {
+      connection_len = value_len;
+    } else if (fz_conn_state_meta_key_eq(
+                   state,
+                   state->header_key_offsets[i],
+                   state->header_key_lens[i],
+                   "sec-websocket-key",
+                   1)) {
       ws_key = value;
-    } else if (strcasecmp(key, "sec-websocket-version") == 0) {
+      ws_key_len = value_len;
+    } else if (fz_conn_state_meta_key_eq(
+                   state,
+                   state->header_key_offsets[i],
+                   state->header_key_lens[i],
+                   "sec-websocket-version",
+                   1)) {
       ws_version = value;
+      ws_version_len = value_len;
     }
   }
-  if (upgrade == NULL || strcasecmp(upgrade, "websocket") != 0
-      || connection == NULL || fz_contains_ci(connection, strlen(connection), "upgrade") == 0
-      || ws_key == NULL || ws_key[0] == '\0'
-      || ws_version == NULL || strcmp(ws_version, "13") != 0) {
+  if (upgrade == NULL || upgrade_len != 9 || strncasecmp(upgrade, "websocket", upgrade_len) != 0
+      || connection == NULL || fz_contains_ci(connection, connection_len, "upgrade") == 0
+      || ws_key == NULL || ws_key_len == 0
+      || ws_version == NULL || ws_version_len != 2 || strncmp(ws_version, "13", ws_version_len) != 0) {
     pthread_mutex_unlock(&fz_conn_lock);
     return -1;
   }
   const char* guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-  size_t concat_len = strlen(ws_key) + strlen(guid);
+  size_t guid_len = strlen(guid);
+  size_t concat_len = ws_key_len + guid_len;
   char* concat = (char*)malloc(concat_len + 1);
   if (concat == NULL) {
     pthread_mutex_unlock(&fz_conn_lock);
     return -1;
   }
-  snprintf(concat, concat_len + 1, "%s%s", ws_key, guid);
+  memcpy(concat, ws_key, ws_key_len);
+  memcpy(concat + ws_key_len, guid, guid_len);
+  concat[concat_len] = '\0';
   uint8_t digest[20];
   fz_sha1_compute((const uint8_t*)concat, concat_len, digest);
   free(concat);

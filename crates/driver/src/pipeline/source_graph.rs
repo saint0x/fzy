@@ -2,6 +2,7 @@ struct ResolvedSource {
     source_path: PathBuf,
     project_root: PathBuf,
     manifest: Option<manifest::Manifest>,
+    manifest_fingerprint: Option<String>,
     dependency_graph_hash: Option<String>,
     artifact_stem: String,
 }
@@ -51,6 +52,7 @@ fn resolve_source_path_with_target(
             source_path: input.to_path_buf(),
             project_root: root,
             manifest: None,
+            manifest_fingerprint: None,
             dependency_graph_hash: None,
             artifact_stem: input
                 .file_stem()
@@ -102,6 +104,7 @@ fn resolve_source_path_with_target(
     Ok(ResolvedSource {
         source_path: input.join(relative),
         project_root: input.to_path_buf(),
+        manifest_fingerprint: Some(manifest_fingerprint(&manifest)?),
         manifest: Some(manifest),
         dependency_graph_hash: Some(dependency_graph_hash),
         artifact_stem,
@@ -124,6 +127,12 @@ fn load_manifest(
     validate_dependency_paths(dir, &parsed)?;
     let graph_hash = write_lockfile(dir, &parsed, &contents, lock_mode)?;
     Ok((parsed, primary, graph_hash))
+}
+
+fn manifest_fingerprint(manifest: &manifest::Manifest) -> Result<String> {
+    let bytes = serde_json::to_vec(manifest)
+        .map_err(|error| anyhow!("failed serializing manifest fingerprint: {error}"))?;
+    Ok(sha256_hex(&bytes))
 }
 
 fn apply_workspace_policy(dir: &Path, manifest: &mut manifest::Manifest) -> Result<()> {
@@ -527,6 +536,59 @@ fn native_artifact_cache_key(
     Ok(hex_encode(hasher.finalize().as_slice()))
 }
 
+fn successful_build_cache_path(
+    build_dir: &Path,
+    artifact_stem: &str,
+    kind: &str,
+    backend: &str,
+) -> PathBuf {
+    build_dir.join(format!("{artifact_stem}.{kind}.{backend}.buildcache.json"))
+}
+
+fn pgo_signature(pgo: &PgoConfig) -> String {
+    format!(
+        "generate={};use={}",
+        pgo.generate_dir
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        pgo.use_profile
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default()
+    )
+}
+
+fn successful_build_cache_hit(
+    entry: &SuccessfulBuildCacheEntry,
+    resolved: &ResolvedSource,
+    profile: BuildProfile,
+    backend: &str,
+    pgo: &PgoConfig,
+) -> bool {
+    entry.schema_version == "fozzylang.buildcache.v1"
+        && entry.source_path == resolved.source_path
+        && entry.profile == profile.as_str()
+        && entry.backend == backend
+        && entry.manifest_fingerprint == resolved.manifest_fingerprint
+        && entry.dependency_graph_hash == resolved.dependency_graph_hash
+        && entry.pgo_signature == pgo_signature(pgo)
+        && entry.source_stamps.par_iter().all(module_stamp_matches)
+}
+
+fn read_successful_build_cache(path: &Path) -> Option<SuccessfulBuildCacheEntry> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn write_successful_build_cache(
+    path: &Path,
+    entry: &SuccessfulBuildCacheEntry,
+) -> Result<()> {
+    std::fs::write(path, serde_json::to_vec_pretty(entry)?)
+        .with_context(|| format!("failed writing successful build cache: {}", path.display()))
+}
+
 fn runtime_shim_language_arg(fir: &fir::FirModule) -> &'static str {
     if native_runtime_shim_uses_objc(fir) {
         "objective-c"
@@ -541,4 +603,3 @@ fn apply_gpu_backend_link_args(cmd: &mut Command, fir: &fir::FirModule) {
         cmd.arg("-framework").arg("Foundation");
     }
 }
-

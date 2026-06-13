@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use crate::{
     ArtifactCommand, Config, FlakeBudget, FozzyError, FozzyResult, ReplayOptions, ReportCommand,
-    Reporter, TraceFile, TracePath, artifacts_command, profile_command, replay_loaded_trace,
-    report_command, verify_trace,
+    Reporter, TraceFile, TracePath, artifacts_command, artifacts_list, profile_command,
+    replay_loaded_trace, report_command, validate_existing_bundle_for_ci, verify_trace,
 };
 use crate::{ProfileCaptureLevel, ProfileCommand};
 
@@ -140,38 +140,32 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
     }
 
     if opt.strict {
-        let zip_path =
-            std::env::temp_dir().join(format!("fozzy-ci-export-{}.zip", uuid::Uuid::new_v4()));
-        artifacts_command(
-            config,
-            &ArtifactCommand::Export {
-                run: opt.trace.display().to_string(),
-                out: zip_path.clone(),
-            },
-        )?;
-        let zip_ok = if zip_path.exists() {
-            let file = std::fs::File::open(&zip_path)?;
-            let mut zip = zip::ZipArchive::new(file).map_err(|e| FozzyError::Zip(e.to_string()))?;
-            for i in 0..zip.len() {
-                let mut entry = zip
-                    .by_index(i)
-                    .map_err(|e| FozzyError::Zip(e.to_string()))?;
-                if entry.is_dir() {
-                    continue;
+        let trace_selector = opt.trace.display().to_string();
+        let zip_ok = match artifacts_list(config, &trace_selector) {
+            Ok(entries) => {
+                let files = entries
+                    .into_iter()
+                    .map(|entry| std::path::PathBuf::from(entry.path))
+                    .collect::<Vec<_>>();
+                let has_run_bundle_contract = files.iter().any(|path| {
+                    path.file_name().and_then(|name| name.to_str()) == Some("report.json")
+                }) && files.iter().any(|path| {
+                    path.file_name().and_then(|name| name.to_str()) == Some("manifest.json")
+                });
+                if has_run_bundle_contract {
+                    validate_existing_bundle_for_ci(&files, &trace_selector)?;
+                    true
+                } else {
+                    validate_export_bundle_roundtrip(config, &trace_selector)?
                 }
-                let mut sink = std::io::sink();
-                std::io::copy(&mut entry, &mut sink)?;
             }
-            true
-        } else {
-            false
+            Err(_) => validate_export_bundle_roundtrip(config, &trace_selector)?,
         };
         checks.push(CiCheck {
             name: "artifacts_zip_integrity".to_string(),
             ok: zip_ok,
-            detail: Some(zip_path.display().to_string()),
+            detail: Some(trace_selector),
         });
-        let _ = std::fs::remove_file(zip_path);
     }
 
     if !opt.flake_runs.is_empty() {
@@ -240,6 +234,37 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         ok,
         checks,
     })
+}
+
+fn validate_export_bundle_roundtrip(config: &Config, run: &str) -> FozzyResult<bool> {
+    let zip_path =
+        std::env::temp_dir().join(format!("fozzy-ci-export-{}.zip", uuid::Uuid::new_v4()));
+    artifacts_command(
+        config,
+        &ArtifactCommand::Export {
+            run: run.to_string(),
+            out: zip_path.clone(),
+        },
+    )?;
+    let zip_ok = if zip_path.exists() {
+        let file = std::fs::File::open(&zip_path)?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|e| FozzyError::Zip(e.to_string()))?;
+        for i in 0..zip.len() {
+            let mut entry = zip
+                .by_index(i)
+                .map_err(|e| FozzyError::Zip(e.to_string()))?;
+            if entry.is_dir() {
+                continue;
+            }
+            let mut sink = std::io::sink();
+            std::io::copy(&mut entry, &mut sink)?;
+        }
+        true
+    } else {
+        false
+    };
+    let _ = std::fs::remove_file(zip_path);
+    Ok(zip_ok)
 }
 
 #[cfg(test)]

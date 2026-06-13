@@ -284,6 +284,8 @@ pub struct RunManifest {
     pub memory_leaked_allocs: Option<u64>,
     #[serde(rename = "memoryPeakBytes", skip_serializing_if = "Option::is_none")]
     pub memory_peak_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<RunSummary>,
     #[serde(
         rename = "profileCapabilities",
         skip_serializing_if = "Vec::is_empty",
@@ -302,6 +304,43 @@ pub struct RunManifest {
         default
     )]
     pub profile_schema_versions: std::collections::BTreeMap<String, String>,
+}
+
+impl RunManifest {
+    pub fn to_summary(&self) -> RunSummary {
+        self.summary.clone().unwrap_or_else(|| RunSummary {
+            status: self.status,
+            mode: self.mode,
+            identity: RunIdentity {
+                run_id: self.run_id.clone(),
+                seed: self.seed,
+                trace_path: self.trace_path.clone(),
+                report_path: self.report_path.clone(),
+                artifacts_dir: self.artifacts_dir.clone(),
+            },
+            started_at: self.started_at.clone(),
+            finished_at: self.finished_at.clone(),
+            duration_ms: self.duration_ms,
+            duration_ns: self.duration_ns,
+            tests: match (self.tests_passed, self.tests_failed, self.tests_skipped) {
+                (Some(passed), Some(failed), Some(skipped)) => Some(TestCounts {
+                    passed,
+                    failed,
+                    skipped,
+                }),
+                _ => None,
+            },
+            memory: self
+                .memory_peak_bytes
+                .map(|peak_bytes| crate::MemorySummary {
+                    peak_bytes,
+                    leaked_bytes: self.memory_leaked_bytes.unwrap_or(0),
+                    leaked_allocs: self.memory_leaked_allocs.unwrap_or(0),
+                    ..crate::MemorySummary::default()
+                }),
+            findings: Vec::new(),
+        })
+    }
 }
 
 pub fn write_run_manifest(
@@ -349,6 +388,7 @@ pub fn write_run_manifest(
         memory_leaked_bytes: summary.memory.as_ref().map(|m| m.leaked_bytes),
         memory_leaked_allocs: summary.memory.as_ref().map(|m| m.leaked_allocs),
         memory_peak_bytes: summary.memory.as_ref().map(|m| m.peak_bytes),
+        summary: Some(summary.clone()),
         profile_capabilities,
         profile_artifacts,
         profile_schema_versions,

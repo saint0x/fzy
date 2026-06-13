@@ -81,6 +81,75 @@ pub(crate) fn load_profile_bundle_with_run_bundle(
     })
 }
 
+pub(crate) fn load_profile_bundle_if_ready_with_run_bundle(
+    config: &Config,
+    selector: &str,
+    spec: ProfileLoadSpec,
+    run_bundle: Option<&crate::RunBundle>,
+) -> FozzyResult<Option<ProfileBundle>> {
+    let (artifacts_dir, trace_path, _) =
+        resolve_profile_artifacts_with_run_bundle(config, selector, run_bundle)?;
+    if let Some(trace_path) = trace_path.as_ref()
+        && profile_artifacts_stale(&artifacts_dir, trace_path)?
+    {
+        return Ok(None);
+    }
+    if !profile_artifacts_exist(&artifacts_dir) {
+        return Ok(None);
+    }
+
+    let metrics: ProfileMetrics =
+        serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.metrics.json"))?)?;
+    let timeline = if spec.timeline {
+        Some(
+            serde_json::from_slice::<ProfileTimelineArtifact>(&std::fs::read(
+                artifacts_dir.join("profile.timeline.json"),
+            )?)?
+            .events,
+        )
+    } else {
+        None
+    };
+    let cpu = if spec.cpu {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("profile.cpu.json"),
+        )?)?)
+    } else {
+        None
+    };
+    let heap = if spec.heap {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("profile.heap.json"),
+        )?)?)
+    } else {
+        None
+    };
+    let latency = if spec.latency {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("profile.latency.json"),
+        )?)?)
+    } else {
+        None
+    };
+    let symbols = if spec.symbols {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("symbols.json"),
+        )?)?)
+    } else {
+        None
+    };
+
+    Ok(Some(ProfileBundle {
+        artifacts_dir,
+        timeline,
+        cpu,
+        heap,
+        latency,
+        metrics,
+        symbols,
+    }))
+}
+
 pub(super) fn parse_selector_group(value: &str) -> Vec<String> {
     let selectors = value
         .split(',')

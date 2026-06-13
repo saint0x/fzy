@@ -57,18 +57,24 @@ typedef struct {
   int request_body_active;
   int64_t request_body_remaining;
   int64_t request_chunk_remaining;
+  char* request_meta_buf;
+  size_t request_meta_len;
   char* request_body_buf;
   size_t request_body_buf_len;
   size_t request_body_buf_pos;
   int header_count;
-  int32_t header_key_ids[FZ_MAX_CONN_META];
-  int32_t header_value_ids[FZ_MAX_CONN_META];
+  uint32_t header_key_offsets[FZ_MAX_CONN_META];
+  uint32_t header_key_lens[FZ_MAX_CONN_META];
+  uint32_t header_value_offsets[FZ_MAX_CONN_META];
+  uint32_t header_value_lens[FZ_MAX_CONN_META];
   int response_header_count;
   int32_t response_header_key_ids[FZ_MAX_CONN_META];
   int32_t response_header_value_ids[FZ_MAX_CONN_META];
   int query_count;
-  int32_t query_key_ids[FZ_MAX_CONN_META];
-  int32_t query_value_ids[FZ_MAX_CONN_META];
+  uint32_t query_key_offsets[FZ_MAX_CONN_META];
+  uint32_t query_key_lens[FZ_MAX_CONN_META];
+  uint32_t query_value_offsets[FZ_MAX_CONN_META];
+  uint32_t query_value_lens[FZ_MAX_CONN_META];
   int param_count;
   int32_t param_key_ids[FZ_MAX_ROUTE_PARAMS];
   int32_t param_value_ids[FZ_MAX_ROUTE_PARAMS];
@@ -276,6 +282,9 @@ static int fz_parse_chunked_flag(const char* headers, int header_len);
 static int fz_conn_recv_into_body_buffer(fz_conn_state* state, size_t want, int timeout_ms);
 static int fz_conn_read_body_chunk(fz_conn_state* state, char** out_ptr, size_t* out_len, int32_t max_bytes);
 static int fz_conn_discard_body(fz_conn_state* state);
+static int32_t fz_conn_state_intern_meta_slice(fz_conn_state* state, uint32_t offset, uint32_t len);
+static const char* fz_conn_state_meta_slice_ptr(fz_conn_state* state, uint32_t offset, uint32_t len, size_t* out_len);
+static int fz_conn_state_meta_key_eq(fz_conn_state* state, uint32_t offset, uint32_t len, const char* key, int case_insensitive);
 static int fz_send_http_response_state(
     fz_conn_state* state,
     int status_code,
@@ -1538,12 +1547,19 @@ static void fz_conn_state_reset_request_body(fz_conn_state* state) {
   if (state == NULL) {
     return;
   }
+  if (state->request_meta_buf != NULL) {
+    free(state->request_meta_buf);
+  }
+  state->request_meta_buf = NULL;
+  state->request_meta_len = 0;
   if (state->request_body_buf != NULL) {
     free(state->request_body_buf);
   }
   state->request_body_buf = NULL;
   state->request_body_buf_len = 0;
   state->request_body_buf_pos = 0;
+  state->header_count = 0;
+  state->query_count = 0;
   state->request_headers_ready = 0;
   state->request_body_mode = 0;
   state->request_body_eof = 1;
@@ -1559,6 +1575,43 @@ static void fz_conn_state_reset_response_headers(fz_conn_state* state) {
     return;
   }
   state->response_header_count = 0;
+}
+
+static const char* fz_conn_state_meta_slice_ptr(fz_conn_state* state, uint32_t offset, uint32_t len, size_t* out_len) {
+  if (out_len != NULL) {
+    *out_len = 0;
+  }
+  if (state == NULL || state->request_meta_buf == NULL) {
+    return "";
+  }
+  size_t start = (size_t)offset;
+  size_t width = (size_t)len;
+  if (start > state->request_meta_len || width > (state->request_meta_len - start)) {
+    return "";
+  }
+  if (out_len != NULL) {
+    *out_len = width;
+  }
+  return state->request_meta_buf + start;
+}
+
+static int32_t fz_conn_state_intern_meta_slice(fz_conn_state* state, uint32_t offset, uint32_t len) {
+  size_t slice_len = 0;
+  const char* slice = fz_conn_state_meta_slice_ptr(state, offset, len, &slice_len);
+  return fz_intern_slice(slice, slice_len);
+}
+
+static int fz_conn_state_meta_key_eq(fz_conn_state* state, uint32_t offset, uint32_t len, const char* key, int case_insensitive) {
+  size_t slice_len = 0;
+  const char* slice = fz_conn_state_meta_slice_ptr(state, offset, len, &slice_len);
+  if (key == NULL) {
+    return slice_len == 0 ? 1 : 0;
+  }
+  size_t key_len = strlen(key);
+  if (slice_len != key_len) {
+    return 0;
+  }
+  return case_insensitive ? strncasecmp(slice, key, slice_len) == 0 : strncmp(slice, key, slice_len) == 0;
 }
 
 static char* fz_json_escape_owned(const char* input) {
@@ -1599,6 +1652,53 @@ static char* fz_json_escape_owned(const char* input) {
   }
   out[j] = '\0';
   return out;
+}
+
+static int fz_bytes_buf_append_json_escaped(fz_bytes_buf* buf, const char* input) {
+  if (buf == NULL) {
+    return -1;
+  }
+  if (input == NULL) {
+    input = "";
+  }
+  for (const unsigned char* p = (const unsigned char*)input; *p != '\0'; p++) {
+    unsigned char ch = *p;
+    switch (ch) {
+      case '\"':
+        if (fz_bytes_buf_append(buf, "\\\"", 2) != 0) return -1;
+        break;
+      case '\\':
+        if (fz_bytes_buf_append(buf, "\\\\", 2) != 0) return -1;
+        break;
+      case '\b':
+        if (fz_bytes_buf_append(buf, "\\b", 2) != 0) return -1;
+        break;
+      case '\f':
+        if (fz_bytes_buf_append(buf, "\\f", 2) != 0) return -1;
+        break;
+      case '\n':
+        if (fz_bytes_buf_append(buf, "\\n", 2) != 0) return -1;
+        break;
+      case '\r':
+        if (fz_bytes_buf_append(buf, "\\r", 2) != 0) return -1;
+        break;
+      case '\t':
+        if (fz_bytes_buf_append(buf, "\\t", 2) != 0) return -1;
+        break;
+      default:
+        if (ch < 0x20) {
+          char escaped[6] = {'\\', 'u', '0', '0', 0, 0};
+          static const char* hex = "0123456789abcdef";
+          escaped[4] = hex[(ch >> 4) & 0xF];
+          escaped[5] = hex[ch & 0xF];
+          if (fz_bytes_buf_append(buf, escaped, sizeof(escaped)) != 0) return -1;
+        } else if (fz_bytes_buf_append(buf, (const char*)p, 1) != 0) {
+          return -1;
+        }
+        break;
+    }
+  }
+  return 0;
 }
 
 static int32_t fz_json_value_alloc(int32_t value_id) {

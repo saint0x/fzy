@@ -52,4 +52,10 @@ impl ParsedProgram {
             combined
         })
     }
+
+    pub fn module_sources(&self) -> impl Iterator<Item = (&std::path::Path, &str)> {
+        self.module_sources
+            .iter()
+            .map(|module| (module.path.as_path(), module.source.as_ref()))
+    }
 }

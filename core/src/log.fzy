@@ -156,12 +156,16 @@ fn redact_value(value: str, mode: Redaction, max_bytes: i32) -> str {
     }
 }
 
-fn field_with_redaction(event_value: Event, key: str, value: str, redaction: Redaction) -> Event {
+fn default_max_field_bytes() -> i32 {
+    return 256
+}
+
+fn field_with_limit(event_value: Event, key: str, value: str, redaction: Redaction, max_field_bytes: i32) -> Event {
     let safe_key = normalize_key(key)
     if safe_key == "" {
         return event_value
     }
-    let payload = json.str(redact_value(value, redaction, default_config().max_field_bytes))
+    let payload = json.str(redact_value(value, redaction, max_field_bytes))
     discard map.set(event_value.fields, safe_key, payload)
     return Event {
         level: event_value.level,
@@ -169,6 +173,10 @@ fn field_with_redaction(event_value: Event, key: str, value: str, redaction: Red
         fields: event_value.fields,
         correlation: event_value.correlation,
     }
+}
+
+fn field_with_redaction(event_value: Event, key: str, value: str, redaction: Redaction) -> Event {
+    return field_with_limit(event_value, key, value, redaction, default_max_field_bytes())
 }
 
 fn field(event_value: Event, key: str, value: str) -> Event {
@@ -285,7 +293,6 @@ fn emit(config: LoggerConfig, event_value: Event) -> i32 {
     if should_emit(safe, event_value.level) == 0 {
         return 0
     }
-    discard apply_config(safe)
     if safe.include_correlation == 1 {
         discard attach_correlation_fields(event_value.fields, event_value.correlation, safe.max_field_bytes)
     }

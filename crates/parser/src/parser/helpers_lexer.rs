@@ -138,6 +138,7 @@ struct Lexer<'a> {
     line: usize,
     col: usize,
     diagnostics: Vec<Diagnostic>,
+    identifiers: Vec<IdentifierLexeme>,
 }
 
 impl<'a> Lexer<'a> {
@@ -148,6 +149,7 @@ impl<'a> Lexer<'a> {
             line: 1,
             col: 1,
             diagnostics: Vec::new(),
+            identifiers: Vec::new(),
         }
     }
 
@@ -362,6 +364,8 @@ impl<'a> Lexer<'a> {
                 c if is_ident_start(c) => {
                     let start = idx;
                     let mut end = idx + 1;
+                    let start_line = line;
+                    let start_col = col;
                     self.advance_char();
                     while let Some((i, next)) = self.peek_char() {
                         if is_ident_continue(next) {
@@ -371,7 +375,17 @@ impl<'a> Lexer<'a> {
                             break;
                         }
                     }
-                    keyword_or_ident(&self.source[start..end])
+                    let ident = &self.source[start..end];
+                    let kind = keyword_or_ident(ident);
+                    if matches!(kind, TokenKind::Ident(_)) {
+                        self.identifiers.push(IdentifierLexeme {
+                            name: ident.to_string(),
+                            line: start_line.saturating_sub(1),
+                            col: start_col.saturating_sub(1),
+                            len: ident.len(),
+                        });
+                    }
+                    kind
                 }
                 _ => {
                     let message = format!("unknown token `{ch}`");
@@ -1211,4 +1225,3 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         _ => TokenKind::Ident(ident.into()),
     }
 }
-

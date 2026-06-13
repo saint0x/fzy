@@ -4,8 +4,10 @@ use core::{Capability, CapabilitySet};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -105,7 +107,40 @@ pub struct CapabilityAudit {
 #[derive(Debug, Clone)]
 pub enum AuditSink {
     Memory,
-    File(PathBuf),
+    File(Arc<PersistentAuditFileSink>),
+}
+
+#[derive(Debug)]
+pub struct PersistentAuditFileSink {
+    path: PathBuf,
+    file: Mutex<Option<File>>,
+}
+
+impl PersistentAuditFileSink {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            file: Mutex::new(None),
+        }
+    }
+
+    fn write_line(&self, line: &str) {
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut slot) = self.file.lock() {
+            if slot.is_none() {
+                *slot = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+                    .ok();
+            }
+            if let Some(file) = slot.as_mut() {
+                let _ = writeln!(file, "{}", line);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -123,24 +158,21 @@ impl AuditLogger {
     }
 
     pub fn record(&mut self, audit: CapabilityAudit) {
-        if let Some(AuditSink::File(path)) = &self.sink {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let line = serde_json::to_string(&audit).unwrap_or_else(|_| "{}".to_string());
-                let _ = writeln!(file, "{}", line);
-            }
+        if let Some(AuditSink::File(sink)) = &self.sink {
+            let line = serde_json::to_string(&audit).unwrap_or_else(|_| "{}".to_string());
+            sink.write_line(&line);
         }
         self.entries.push(audit);
     }
 
     pub fn entries(&self) -> &[CapabilityAudit] {
         &self.entries
+    }
+}
+
+impl AuditSink {
+    pub fn file(path: impl Into<PathBuf>) -> Self {
+        Self::File(Arc::new(PersistentAuditFileSink::new(path)))
     }
 }
 
@@ -340,7 +372,7 @@ mod tests {
     #[test]
     fn persistent_audit_sink_records_entries() {
         let path = std::env::temp_dir().join("fozzy-audit.log");
-        let mut logger = AuditLogger::with_sink(AuditSink::File(path.clone()));
+        let mut logger = AuditLogger::with_sink(AuditSink::file(path.clone()));
         let mut caps = CapabilitySet::default();
         caps.insert(Capability::Http);
         let audit = audit_privileged_operation_with_sink(

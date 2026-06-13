@@ -186,7 +186,7 @@ pub fn artifacts_command(
     }
 }
 
-fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>> {
+pub(crate) fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>> {
     let run_path = PathBuf::from(run);
     if run_path.exists()
         && run_path.is_file()
@@ -730,15 +730,23 @@ pub(crate) fn load_run_bundle(
     let report_json = artifacts_dir.join("report.json");
     let manifest_json = artifacts_dir.join("manifest.json");
 
-    let mut summary = None;
-    if report_json.exists() {
+    let manifest = read_run_manifest(&manifest_json)?;
+    let mut summary = manifest.as_ref().map(RunManifest::to_summary);
+    if summary.is_none() && report_json.exists() {
         let bytes = std::fs::read(&report_json)?;
         summary = Some(serde_json::from_slice(&bytes)?);
     }
 
     let trace_path = match resolve_trace_path_from_bundle(run, &artifacts_dir, summary.as_ref())? {
         Some(path) => Some(path),
-        None => resolve_trace_path_from_manifest(&manifest_json)?,
+        None => manifest
+            .as_ref()
+            .and_then(resolve_trace_path_from_manifest_value)
+            .or_else(|| {
+                resolve_trace_path_from_manifest(&manifest_json)
+                    .ok()
+                    .flatten()
+            }),
     };
 
     let mut trace = None;
@@ -759,6 +767,14 @@ pub(crate) fn load_run_bundle(
         trace_path,
         trace,
     })
+}
+
+fn read_run_manifest(manifest_path: &Path) -> FozzyResult<Option<RunManifest>> {
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(manifest_path)?;
+    Ok(Some(serde_json::from_slice(&bytes)?))
 }
 
 fn resolve_trace_path_from_bundle(
@@ -795,16 +811,14 @@ fn resolve_trace_path_from_bundle(
 }
 
 fn resolve_trace_path_from_manifest(manifest_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    if !manifest_path.exists() {
-        return Ok(None);
-    }
-    let bytes = std::fs::read(manifest_path)?;
-    let manifest: RunManifest = serde_json::from_slice(&bytes)?;
-    let Some(path) = manifest.trace_path else {
-        return Ok(None);
-    };
-    let candidate = PathBuf::from(path);
-    Ok(candidate.exists().then_some(candidate))
+    Ok(read_run_manifest(manifest_path)?
+        .as_ref()
+        .and_then(resolve_trace_path_from_manifest_value))
+}
+
+fn resolve_trace_path_from_manifest_value(manifest: &RunManifest) -> Option<PathBuf> {
+    let candidate = PathBuf::from(manifest.trace_path.as_ref()?);
+    candidate.exists().then_some(candidate)
 }
 
 pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<PathBuf> {
@@ -1201,6 +1215,11 @@ fn validate_manifest_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> 
         )));
     }
     Ok(())
+}
+
+pub(crate) fn validate_existing_bundle_for_ci(files: &[PathBuf], run: &str) -> FozzyResult<()> {
+    validate_required_bundle_files(files, run)?;
+    validate_manifest_integrity(files, run)
 }
 
 fn is_direct_trace_input(run: &str) -> bool {

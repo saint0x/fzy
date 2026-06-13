@@ -186,6 +186,10 @@ pub enum Command {
     ReportShowLatest {
         output_format: String,
     },
+    ReportQueryLatest {
+        jq: Option<String>,
+        list_paths: bool,
+    },
     StabilityDashboard,
     Parity {
         path: PathBuf,
@@ -304,4 +308,3 @@ pub enum Command {
     },
     Version,
 }
-

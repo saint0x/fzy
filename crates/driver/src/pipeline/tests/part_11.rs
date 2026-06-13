@@ -109,6 +109,56 @@ fn parse_program_cache_invalidates_on_imported_module_change() {
 }
 
 #[test]
+fn compile_file_reuses_successful_build_cache_for_warm_noop() {
+    let project_name = format!(
+        "fozzylang-build-cache-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    return 1\n}\n",
+    )
+    .expect("source should be written");
+
+    let first = compile_file(&root, BuildProfile::Dev).expect("first build should succeed");
+    assert_eq!(first.status, "ok");
+    let output = first.output.expect("first build should produce output");
+    std::fs::remove_file(&output).expect("output should be removable");
+
+    let second = compile_file(&root, BuildProfile::Dev).expect("second build should recover");
+    assert_eq!(second.status, "ok");
+    assert!(
+        second.output.as_ref().is_some_and(|path| path.exists()),
+        "second build should recreate an executable when outputs are missing"
+    );
+
+    let cache_path = root.join(".fz/build/demo.bin.cranelift.buildcache.json");
+    let cache_text = std::fs::read_to_string(&cache_path).expect("build cache should exist");
+    let cache_json: serde_json::Value =
+        serde_json::from_str(&cache_text).expect("build cache should be valid json");
+    let source_stamps = cache_json
+        .get("source_stamps")
+        .and_then(|value| value.as_array())
+        .expect("build cache should record source stamps");
+    assert!(
+        !source_stamps.is_empty(),
+        "build cache should track source inputs for warm validation"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_lowerability_malformed_program_reports_diagnostics_without_panicking() {
     let source = "fn main() -> i32 {\n    return missing_call()\n}\n";
     let module = parser::parse(source, "phase_guard").expect("parse should succeed");
@@ -751,4 +801,3 @@ fn native_runtime_shim_sanitizes_invalid_json_http_bodies() {
     assert!(shim.contains("invalid_json_payload"));
     assert!(shim.contains("http.write_json sanitized non-JSON body"));
 }
-

@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::net::UdpSocket;
 use std::path::PathBuf;
@@ -38,9 +39,9 @@ pub enum RedactionPolicy {
 
 #[derive(Debug, Clone)]
 pub enum LoggerSink {
-    Memory(Arc<Mutex<Vec<LogEntry>>>),
-    File(PathBuf),
-    UdpJson { addr: String },
+    Memory(Arc<Mutex<VecDeque<LogEntry>>>),
+    File(Arc<PersistentFileSink>),
+    UdpJson(Arc<PersistentUdpSink>),
     StdoutJson,
 }
 
@@ -55,17 +56,80 @@ const DEFAULT_MEMORY_LOG_LIMIT: usize = 512;
 const DEFAULT_METRIC_HISTORY_LIMIT: usize = 512;
 const DEFAULT_TRACER_SPAN_LIMIT: usize = 1024;
 
+#[derive(Debug)]
+pub struct PersistentFileSink {
+    path: PathBuf,
+    file: Mutex<Option<File>>,
+}
+
+impl PersistentFileSink {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            file: Mutex::new(None),
+        }
+    }
+
+    fn write_line(&self, line: &str) {
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut slot) = self.file.lock() {
+            if slot.is_none() {
+                *slot = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+                    .ok();
+            }
+            if let Some(file) = slot.as_mut() {
+                let _ = writeln!(file, "{}", line);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PersistentUdpSink {
+    addr: String,
+    socket: Mutex<Option<UdpSocket>>,
+}
+
+impl PersistentUdpSink {
+    pub fn new(addr: impl Into<String>) -> Self {
+        Self {
+            addr: addr.into(),
+            socket: Mutex::new(None),
+        }
+    }
+
+    fn send_line(&self, line: &str) {
+        if let Ok(mut slot) = self.socket.lock() {
+            if slot.is_none() {
+                *slot = UdpSocket::bind("0.0.0.0:0").ok();
+            }
+            if let Some(socket) = slot.as_ref() {
+                let _ = socket.send_to(line.as_bytes(), &self.addr);
+            }
+        }
+    }
+}
+
 impl Default for Logger {
     fn default() -> Self {
         Self {
             min_level: LogLevel::Info,
             policy: RedactionPolicy::RedactKnownSecrets,
-            sinks: vec![LoggerSink::Memory(Arc::new(Mutex::new(Vec::new())))],
+            sinks: vec![LoggerSink::memory()],
         }
     }
 }
 
 impl Logger {
+    pub fn memory_sink() -> Arc<Mutex<VecDeque<LogEntry>>> {
+        Arc::new(Mutex::new(VecDeque::new()))
+    }
+
     pub fn with_sinks(sinks: Vec<LoggerSink>) -> Self {
         Self {
             sinks,
@@ -112,7 +176,10 @@ impl Logger {
     pub fn memory_entries(&self) -> Vec<LogEntry> {
         for sink in &self.sinks {
             if let LoggerSink::Memory(values) = sink {
-                return values.lock().map(|v| v.clone()).unwrap_or_default();
+                return values
+                    .lock()
+                    .map(|v| v.iter().cloned().collect())
+                    .unwrap_or_default();
             }
         }
         Vec::new()
@@ -124,32 +191,21 @@ impl Logger {
             match sink {
                 LoggerSink::Memory(values) => {
                     if let Ok(mut values) = values.lock() {
-                        values.push(entry.clone());
+                        values.push_back(entry.clone());
                         trim_retained_tail(&mut values, DEFAULT_MEMORY_LOG_LIMIT);
                     }
                 }
-                LoggerSink::File(path) => {
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(path)
-                    {
-                        let line = rendered_json.get_or_insert_with(|| {
-                            serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string())
-                        });
-                        let _ = writeln!(file, "{}", line);
-                    }
+                LoggerSink::File(sink) => {
+                    let line = rendered_json.get_or_insert_with(|| {
+                        serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string())
+                    });
+                    sink.write_line(line);
                 }
-                LoggerSink::UdpJson { addr } => {
-                    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-                        let line = rendered_json.get_or_insert_with(|| {
-                            serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string())
-                        });
-                        let _ = socket.send_to(line.as_bytes(), addr);
-                    }
+                LoggerSink::UdpJson(sink) => {
+                    let line = rendered_json.get_or_insert_with(|| {
+                        serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string())
+                    });
+                    sink.send_line(line);
                 }
                 LoggerSink::StdoutJson => {
                     let line = rendered_json.get_or_insert_with(|| {
@@ -162,6 +218,20 @@ impl Logger {
     }
 }
 
+impl LoggerSink {
+    pub fn memory() -> Self {
+        Self::Memory(Logger::memory_sink())
+    }
+
+    pub fn file(path: impl Into<PathBuf>) -> Self {
+        Self::File(Arc::new(PersistentFileSink::new(path)))
+    }
+
+    pub fn udp_json(addr: impl Into<String>) -> Self {
+        Self::UdpJson(Arc::new(PersistentUdpSink::new(addr)))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MetricPoint {
     pub timestamp_ms: u64,
@@ -170,9 +240,25 @@ pub struct MetricPoint {
 
 #[derive(Debug, Clone)]
 pub struct Metrics {
-    counters: BTreeMap<String, Vec<MetricPoint>>,
-    gauges: BTreeMap<String, Vec<MetricPoint>>,
-    histograms: BTreeMap<String, Vec<MetricPoint>>,
+    counters: BTreeMap<String, CounterMetric>,
+    gauges: BTreeMap<String, GaugeMetric>,
+    histograms: BTreeMap<String, HistogramMetric>,
+}
+
+#[derive(Debug, Clone)]
+struct CounterMetric {
+    total: u64,
+    last_updated_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct GaugeMetric {
+    point: MetricPoint,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HistogramMetric {
+    points: VecDeque<MetricPoint>,
 }
 
 impl Metrics {
@@ -185,28 +271,32 @@ impl Metrics {
     }
 
     pub fn inc_counter(&mut self, name: &str, by: u64) {
-        record_metric_point(
-            self.counters.entry(name.to_string()).or_default(),
-            MetricPoint {
-                timestamp_ms: now_ms(),
-                value: by as i64,
-            },
-        );
+        let metric = self
+            .counters
+            .entry(name.to_string())
+            .or_insert_with(|| CounterMetric {
+                total: 0,
+                last_updated_ms: 0,
+            });
+        metric.total = metric.total.saturating_add(by);
+        metric.last_updated_ms = now_ms();
     }
 
     pub fn set_gauge(&mut self, name: &str, value: i64) {
-        record_metric_point(
-            self.gauges.entry(name.to_string()).or_default(),
-            MetricPoint {
-                timestamp_ms: now_ms(),
-                value,
+        self.gauges.insert(
+            name.to_string(),
+            GaugeMetric {
+                point: MetricPoint {
+                    timestamp_ms: now_ms(),
+                    value,
+                },
             },
         );
     }
 
     pub fn observe_histogram(&mut self, name: &str, value: u64) {
         record_metric_point(
-            self.histograms.entry(name.to_string()).or_default(),
+            &mut self.histograms.entry(name.to_string()).or_default().points,
             MetricPoint {
                 timestamp_ms: now_ms(),
                 value: value as i64,
@@ -217,15 +307,12 @@ impl Metrics {
     pub fn counter(&self, name: &str) -> u64 {
         self.counters
             .get(name)
-            .map(|points| points.iter().map(|point| point.value.max(0) as u64).sum())
+            .map(|metric| metric.total)
             .unwrap_or(0)
     }
 
     pub fn gauge(&self, name: &str) -> Option<i64> {
-        self.gauges
-            .get(name)
-            .and_then(|points| points.last())
-            .map(|point| point.value)
+        self.gauges.get(name).map(|metric| metric.point.value)
     }
 
     pub fn histogram(&self, name: &str) -> Vec<u64> {
@@ -233,6 +320,7 @@ impl Metrics {
             .get(name)
             .map(|points| {
                 points
+                    .points
                     .iter()
                     .map(|point| point.value.max(0) as u64)
                     .collect()
@@ -246,6 +334,7 @@ impl Metrics {
             .get(name)
             .map(|points| {
                 points
+                    .points
                     .iter()
                     .map(|point| point.value.max(0) as u64)
                     .collect::<Vec<_>>()
@@ -283,9 +372,9 @@ impl Default for Metrics {
 pub struct Span {
     pub id: u64,
     pub parent_id: Option<u64>,
-    pub name: String,
-    pub correlation_id: String,
-    pub baggage: BTreeMap<String, String>,
+    pub name: Arc<str>,
+    pub correlation_id: Arc<str>,
+    pub baggage: Arc<BTreeMap<String, String>>,
     pub started_ms: u64,
     pub ended_ms: Option<u64>,
     pub duration_ms: Option<u64>,
@@ -294,14 +383,14 @@ pub struct Span {
 #[derive(Debug, Clone)]
 pub struct Tracer {
     next_span: u64,
-    spans: Vec<Span>,
+    spans: VecDeque<Span>,
 }
 
 impl Default for Tracer {
     fn default() -> Self {
         Self {
             next_span: 1,
-            spans: Vec::new(),
+            spans: VecDeque::new(),
         }
     }
 }
@@ -315,15 +404,15 @@ impl Tracer {
         let span = Span {
             id: self.next_span,
             parent_id: None,
-            name: name.into(),
-            correlation_id: correlation_id.into(),
-            baggage: BTreeMap::new(),
+            name: Arc::<str>::from(name.into()),
+            correlation_id: Arc::<str>::from(correlation_id.into()),
+            baggage: Arc::new(BTreeMap::new()),
             started_ms: now_ms(),
             ended_ms: None,
             duration_ms: None,
         };
         self.next_span += 1;
-        self.spans.push(span.clone());
+        self.spans.push_back(span.clone());
         trim_retained_tail(&mut self.spans, DEFAULT_TRACER_SPAN_LIMIT);
         span
     }
@@ -332,7 +421,7 @@ impl Tracer {
         let span = Span {
             id: self.next_span,
             parent_id: Some(parent.id),
-            name: name.into(),
+            name: Arc::<str>::from(name.into()),
             correlation_id: parent.correlation_id.clone(),
             baggage: parent.baggage.clone(),
             started_ms: now_ms(),
@@ -340,7 +429,7 @@ impl Tracer {
             duration_ms: None,
         };
         self.next_span += 1;
-        self.spans.push(span.clone());
+        self.spans.push_back(span.clone());
         trim_retained_tail(&mut self.spans, DEFAULT_TRACER_SPAN_LIMIT);
         span
     }
@@ -355,19 +444,20 @@ impl Tracer {
 
     pub fn inject_baggage(&mut self, id: u64, key: impl Into<String>, value: impl Into<String>) {
         if let Some(span) = self.spans.iter_mut().find(|span| span.id == id) {
-            span.baggage.insert(key.into(), value.into());
+            let baggage = Arc::make_mut(&mut span.baggage);
+            baggage.insert(key.into(), value.into());
         }
     }
 
-    pub fn spans(&self) -> &[Span] {
+    pub fn spans(&self) -> &VecDeque<Span> {
         &self.spans
     }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TraceContext {
-    pub correlation_id: Option<String>,
-    pub baggage: BTreeMap<String, String>,
+    pub correlation_id: Option<Arc<str>>,
+    pub baggage: Arc<BTreeMap<String, String>>,
 }
 
 impl TraceContext {
@@ -382,7 +472,14 @@ impl TraceContext {
         if let Some(correlation_id) = &self.correlation_id {
             span.correlation_id = correlation_id.clone();
         }
-        span.baggage.extend(self.baggage.clone());
+        if !self.baggage.is_empty() {
+            let baggage = Arc::make_mut(&mut span.baggage);
+            baggage.extend(
+                self.baggage
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        }
     }
 }
 
@@ -408,12 +505,12 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn record_metric_point(points: &mut Vec<MetricPoint>, point: MetricPoint) {
-    points.push(point);
+fn record_metric_point(points: &mut VecDeque<MetricPoint>, point: MetricPoint) {
+    points.push_back(point);
     trim_retained_tail(points, DEFAULT_METRIC_HISTORY_LIMIT);
 }
 
-fn trim_retained_tail<T>(values: &mut Vec<T>, limit: usize) {
+fn trim_retained_tail<T>(values: &mut VecDeque<T>, limit: usize) {
     if values.len() > limit {
         let excess = values.len() - limit;
         values.drain(..excess);
@@ -431,7 +528,7 @@ mod tests {
 
     #[test]
     fn logger_redacts_extended_secret_fields() {
-        let sink = LoggerSink::Memory(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let sink = LoggerSink::memory();
         let mut logger = Logger::with_sinks(vec![sink]);
         logger.log(
             LogLevel::Info,
@@ -506,7 +603,7 @@ mod tests {
 
     #[test]
     fn logger_memory_sink_retains_recent_bounded_entries() {
-        let sink = LoggerSink::Memory(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let sink = LoggerSink::memory();
         let mut logger = Logger::with_sinks(vec![sink]);
         for idx in 0..(DEFAULT_MEMORY_LOG_LIMIT + 16) {
             logger.log(LogLevel::Info, format!("entry-{idx}"), None, Vec::new());
@@ -544,10 +641,21 @@ mod tests {
         }
         let spans = tracer.spans();
         assert_eq!(spans.len(), DEFAULT_TRACER_SPAN_LIMIT);
-        assert_eq!(spans.first().map(|span| span.name.as_str()), Some("span-8"));
+        assert_eq!(spans.front().map(|span| span.name.as_ref()), Some("span-8"));
         assert_eq!(
-            spans.last().map(|span| span.name.as_str()),
+            spans.back().map(|span| span.name.as_ref()),
             Some("span-1031")
         );
+    }
+
+    #[test]
+    fn counters_and_gauges_keep_latest_without_history_growth() {
+        let mut metrics = Metrics::new();
+        metrics.inc_counter("requests", 1);
+        metrics.inc_counter("requests", 2);
+        metrics.set_gauge("queue_depth", 4);
+        metrics.set_gauge("queue_depth", 7);
+        assert_eq!(metrics.counter("requests"), 3);
+        assert_eq!(metrics.gauge("queue_depth"), Some(7));
     }
 }
