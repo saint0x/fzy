@@ -2134,21 +2134,42 @@ static int fz_send_http_response_state(
   if (!close_after && state->request_body_eof == 0) {
     close_after = 1;
   }
+  int websocket_upgrade = 0;
+  for (int i = 0; i < state->response_header_count; i++) {
+    const char* key = fz_lookup_string(state->response_header_key_ids[i]);
+    const char* value = fz_lookup_string(state->response_header_value_ids[i]);
+    if (key == NULL || value == NULL) {
+      continue;
+    }
+    if (strncasecmp(key, "upgrade", 7) == 0 && strcasecmp(value, "websocket") == 0) {
+      websocket_upgrade = 1;
+      break;
+    }
+  }
   fz_bytes_buf header;
   fz_bytes_buf_init(&header);
   char status_line[256];
-  int status_len = snprintf(
-      status_line,
-      sizeof(status_line),
-      "HTTP/1.1 %d %s\r\n"
-      "Content-Type: %s\r\n"
-      "Content-Length: %d\r\n"
-      "Connection: %s\r\n",
-      status_code,
-      reason,
-      content_type,
-      body_len,
-      close_after ? "close" : "keep-alive");
+  int status_len = 0;
+  if (status_code == 101 && websocket_upgrade) {
+    status_len = snprintf(
+        status_line,
+        sizeof(status_line),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Connection: Upgrade\r\n");
+  } else {
+    status_len = snprintf(
+        status_line,
+        sizeof(status_line),
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: %s\r\n",
+        status_code,
+        reason,
+        content_type,
+        body_len,
+        close_after ? "close" : "keep-alive");
+  }
   if (status_len <= 0 || fz_bytes_buf_append(&header, status_line, (size_t)status_len) != 0) {
     fz_bytes_buf_free(&header);
     return -1;
