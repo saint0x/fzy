@@ -7,14 +7,24 @@ pub(super) struct ModuleSourceText {
     pub(super) source: Arc<str>,
 }
 
+#[derive(Debug, Clone)]
+pub struct QualifiedModuleUnit {
+    pub path: PathBuf,
+    pub namespace: String,
+    pub ast: ast::Module,
+    pub source_fingerprint: String,
+}
+
 #[derive(Debug)]
 pub struct ParsedProgram {
     pub module: ast::Module,
     pub module_paths: Vec<PathBuf>,
     pub(super) cache_paths: Arc<Vec<PathBuf>>,
     pub module_fingerprint: String,
+    pub global_interface_fingerprint: String,
     pub input_bytes: usize,
     pub(super) module_sources: Arc<Vec<ModuleSourceText>>,
+    pub qualified_modules: Arc<Vec<QualifiedModuleUnit>>,
     pub(super) combined_source: OnceLock<String>,
 }
 
@@ -25,8 +35,10 @@ impl Clone for ParsedProgram {
             module_paths: self.module_paths.clone(),
             cache_paths: Arc::clone(&self.cache_paths),
             module_fingerprint: self.module_fingerprint.clone(),
+            global_interface_fingerprint: self.global_interface_fingerprint.clone(),
             input_bytes: self.input_bytes,
             module_sources: Arc::clone(&self.module_sources),
+            qualified_modules: Arc::clone(&self.qualified_modules),
             combined_source: OnceLock::new(),
         };
         if let Some(existing) = self.combined_source.get() {
@@ -57,5 +69,9 @@ impl ParsedProgram {
         self.module_sources
             .iter()
             .map(|module| (module.path.as_path(), module.source.as_ref()))
+    }
+
+    pub fn qualified_modules(&self) -> &[QualifiedModuleUnit] {
+        self.qualified_modules.as_ref()
     }
 }

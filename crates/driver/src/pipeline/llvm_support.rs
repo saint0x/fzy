@@ -4058,6 +4058,15 @@ pub(super) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Res
 }
 
 pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String> {
+    lower_llvm_ir_partitioned(fir, enforce_contract_checks, None, None)
+}
+
+pub(super) fn lower_llvm_ir_partitioned(
+    fir: &fir::FirModule,
+    enforce_contract_checks: bool,
+    local_functions: Option<&HashSet<String>>,
+    local_mutable_globals: Option<&HashSet<String>>,
+) -> Result<String> {
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
     let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir)?;
     if fir.typed_functions.is_empty() {
@@ -4414,6 +4423,30 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         let ret = llvm_ir_type_for_ast_type(&import.return_type);
         let _ = writeln!(&mut out, "declare {ret} @{}({})", symbol, params);
     }
+    if let Some(local_functions) = local_functions {
+        for function in &fir.typed_functions {
+            if matches!(
+                function.execution_space,
+                ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
+            ) || is_extern_c_import_decl(function)
+                || local_functions.contains(&function.name)
+            {
+                continue;
+            }
+            let params = function
+                .params
+                .iter()
+                .map(|param| llvm_ir_type_for_ast_type(&param.ty))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret = llvm_ir_type_for_ast_type(&function.return_type);
+            let _ = writeln!(
+                &mut out,
+                "declare {ret} @{}({params})",
+                native_link_symbol_for_function(function),
+            );
+        }
+    }
     if !used_imports.is_empty() || !used_data_plane_imports.is_empty() || !extern_imports.is_empty()
     {
         out.push('\n');
@@ -4427,7 +4460,12 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
     mutable_globals_sorted.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, value) in &mutable_globals_sorted {
         let symbol = llvm_static_symbol_name(name);
-        let _ = writeln!(&mut out, "@{symbol} = global i32 {value}");
+        let local = local_mutable_globals.is_none_or(|set| set.contains(name));
+        if local {
+            let _ = writeln!(&mut out, "@{symbol} = global i32 {value}");
+        } else {
+            let _ = writeln!(&mut out, "@{symbol} = external global i32");
+        }
         mutable_global_symbols.insert(name.clone(), symbol);
     }
     if !mutable_global_symbols.is_empty() {
@@ -4440,7 +4478,9 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         ) {
             continue;
         }
-        if is_extern_c_import_decl(function) {
+        if is_extern_c_import_decl(function)
+            || local_functions.is_some_and(|set| !set.contains(&function.name))
+        {
             continue;
         }
         if let Some(data_ops) = plan.data_ops_by_function.get(&function.name) {

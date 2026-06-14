@@ -929,6 +929,7 @@ mod tests {
                 path: source.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: true,
                 threads: None,
                 backend: None,
@@ -996,6 +997,7 @@ mod tests {
                 path: root.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: true,
                 threads: None,
                 backend: None,
@@ -1593,6 +1595,7 @@ mod tests {
                 path: source.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: false,
                 threads: Some(3),
                 backend: None,
@@ -1643,6 +1646,7 @@ mod tests {
                 path: root.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: false,
                 threads: None,
                 backend: None,
@@ -1693,6 +1697,7 @@ mod tests {
                 path: source.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: true,
                 threads: None,
                 backend: None,
@@ -1772,6 +1777,7 @@ mod tests {
                 path: source.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: false,
                 threads: None,
                 backend: None,
@@ -2527,6 +2533,7 @@ mod tests {
                     path: root.clone(),
                     release: false,
                     strict: false,
+                    incremental: false,
                     lib: true,
                     threads: None,
                     backend: Some(backend.to_string()),
@@ -4082,6 +4089,7 @@ fn main() -> i32 {
                 path: root.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: false,
                 threads: None,
                 backend: Some("llvm".to_string()),
@@ -4191,6 +4199,7 @@ fn main() -> i32 {
                 path: root.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: false,
                 threads: None,
                 backend: Some("llvm".to_string()),
@@ -4218,6 +4227,7 @@ fn main() -> i32 {
                 path: root.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: false,
                 threads: None,
                 backend: Some("llvm".to_string()),
@@ -4312,6 +4322,7 @@ fn main() -> i32 {
                 path: root.clone(),
                 release: false,
                 strict: false,
+                incremental: false,
                 lib: false,
                 threads: None,
                 backend: Some("llvm".to_string()),
@@ -7696,6 +7707,109 @@ fn main() -> i32 {
         assert!(root.join("src/main.fzy").exists());
         assert!(root.join("tests/example.fozzy.json").exists());
         assert!(root.join(".fozzy/corpora").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incremental_build_reuses_module_objects_on_second_build() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-incr-reuse-{suffix}"));
+        std::fs::create_dir_all(root.join("src/services")).expect("project dirs should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"incr_reuse\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"incr_reuse\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\nfn main() -> i32 {\n    return services.boot()\n}\n",
+        )
+        .expect("main should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn boot() -> i32 {\n    return 7\n}\n",
+        )
+        .expect("service should be written");
+
+        let first = compile_file_incremental_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            None,
+        )
+        .expect("first incremental build should succeed");
+        assert_eq!(first.status, "ok");
+        assert!(
+            first
+                .incremental
+                .as_ref()
+                .is_some_and(|report| report.rebuilt_modules > 0)
+        );
+
+        let second = compile_file_incremental_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            None,
+        )
+        .expect("second incremental build should succeed");
+        let report = second
+            .incremental
+            .expect("incremental report should be attached");
+        assert_eq!(report.rebuilt_modules, 0);
+        assert_eq!(report.reused_modules, report.module_count);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incremental_build_targets_touched_module_without_rebuilding_everything() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-incr-touch-{suffix}"));
+        std::fs::create_dir_all(root.join("src/services")).expect("project dirs should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"incr_touch\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"incr_touch\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\nfn main() -> i32 {\n    return services.boot()\n}\n",
+        )
+        .expect("main should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn boot() -> i32 {\n    return 7\n}\n\npub fn health() -> i32 {\n    return 1\n}\n",
+        )
+        .expect("service should be written");
+
+        compile_file_incremental_with_backend_with_root_guidance(&root, BuildProfile::Dev, None)
+            .expect("seed incremental build should succeed");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn boot() -> i32 {\n    return 8\n}\n\npub fn health() -> i32 {\n    return 1\n}\n",
+        )
+        .expect("service should mutate");
+
+        let rebuilt = compile_file_incremental_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            None,
+        )
+        .expect("incremental rebuild should succeed");
+        let report = rebuilt
+            .incremental
+            .expect("incremental report should be attached");
+        assert!(report.rebuilt_modules >= 1);
+        assert!(report.rebuilt_modules < report.module_count);
+        assert!(report.module_details.iter().any(|module| {
+            module.path.ends_with("src/services/mod.fzy") && module.rebuilt
+        }));
 
         let _ = std::fs::remove_dir_all(root);
     }

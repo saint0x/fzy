@@ -124,6 +124,123 @@ pub fn compile_file_with_backend(
         diagnostic_details,
         output,
         dependency_graph_hash: resolved.dependency_graph_hash,
+        incremental: None,
+    })
+}
+
+pub fn compile_file_incremental_with_backend(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<BuildArtifact> {
+    let resolved = resolve_source_path(path)?;
+    let backend = resolve_native_backend(profile, backend_override)?;
+    let pgo = configured_pgo();
+    if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
+        bail!(
+            "PGO is only supported with backend `llvm`; current backend is `{}`",
+            backend
+        );
+    }
+    let parsed = parse_program_shared(&resolved.source_path)?;
+    let experimental_diagnostics =
+        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
+    let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
+    let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
+    let lowered = lower_fir_cached_shared(&parsed);
+    let gpu_backend = resolve_gpu_backend(module_uses_gpu(&lowered.typed), None)?;
+    policy_artifacts::write_safety_artifacts(
+        &resolved.project_root,
+        &parsed,
+        &lowered.typed,
+        &lowered.fir,
+        resolved.manifest.as_ref(),
+    )?;
+    let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
+    let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
+    let report = verifier::verify_with_policy(
+        &lowered.fir,
+        verifier::VerifyPolicy {
+            safe_profile: matches!(profile, BuildProfile::Verify),
+            production_memory_safety: true,
+            strict_unsafe_contracts,
+            deny_unsafe_in,
+            allow_unsafe_in,
+        },
+    );
+    let checks_enabled = resolved
+        .manifest
+        .as_ref()
+        .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
+        .unwrap_or(true);
+    let contract_diagnostics =
+        compile_time_contract_diagnostics(&parsed.module, &lowered.fir, checks_enabled, profile);
+    let kernel_ir_diagnostics = kernel_ir_diagnostics(&lowered.typed);
+    let gpu_backend_diagnostics = gpu_backend_execution_diagnostics(&lowered.typed, gpu_backend);
+    let has_verifier_errors = report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_experimental_errors = experimental_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_native_lowerability_errors = !native_lowerability_errors.is_empty();
+    let has_backend_risks = backend_risks
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_contract_errors = !contract_diagnostics.is_empty();
+    let has_kernel_ir_errors = kernel_ir_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_gpu_backend_errors = gpu_backend_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let status = if has_experimental_errors
+        || has_native_lowerability_errors
+        || has_backend_risks
+        || has_contract_errors
+        || has_kernel_ir_errors
+        || has_gpu_backend_errors
+        || has_verifier_errors
+    {
+        "error"
+    } else {
+        "ok"
+    };
+    let mut diagnostic_details = experimental_diagnostics;
+    diagnostic_details.extend(native_lowerability_errors);
+    diagnostic_details.extend(backend_risks);
+    diagnostic_details.extend(report.diagnostics);
+    diagnostic_details.extend(contract_diagnostics);
+    diagnostic_details.extend(kernel_ir_diagnostics);
+    diagnostic_details.extend(gpu_backend_diagnostics);
+    normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
+    let module_plans =
+        build_incremental_module_plans(&parsed, &lowered.fir, &resolved.project_root);
+    let (output, incremental) = if status == "ok" {
+        let (output, report) = emit_native_incremental_binary(
+            &lowered.fir,
+            &parsed,
+            &resolved.project_root,
+            &resolved.artifact_stem,
+            profile,
+            resolved.manifest.as_ref(),
+            Some(backend.as_str()),
+            &module_plans,
+        )?;
+        (Some(output), Some(report))
+    } else {
+        (None, None)
+    };
+    Ok(BuildArtifact {
+        module: lowered.fir.name.clone(),
+        profile,
+        status,
+        diagnostics: diagnostic_details.len(),
+        diagnostic_details,
+        output,
+        dependency_graph_hash: resolved.dependency_graph_hash,
+        incremental,
     })
 }
 
@@ -251,7 +368,215 @@ pub fn compile_library_with_backend(
         static_lib,
         shared_lib,
         dependency_graph_hash: resolved.dependency_graph_hash,
+        incremental: None,
     })
+}
+
+pub fn compile_library_incremental_with_backend(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<LibraryArtifact> {
+    let resolved = resolve_source_path_with_target(path, true)?;
+    let backend = resolve_native_backend(profile, backend_override)?;
+    let pgo = configured_pgo();
+    if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
+        bail!(
+            "PGO is only supported with backend `llvm`; current backend is `{}`",
+            backend
+        );
+    }
+    let parsed = parse_program_shared(&resolved.source_path)?;
+    let experimental_diagnostics =
+        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
+    let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
+    let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
+    let lowered = lower_fir_cached_shared(&parsed);
+    let gpu_backend = resolve_gpu_backend(module_uses_gpu(&lowered.typed), None)?;
+    policy_artifacts::write_safety_artifacts(
+        &resolved.project_root,
+        &parsed,
+        &lowered.typed,
+        &lowered.fir,
+        resolved.manifest.as_ref(),
+    )?;
+    let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
+    let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
+    let report = verifier::verify_with_policy(
+        &lowered.fir,
+        verifier::VerifyPolicy {
+            safe_profile: matches!(profile, BuildProfile::Verify),
+            production_memory_safety: true,
+            strict_unsafe_contracts,
+            deny_unsafe_in,
+            allow_unsafe_in,
+        },
+    );
+    let checks_enabled = resolved
+        .manifest
+        .as_ref()
+        .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
+        .unwrap_or(true);
+    let contract_diagnostics =
+        compile_time_contract_diagnostics(&parsed.module, &lowered.fir, checks_enabled, profile);
+    let kernel_ir_diagnostics = kernel_ir_diagnostics(&lowered.typed);
+    let gpu_backend_diagnostics = gpu_backend_execution_diagnostics(&lowered.typed, gpu_backend);
+    let has_verifier_errors = report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_experimental_errors = experimental_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_native_lowerability_errors = !native_lowerability_errors.is_empty();
+    let has_backend_risks = backend_risks
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_contract_errors = !contract_diagnostics.is_empty();
+    let has_kernel_ir_errors = kernel_ir_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_gpu_backend_errors = gpu_backend_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let status = if has_experimental_errors
+        || has_native_lowerability_errors
+        || has_backend_risks
+        || has_contract_errors
+        || has_kernel_ir_errors
+        || has_gpu_backend_errors
+        || has_verifier_errors
+    {
+        "error"
+    } else {
+        "ok"
+    };
+    let mut diagnostic_details = experimental_diagnostics;
+    diagnostic_details.extend(native_lowerability_errors);
+    diagnostic_details.extend(backend_risks);
+    diagnostic_details.extend(report.diagnostics);
+    diagnostic_details.extend(contract_diagnostics);
+    diagnostic_details.extend(kernel_ir_diagnostics);
+    diagnostic_details.extend(gpu_backend_diagnostics);
+    normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
+    let module_plans =
+        build_incremental_module_plans(&parsed, &lowered.fir, &resolved.project_root);
+    let ((static_lib, shared_lib), incremental) = if status == "ok" {
+        emit_native_incremental_libraries(
+            &lowered.fir,
+            &parsed,
+            &resolved.project_root,
+            &resolved.artifact_stem,
+            profile,
+            resolved.manifest.as_ref(),
+            Some(backend.as_str()),
+            &module_plans,
+        )?
+    } else {
+        ((None, None), IncrementalBuildReport {
+            enabled: true,
+            module_count: module_plans.len(),
+            rebuilt_modules: 0,
+            reused_modules: 0,
+            global_interface_fingerprint: parsed.global_interface_fingerprint.clone(),
+            module_details: Vec::new(),
+        })
+    };
+    Ok(LibraryArtifact {
+        module: lowered.fir.name.clone(),
+        profile,
+        status,
+        diagnostics: diagnostic_details.len(),
+        diagnostic_details,
+        static_lib,
+        shared_lib,
+        dependency_graph_hash: resolved.dependency_graph_hash,
+        incremental: (status == "ok").then_some(incremental),
+    })
+}
+
+fn build_incremental_module_plans(
+    parsed: &ParsedProgram,
+    fir: &fir::FirModule,
+    project_root: &Path,
+) -> Vec<IncrementalModuleUnitPlan> {
+    let mut plans = parsed
+        .qualified_modules()
+        .iter()
+        .map(|unit| {
+            let mut local_functions = HashSet::new();
+            let mut local_mutable_globals = HashSet::new();
+            for item in &unit.ast.items {
+                match item {
+                    ast::Item::Function(function) => {
+                        local_functions.insert(function.name.clone());
+                    }
+                    ast::Item::Impl(item) => {
+                        let receiver = item.for_type.to_string();
+                        for method in &item.methods {
+                            local_functions.insert(format!("{receiver}.{}", method.name));
+                        }
+                    }
+                    ast::Item::Static(item) if item.mutable => {
+                        local_mutable_globals.insert(item.name.clone());
+                    }
+                    ast::Item::Const(_)
+                    | ast::Item::Static(_)
+                    | ast::Item::TypeAlias(_)
+                    | ast::Item::NewType(_)
+                    | ast::Item::Struct(_)
+                    | ast::Item::Enum(_)
+                    | ast::Item::Trait(_)
+                    | ast::Item::Test(_) => {}
+                }
+            }
+            IncrementalModuleUnitPlan {
+                path: unit.path.clone(),
+                namespace: unit.namespace.clone(),
+                source_fingerprint: unit.source_fingerprint.clone(),
+                local_functions,
+                local_mutable_globals,
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut claimed_functions = plans
+        .iter()
+        .flat_map(|plan| plan.local_functions.iter().cloned())
+        .collect::<HashSet<_>>();
+    let mut claimed_globals = plans
+        .iter()
+        .flat_map(|plan| plan.local_mutable_globals.iter().cloned())
+        .collect::<HashSet<_>>();
+    let residual_functions = fir
+        .typed_functions
+        .iter()
+        .filter(|function| {
+            !matches!(
+                function.execution_space,
+                ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
+            ) && !is_extern_c_import_decl(function)
+                && !claimed_functions.contains(&function.name)
+        })
+        .map(|function| function.name.clone())
+        .collect::<HashSet<_>>();
+    let residual_globals = fir
+        .typed_globals
+        .iter()
+        .filter(|global| global.mutable && !claimed_globals.contains(&global.name))
+        .map(|global| global.name.clone())
+        .collect::<HashSet<_>>();
+    if !residual_functions.is_empty() || !residual_globals.is_empty() {
+        claimed_functions.extend(residual_functions.iter().cloned());
+        claimed_globals.extend(residual_globals.iter().cloned());
+        plans.push(IncrementalModuleUnitPlan {
+            path: project_root.join(".fz").join("incremental-stdlib"),
+            namespace: "::__synthetic_stdlib".to_string(),
+            source_fingerprint: parsed.global_interface_fingerprint.clone(),
+            local_functions: residual_functions,
+            local_mutable_globals: residual_globals,
+        });
+    }
+    plans
 }
 
 fn cached_compile_file_artifact(
@@ -278,6 +603,7 @@ fn cached_compile_file_artifact(
         diagnostic_details: Vec::new(),
         output: Some(output),
         dependency_graph_hash: resolved.dependency_graph_hash.clone(),
+        incremental: None,
     })
 }
 
@@ -307,6 +633,7 @@ fn cached_compile_library_artifact(
         static_lib,
         shared_lib,
         dependency_graph_hash: resolved.dependency_graph_hash.clone(),
+        incremental: None,
     })
 }
 

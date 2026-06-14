@@ -15,12 +15,30 @@ fn compile_file_with_backend_with_root_guidance(
         .map_err(|error| attach_project_root_guidance(path, error))
 }
 
+fn compile_file_incremental_with_backend_with_root_guidance(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<BuildArtifact> {
+    compile_file_incremental_with_backend(path, profile, backend_override)
+        .map_err(|error| attach_project_root_guidance(path, error))
+}
+
 fn compile_library_with_backend_with_root_guidance(
     path: &Path,
     profile: BuildProfile,
     backend_override: Option<&str>,
 ) -> Result<LibraryArtifact> {
     compile_library_with_backend(path, profile, backend_override)
+        .map_err(|error| attach_project_root_guidance(path, error))
+}
+
+fn compile_library_incremental_with_backend_with_root_guidance(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<LibraryArtifact> {
+    compile_library_incremental_with_backend(path, profile, backend_override)
         .map_err(|error| attach_project_root_guidance(path, error))
 }
 
@@ -491,4 +509,3 @@ pub(crate) fn resolve_diagnostic_explain(raw: &str) -> DiagnosticExplainResoluti
         catalog_entry,
     }
 }
-

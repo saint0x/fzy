@@ -77,6 +77,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             let path = arg_path_or_cwd(args, 1)?;
             let release = args.iter().any(|a| a == "--release");
             let strict = args.iter().any(|a| a == "--strict");
+            let incremental = args.iter().any(|a| a == "--incr" || a == "--incremental");
             let lib = args.iter().any(|a| a == "--lib");
             let threads = parse_u16_flag(args, "--threads")?;
             let backend = parse_backend_flag(args)?;
@@ -92,6 +93,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 path,
                 release,
                 strict,
+                incremental,
                 lib,
                 threads,
                 backend,
@@ -515,7 +517,7 @@ fn print_help() {
         "fz <command> [options]\n\
 commands:\n\
   init [path] [--name package] [--template minimal|rust|ts] [--with run,fuzz,explore,memory,host|all] [--force]\n\
-  build [path] [--release|--strict] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
+  build [path] [--release|--strict] [--incr|--incremental] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
   run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends|--proc-backend host --fs-backend host --http-backend host] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
   test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt [path ...] [--check]\n\
@@ -1248,6 +1250,27 @@ mod tests {
                 assert_eq!(path, PathBuf::from("examples/fullstack"));
                 assert!(strict);
                 assert!(!release);
+            }
+            _ => panic!("expected build command"),
+        }
+    }
+
+    #[test]
+    fn parse_build_with_incremental_flag() {
+        let args = vec![
+            "build".to_string(),
+            "examples/fullstack".to_string(),
+            "--incr".to_string(),
+        ];
+        let command = parse_command(&args).expect("incremental build should parse");
+        match command {
+            Command::Build {
+                path,
+                incremental,
+                ..
+            } => {
+                assert_eq!(path, PathBuf::from("examples/fullstack"));
+                assert!(incremental);
             }
             _ => panic!("expected build command"),
         }

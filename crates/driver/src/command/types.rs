@@ -17,7 +17,8 @@ use sha2::{Digest, Sha256};
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    check_file, compile_file_with_backend, compile_library_with_backend,
+    check_file, compile_file_incremental_with_backend, compile_file_with_backend,
+    compile_library_incremental_with_backend, compile_library_with_backend,
     embedded_core_stdlib_module_source, emit_ir, gpu_backend_report_json,
     lower_fir_cached_with_metadata, parse_program, parse_program_with_metadata, refresh_lockfile,
     verify_file, BuildArtifact, BuildProfile, LibraryArtifact, Output,
@@ -101,6 +102,7 @@ pub enum Command {
         path: PathBuf,
         release: bool,
         strict: bool,
+        incremental: bool,
         lib: bool,
         threads: Option<u16>,
         backend: Option<String>,

@@ -109,6 +109,19 @@ fn render_artifact(
                     ),
                 ),
             ]);
+            if let Some(incremental) = &artifact.incremental {
+                rendered.push('\n');
+                rendered.push_str(&render_text_fields(&[
+                    ("incremental", incremental.enabled.to_string()),
+                    ("module_count", incremental.module_count.to_string()),
+                    ("rebuilt_modules", incremental.rebuilt_modules.to_string()),
+                    ("reused_modules", incremental.reused_modules.to_string()),
+                    (
+                        "global_interface_fingerprint",
+                        incremental.global_interface_fingerprint.clone(),
+                    ),
+                ]));
+            }
             if let Some(interop) = interop {
                 rendered.push('\n');
                 rendered.push_str(&render_text_fields(&[
@@ -153,6 +166,7 @@ fn render_artifact(
                 "diagnostics": artifact.diagnostics,
                 "items": artifact.diagnostic_details,
                 "dependencyGraphHash": artifact.dependency_graph_hash,
+                "incremental": artifact.incremental,
                 "policy": {
                     "profile": artifact.profile.as_str(),
                     "unsafeEnforcement": "profile-driven",
@@ -260,6 +274,16 @@ fn render_library_artifact(
                     ),
                 ),
             ];
+            if let Some(incremental) = &artifact.incremental {
+                fields.push(("incremental", incremental.enabled.to_string()));
+                fields.push(("module_count", incremental.module_count.to_string()));
+                fields.push(("rebuilt_modules", incremental.rebuilt_modules.to_string()));
+                fields.push(("reused_modules", incremental.reused_modules.to_string()));
+                fields.push((
+                    "global_interface_fingerprint",
+                    incremental.global_interface_fingerprint.clone(),
+                ));
+            }
             if let Some(interop) = interop {
                 fields.push(("header", interop.headers.path.display().to_string()));
                 fields.push((
@@ -290,6 +314,7 @@ fn render_library_artifact(
             "diagnostics": artifact.diagnostics,
             "items": artifact.diagnostic_details,
             "dependencyGraphHash": artifact.dependency_graph_hash,
+            "incremental": artifact.incremental,
             "policy": {
                 "profile": artifact.profile.as_str(),
                 "unsafeEnforcement": "profile-driven",
@@ -613,4 +638,3 @@ fn render_code_frame(
     }
     Some(frame)
 }
-

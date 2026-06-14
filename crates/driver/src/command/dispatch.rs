@@ -18,6 +18,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             path,
             release,
             strict,
+            incremental,
             lib,
             threads,
             backend,
@@ -42,11 +43,19 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let _compile_scope =
                 BuildCompileEnvScope::new(threads, pgo_generate, pgo_use.as_deref(), &path)?;
             if lib {
-                let artifact = compile_library_with_backend_with_root_guidance(
-                    &path,
-                    profile,
-                    backend.as_deref(),
-                )?;
+                let artifact = if incremental {
+                    compile_library_incremental_with_backend_with_root_guidance(
+                        &path,
+                        profile,
+                        backend.as_deref(),
+                    )?
+                } else {
+                    compile_library_with_backend_with_root_guidance(
+                        &path,
+                        profile,
+                        backend.as_deref(),
+                    )?
+                };
                 let headers = generate_c_headers(&path, None)?;
                 let interop = finalize_build_interop_artifacts(&path, &artifact, headers)?;
                 let rendered = render_library_artifact(
@@ -59,11 +68,19 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 let unsafe_docs = maybe_generate_unsafe_docs(&path);
                 Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
             } else {
-                let artifact = compile_file_with_backend_with_root_guidance(
-                    &path,
-                    profile,
-                    backend.as_deref(),
-                )?;
+                let artifact = if incremental {
+                    compile_file_incremental_with_backend_with_root_guidance(
+                        &path,
+                        profile,
+                        backend.as_deref(),
+                    )?
+                } else {
+                    compile_file_with_backend_with_root_guidance(
+                        &path,
+                        profile,
+                        backend.as_deref(),
+                    )?
+                };
                 let interop = if artifact.status == "ok" {
                     maybe_generate_build_interop_artifacts(&path, profile, backend.as_deref())?
                 } else {

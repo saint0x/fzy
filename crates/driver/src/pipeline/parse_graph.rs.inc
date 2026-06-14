@@ -38,8 +38,10 @@ fn parse_program_uncached_with_root_source(
     state.loaded = loaded_modules.into_iter().collect();
 
     let mut fingerprint = Sha256::new();
+    let mut interface_fingerprints = Vec::with_capacity(state.load_order.len());
     let mut input_bytes = 0usize;
     let mut module_sources = Vec::with_capacity(state.load_order.len());
+    let mut qualified_modules = Vec::with_capacity(state.load_order.len());
     for path in &state.load_order {
         let loaded = state
             .loaded
@@ -58,7 +60,17 @@ fn parse_program_uncached_with_root_source(
             path: path.clone(),
             source: Arc::<str>::from(loaded.source.as_str()),
         });
+        interface_fingerprints.push(module_interface_fingerprint(&loaded.ast)?);
+        qualified_modules.push(QualifiedModuleUnit {
+            path: path.clone(),
+            namespace: loaded.namespace.clone(),
+            ast: loaded.ast.clone(),
+            source_fingerprint: loaded.source_fingerprint.clone(),
+        });
     }
+    interface_fingerprints.sort();
+    let global_interface_fingerprint =
+        sha256_hex(interface_fingerprints.join("\n").as_bytes());
     let mut merged = state
         .loaded
         .remove(canonical)
@@ -84,8 +96,10 @@ fn parse_program_uncached_with_root_source(
         module_paths: state.load_order,
         cache_paths: Arc::new(cache_paths),
         module_fingerprint: format!("{:x}", fingerprint.finalize()),
+        global_interface_fingerprint,
         input_bytes,
         module_sources: Arc::new(module_sources),
+        qualified_modules: Arc::new(qualified_modules),
         combined_source: OnceLock::new(),
     })
 }
@@ -152,6 +166,8 @@ fn store_parsed_program_cache(canonical: &Path, parsed: Arc<ParsedProgram>) {
 struct LoadedModule {
     ast: ast::Module,
     source: String,
+    namespace: String,
+    source_fingerprint: String,
 }
 
 #[derive(Debug, Clone)]
@@ -343,10 +359,34 @@ fn parse_and_qualify_module(
     Ok((
         module_path.to_path_buf(),
         LoadedModule {
+            source_fingerprint: sha256_hex(discovered_module.source.as_bytes()),
+            namespace: discovered_module.namespace.clone(),
             ast,
             source: discovered_module.source.clone(),
         },
     ))
+}
+
+fn module_interface_fingerprint(module: &ast::Module) -> Result<String> {
+    let mut summary = module.clone();
+    for item in &mut summary.items {
+        match item {
+            ast::Item::Function(function) => function.body.clear(),
+            ast::Item::Impl(item) => {
+                for method in &mut item.methods {
+                    method.body.clear();
+                }
+            }
+            ast::Item::Const(_) | ast::Item::Static(_) => {}
+            ast::Item::Test(test) => test.body.clear(),
+            ast::Item::TypeAlias(_)
+            | ast::Item::NewType(_)
+            | ast::Item::Struct(_)
+            | ast::Item::Enum(_)
+            | ast::Item::Trait(_) => {}
+        }
+    }
+    Ok(sha256_hex(format!("{summary:#?}").as_bytes()))
 }
 
 fn module_namespace_with_prefix(
@@ -2937,4 +2977,3 @@ fn format_module_cycle(stack: &[PathBuf], repeated: &Path) -> String {
     }
     repeated.display().to_string()
 }
-

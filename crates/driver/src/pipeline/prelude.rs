@@ -49,7 +49,8 @@ use self::linker_support::{
 };
 use self::llvm_support::{
     llvm_emit_array_literal_value, llvm_emit_binary_expr, llvm_emit_complex_expr,
-    llvm_emit_simple_expr, llvm_float_literal, lower_llvm_ir, LlvmFuncCtx, LlvmValue,
+    llvm_emit_simple_expr, llvm_float_literal, lower_llvm_ir, lower_llvm_ir_partitioned,
+    LlvmFuncCtx, LlvmValue,
 };
 use self::native_backend_support::{
     backend_capability_diagnostics, declare_native_data_plane_imports,
@@ -75,7 +76,7 @@ use self::native_runtime_tables::{
     native_runtime_import_for_callee, NativeRuntimeImport, NATIVE_DATA_PLANE_IMPORTS,
     NATIVE_RUNTIME_IMPORTS,
 };
-use self::parse_graph::{ModuleSourceText, ParsedProgram};
+use self::parse_graph::{ModuleSourceText, ParsedProgram, QualifiedModuleUnit};
 
 #[derive(Clone, Copy)]
 struct LocalBinding {
@@ -241,6 +242,7 @@ pub struct BuildArtifact {
     pub diagnostic_details: Vec<diagnostics::Diagnostic>,
     pub output: Option<PathBuf>,
     pub dependency_graph_hash: Option<String>,
+    pub incremental: Option<IncrementalBuildReport>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +255,35 @@ pub struct LibraryArtifact {
     pub static_lib: Option<PathBuf>,
     pub shared_lib: Option<PathBuf>,
     pub dependency_graph_hash: Option<String>,
+    pub incremental: Option<IncrementalBuildReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IncrementalBuildReport {
+    pub enabled: bool,
+    pub module_count: usize,
+    pub rebuilt_modules: usize,
+    pub reused_modules: usize,
+    pub global_interface_fingerprint: String,
+    pub module_details: Vec<IncrementalModuleReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IncrementalModuleReport {
+    pub path: String,
+    pub namespace: String,
+    pub source_fingerprint: String,
+    pub rebuilt: bool,
+    pub object: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IncrementalModuleUnitPlan {
+    pub path: PathBuf,
+    pub namespace: String,
+    pub source_fingerprint: String,
+    pub local_functions: HashSet<String>,
+    pub local_mutable_globals: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
