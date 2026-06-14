@@ -1,0 +1,6 @@
+{
+  "dependencies": [],
+  "lockHash": "b594497ee061bd978d80be1f5d71f030ed13b18b24fc7152817e643dd9faaec5",
+  "lockfile": "tests/fixtures/compiler_phase_lockin/fozzy.lock",
+  "schemaVersion": "fozzylang.vendor.v0"
+}
