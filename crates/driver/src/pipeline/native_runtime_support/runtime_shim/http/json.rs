@@ -402,6 +402,7 @@ int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id) {
   }
 
   return current;
+}
 
 "#
 }

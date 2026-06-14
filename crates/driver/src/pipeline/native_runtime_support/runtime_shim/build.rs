@@ -58,10 +58,9 @@ pub(crate) fn ensure_native_runtime_shim(
     let digest = hasher.finalize();
     let tag = hex_encode(&digest[..8]);
     let runtime_shim_path = build_dir.join(format!("fz_native_runtime_{tag}.c"));
-    std::fs::write(
-        &runtime_shim_path,
-        render_native_runtime_shim(string_literals, task_symbols, async_exports, sync_exports),
-    )
+    let rendered =
+        render_native_runtime_shim(string_literals, task_symbols, async_exports, sync_exports);
+    write_atomic_text_file(&runtime_shim_path, &rendered)
     .with_context(|| {
         format!(
             "failed writing native runtime shim source: {}",

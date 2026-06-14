@@ -3,10 +3,11 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
 
     use super::super::*;
+    use crate::pipeline::IncrementalBuildReport;
 
     fn run_check_text(source: &str, suffix: &str) -> String {
         let unique = std::time::SystemTime::now()
@@ -7810,6 +7811,90 @@ fn main() -> i32 {
         assert!(report.module_details.iter().any(|module| {
             module.path.ends_with("src/services/mod.fzy") && module.rebuilt
         }));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incremental_build_serializes_same_project_parallel_calls() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-incr-parallel-{suffix}"));
+        std::fs::create_dir_all(root.join("src/services")).expect("project dirs should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"incr_parallel\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"incr_parallel\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\nfn main() -> i32 {\n    return services.boot()\n}\n",
+        )
+        .expect("main should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn boot() -> i32 {\n    return 7\n}\n",
+        )
+        .expect("service should be written");
+
+        let worker_count = 4usize;
+        let barrier = Arc::new(Barrier::new(worker_count));
+        let mut handles = Vec::new();
+        for _ in 0..worker_count {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                compile_file_incremental_with_backend_with_root_guidance(
+                    &root,
+                    BuildProfile::Dev,
+                    None,
+                )
+            }));
+        }
+
+        let results: Vec<BuildArtifact> = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("parallel incremental build thread should not panic")
+                    .expect("parallel incremental build should succeed")
+            })
+            .collect();
+        assert!(results.iter().all(|artifact| artifact.status == "ok"));
+        assert!(results
+            .iter()
+            .all(|artifact| artifact.output.as_ref().is_some_and(|path| path.exists())));
+
+        let reports: Vec<&IncrementalBuildReport> = results
+            .iter()
+            .map(|artifact| {
+                artifact
+                    .incremental
+                    .as_ref()
+                    .expect("incremental report should be attached")
+            })
+            .collect();
+        assert!(reports.iter().any(|report| report.rebuilt_modules > 0));
+        assert!(reports.iter().all(|report| {
+            report.rebuilt_modules + report.reused_modules == report.module_count
+        }));
+        assert!(reports
+            .iter()
+            .all(|report| report.module_count == reports[0].module_count));
+
+        let status = std::process::Command::new(
+            results[0]
+                .output
+                .as_ref()
+                .expect("artifact output should be present"),
+        )
+        .status()
+        .expect("built binary should execute");
+        assert_eq!(status.code(), Some(7));
 
         let _ = std::fs::remove_dir_all(root);
     }

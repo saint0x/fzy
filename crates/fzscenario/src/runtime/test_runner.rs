@@ -68,12 +68,6 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             PlannedScenario::Executable { .. } => None,
         })
         .collect::<Vec<_>>();
-    if !distributed_paths.is_empty() {
-        return Err(FozzyError::InvalidArgument(format!(
-            "fz test discovered distributed scenario(s) that must be run with `fz explore`: {}",
-            distributed_paths.join(", ")
-        )));
-    }
     let executable_scenarios = planned_scenarios
         .into_iter()
         .filter_map(|planned| match planned {
@@ -83,13 +77,22 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             PlannedScenario::Distributed { .. } => None,
         })
         .collect::<Vec<_>>();
+    if executable_scenarios.is_empty() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "fz test matched only distributed scenario(s) that must be run with `fz explore`: {}",
+            distributed_paths.join(", ")
+        )));
+    }
 
     let jobs = if opt.fail_fast {
         1
     } else {
         opt.jobs.unwrap_or(1).max(1)
     };
-    let mut outcome = TestOutcome::new(skipped, opt.record_trace_to.is_some());
+    let mut outcome = TestOutcome::new(
+        skipped.saturating_add(distributed_paths.len() as u64),
+        opt.record_trace_to.is_some(),
+    );
     if jobs == 1 || executable_scenarios.len() <= 1 {
         run_serial_tests(config, &executable_scenarios, opt, seed, &mut outcome)?;
     } else {
@@ -488,5 +491,99 @@ mod tests {
         assert_eq!(tests.passed, 2);
         assert_eq!(tests.failed, 0);
         assert!(result.summary.findings.is_empty());
+    }
+
+    #[test]
+    fn run_tests_skips_distributed_scenarios_when_steps_are_present() {
+        let root = temp_path("mixed-suite");
+        std::fs::create_dir_all(&root).expect("suite dir");
+        let step_path = root.join("a.fozzy.json");
+        let distributed_path = root.join("b.fozzy.json");
+        std::fs::write(
+            &step_path,
+            br#"{"version":1,"name":"demo","steps":[{"type":"trace_event","name":"ok","fields":{}}]}"#,
+        )
+        .expect("write step scenario");
+        std::fs::write(
+            &distributed_path,
+            br#"{"version":1,"name":"dist","distributed":{"node_count":2,"steps":[]}}"#,
+        )
+        .expect("write distributed scenario");
+
+        let config = crate::Config {
+            base_dir: root.join(".fozzy"),
+            ..crate::Config::default()
+        };
+        let globs = vec![
+            step_path.to_string_lossy().to_string(),
+            distributed_path.to_string_lossy().to_string(),
+        ];
+        let result = run_tests(
+            &config,
+            &globs,
+            &RunOptions {
+                det: true,
+                seed: Some(7),
+                timeout: None,
+                reporter: crate::Reporter::Json,
+                record_trace_to: None,
+                filter: None,
+                jobs: Some(1),
+                fail_fast: false,
+                record_collision: RecordCollisionPolicy::Append,
+                profile_capture: crate::ProfileCaptureLevel::Baseline,
+                proc_backend: crate::ProcBackend::Scripted,
+                fs_backend: crate::FsBackend::Virtual,
+                http_backend: crate::HttpBackend::Scripted,
+                memory: crate::MemoryOptions::default(),
+            },
+        )
+        .expect("mixed run should succeed");
+
+        let tests = result.summary.tests.expect("test counts");
+        assert_eq!(tests.passed, 1);
+        assert_eq!(tests.failed, 0);
+        assert_eq!(tests.skipped, 1);
+        assert!(result.summary.findings.is_empty());
+    }
+
+    #[test]
+    fn run_tests_rejects_roots_with_only_distributed_scenarios() {
+        let path = temp_path("only-distributed.fozzy.json");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"name":"dist","distributed":{"node_count":2,"steps":[]}}"#,
+        )
+        .expect("write distributed scenario");
+
+        let config = crate::Config {
+            base_dir: temp_path("only-distributed-base"),
+            ..crate::Config::default()
+        };
+        let globs = vec![path.to_string_lossy().to_string()];
+        let err = run_tests(
+            &config,
+            &globs,
+            &RunOptions {
+                det: true,
+                seed: Some(7),
+                timeout: None,
+                reporter: crate::Reporter::Json,
+                record_trace_to: None,
+                filter: None,
+                jobs: Some(1),
+                fail_fast: false,
+                record_collision: RecordCollisionPolicy::Append,
+                profile_capture: crate::ProfileCaptureLevel::Baseline,
+                proc_backend: crate::ProcBackend::Scripted,
+                fs_backend: crate::FsBackend::Virtual,
+                http_backend: crate::HttpBackend::Scripted,
+                memory: crate::MemoryOptions::default(),
+            },
+        )
+        .expect_err("distributed-only run should be rejected");
+        assert!(err
+            .to_string()
+            .contains("matched only distributed scenario(s)"));
     }
 }

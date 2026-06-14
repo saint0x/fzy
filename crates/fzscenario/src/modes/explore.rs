@@ -687,10 +687,12 @@ pub(crate) fn distributed_to_explore(
     nodes_override: Option<usize>,
 ) -> FozzyResult<ScenarioV1Explore> {
     d.validate()?;
-    let nodes = if let Some(n) = nodes_override {
-        (0..n).map(|i| format!("n{i}")).collect()
-    } else if let Some(nodes) = d.distributed.nodes.clone() {
+    let nodes = if let Some(nodes) = d.distributed.nodes.clone() {
         nodes
+    } else if let Some(minimum) = d.distributed.node_count {
+        let effective = nodes_override.map(|override_count| override_count.max(minimum));
+        let node_count = effective.unwrap_or(minimum);
+        (0..node_count).map(|i| format!("n{i}")).collect()
     } else if let Some(n) = d.distributed.node_count {
         (0..n).map(|i| format!("n{i}")).collect()
     } else {
@@ -1668,4 +1670,51 @@ fn stable_edge(label: &str) -> u64 {
     let mut b = [0u8; 8];
     b.copy_from_slice(&h.as_bytes()[..8]);
     u64::from_le_bytes(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distributed_to_explore_preserves_explicit_nodes_when_override_is_present() {
+        let scenario = ScenarioV1Distributed {
+            version: 1,
+            name: "explicit".to_string(),
+            distributed: crate::DistributedDef {
+                node_count: None,
+                nodes: Some(vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]),
+                steps: vec![DistributedStep::ClientPut {
+                    node: "gamma".to_string(),
+                    key: "k".to_string(),
+                    value: "v".to_string(),
+                }],
+                invariants: Vec::new(),
+            },
+        };
+
+        let explore = distributed_to_explore(scenario, Some(2)).expect("conversion should work");
+        assert_eq!(explore.nodes, vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn distributed_to_explore_does_not_shrink_declared_node_count() {
+        let scenario = ScenarioV1Distributed {
+            version: 1,
+            name: "counted".to_string(),
+            distributed: crate::DistributedDef {
+                node_count: Some(3),
+                nodes: None,
+                steps: vec![DistributedStep::ClientPut {
+                    node: "n2".to_string(),
+                    key: "k".to_string(),
+                    value: "v".to_string(),
+                }],
+                invariants: Vec::new(),
+            },
+        };
+
+        let explore = distributed_to_explore(scenario, Some(2)).expect("conversion should work");
+        assert_eq!(explore.nodes, vec!["n0", "n1", "n2"]);
+    }
 }

@@ -489,7 +489,7 @@ pub(super) fn read_native_artifact_cache_key(marker: &Path) -> Option<String> {
 }
 
 pub(super) fn write_native_artifact_cache_key(marker: &Path, key: &str) -> Result<()> {
-    std::fs::write(marker, key).with_context(|| {
+    write_atomic_text_file(marker, key).with_context(|| {
         format!(
             "failed writing native artifact cache marker: {}",
             marker.display()
@@ -500,6 +500,36 @@ pub(super) fn write_native_artifact_cache_key(marker: &Path, key: &str) -> Resul
 pub(super) fn native_artifact_cache_hit(marker: &Path, key: &str, outputs: &[&Path]) -> bool {
     outputs.iter().all(|output| output.exists())
         && read_native_artifact_cache_key(marker).as_deref() == Some(key)
+}
+
+pub(super) fn write_atomic_text_file(path: &Path, content: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("path must have parent directory: {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed creating parent directory: {}", parent.display()))?;
+    let unique = format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("atomic"),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let tmp_path = parent.join(unique);
+    std::fs::write(&tmp_path, content)
+        .with_context(|| format!("failed writing temp file: {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed renaming temp file {} -> {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
 }
 
 pub(super) fn native_artifact_cache_key(

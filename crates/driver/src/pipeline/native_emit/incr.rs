@@ -1,5 +1,62 @@
 use super::*;
 
+struct IncrementalBuildLock {
+    path: PathBuf,
+}
+
+impl Drop for IncrementalBuildLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_incremental_build_lock(build_dir: &Path) -> Result<IncrementalBuildLock> {
+    let lock_path = build_dir.join(".build.lock");
+    let owner = format!(
+        "pid={} started_at_unix_nanos={}\n",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(120);
+    let retry_delay = std::time::Duration::from_millis(50);
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(owner.as_bytes()).with_context(|| {
+                    format!("failed writing incremental build lock: {}", lock_path.display())
+                })?;
+                return Ok(IncrementalBuildLock { path: lock_path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if start.elapsed() >= timeout {
+                    let holder = std::fs::read_to_string(&lock_path)
+                        .unwrap_or_else(|_| "<unknown lock holder>".to_string());
+                    bail!(
+                        "timed out waiting for incremental build lock {} held by {}",
+                        lock_path.display(),
+                        holder.trim()
+                    );
+                }
+                std::thread::sleep(retry_delay);
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed creating incremental build lock: {}", lock_path.display())
+                });
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct IncrementalModuleObjectResult {
     pub(super) plan: IncrementalModuleUnitPlan,
@@ -21,6 +78,7 @@ pub(crate) fn emit_native_incremental_binary(
     let build_dir = project_root.join(".fz").join("build").join("incremental");
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
+    let _build_lock = acquire_incremental_build_lock(&build_dir)?;
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
     let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
@@ -111,6 +169,7 @@ pub(crate) fn emit_native_incremental_libraries(
     let build_dir = project_root.join(".fz").join("build").join("incremental");
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
+    let _build_lock = acquire_incremental_build_lock(&build_dir)?;
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
     let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
