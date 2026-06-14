@@ -2,7 +2,7 @@
 mod tests {
     use std::path::Path;
 
-    use crate::parse;
+    use crate::{parse, parse_type_text};
 
     #[test]
     fn parses_if_while_and_calls() {
@@ -626,6 +626,13 @@ mod tests {
             panic!("expected function");
         };
         assert_eq!(function.return_type.to_string(), "model.types.ProjectKind");
+    }
+
+    #[test]
+    fn parses_standalone_type_fragments() {
+        let ty = parse_type_text("Result<model.types.ProjectKind, Vec<i32>>")
+            .expect("standalone type fragment should parse");
+        assert_eq!(ty.to_string(), "Result<model.types.ProjectKind, Vec<i32>>");
     }
 
     #[test]

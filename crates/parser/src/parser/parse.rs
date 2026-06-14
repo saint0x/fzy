@@ -59,6 +59,10 @@ impl Parser {
         std::mem::take(&mut self.module)
     }
 
+    pub(crate) fn parse_type_fragment(&mut self) -> Option<Type> {
+        self.parse_type()
+    }
+
     fn parse_attribute(&mut self) {
         let Some(hash) = self.advance() else {
             return;

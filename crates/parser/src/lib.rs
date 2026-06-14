@@ -124,6 +124,69 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
     analyze_module(source, module_name).into_parse_result()
 }
 
+pub fn parse_type_text(source: &str) -> Result<Type, Vec<Diagnostic>> {
+    if source.trim().is_empty() {
+        return Err(vec![Diagnostic::new(
+            Severity::Error,
+            "type source is empty",
+            Some("provide a type expression".to_string()),
+        )]);
+    }
+
+    let normalized = normalize_type_fragment(source);
+    let mut lexer = Lexer::new(&normalized);
+    let tokens = lexer.lex();
+    let mut diagnostics = std::mem::take(&mut lexer.diagnostics);
+    let mut parser = Parser::new(tokens, "__type__");
+    let parsed = parser.parse_type_fragment();
+    diagnostics.extend(parser.diagnostics);
+
+    let trailing = parser.tokens.get(parser.pos).cloned();
+    if parsed.is_none()
+        || !matches!(
+            trailing.as_ref().map(|token| &token.kind),
+            Some(TokenKind::Eof)
+        )
+    {
+        let (line, col) = trailing
+            .as_ref()
+            .map(|token| (token.line, token.col))
+            .unwrap_or((1, 1));
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                "invalid type expression",
+                Some("use a valid type expression".to_string()),
+            )
+            .with_span(line, col, line, col),
+        );
+    }
+
+    if !diagnostics.is_empty() {
+        assign_stable_codes(&mut diagnostics, DiagnosticDomain::Parser);
+        return Err(diagnostics);
+    }
+
+    parsed.ok_or_else(|| {
+        vec![Diagnostic::new(
+            Severity::Error,
+            "invalid type expression",
+            Some("use a valid type expression".to_string()),
+        )]
+    })
+}
+
+fn normalize_type_fragment(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    for ch in source.chars() {
+        if ch == '>' && out.ends_with('>') {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentifierLexeme {
     pub name: String,

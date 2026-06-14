@@ -10,14 +10,22 @@ pub(crate) fn qualify_expr(
     match expr {
         ast::Expr::Call { callee, args } => {
             let (base_callee, generic_suffix) = super::super::text::split_generic_suffix(callee);
+            let qualified_suffix = super::super::text::qualify_generic_suffix(
+                generic_suffix,
+                namespace,
+                local_types,
+                module_aliases,
+            );
             if let Some(qualified) = module_aliases.get(base_callee) {
-                *callee = format!("{qualified}{generic_suffix}");
+                *callee = format!("{qualified}{qualified_suffix}");
             } else if local_functions.contains(base_callee) {
                 *callee = format!(
                     "{}{}",
                     super::super::text::qualify_name(namespace, base_callee),
-                    generic_suffix
+                    qualified_suffix
                 );
+            } else if qualified_suffix != generic_suffix {
+                *callee = format!("{base_callee}{qualified_suffix}");
             }
             for arg in args {
                 qualify_expr(arg, namespace, local_functions, local_types, module_aliases);

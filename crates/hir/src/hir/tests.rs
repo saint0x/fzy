@@ -2,7 +2,7 @@
 mod tests {
     use std::path::Path;
 
-    use super::{lower, split_generic_callee};
+    use crate::{lower, split_generic_callee};
 
     #[test]
     fn lowers_trait_bounds_and_generic_specializations() {
