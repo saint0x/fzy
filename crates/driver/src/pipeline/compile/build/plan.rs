@@ -37,6 +37,7 @@ pub(crate) fn build_incremental_module_plans(
             }
             IncrementalModuleUnitPlan {
                 path: unit.path.clone(),
+                identity: incremental_module_identity(project_root, &unit.path, &unit.namespace),
                 namespace: unit.namespace.clone(),
                 source_fingerprint: unit.source_fingerprint.clone(),
                 local_functions,
@@ -75,6 +76,7 @@ pub(crate) fn build_incremental_module_plans(
         claimed_globals.extend(residual_globals.iter().cloned());
         plans.push(IncrementalModuleUnitPlan {
             path: project_root.join(".fz").join("incremental-stdlib"),
+            identity: "::__synthetic_stdlib".to_string(),
             namespace: "::__synthetic_stdlib".to_string(),
             source_fingerprint: parsed.global_interface_fingerprint.clone(),
             local_functions: residual_functions,
@@ -82,4 +84,18 @@ pub(crate) fn build_incremental_module_plans(
         });
     }
     plans
+}
+
+fn incremental_module_identity(project_root: &Path, path: &Path, namespace: &str) -> String {
+    if !namespace.is_empty() {
+        return namespace.to_string();
+    }
+    path.strip_prefix(project_root)
+        .map(|relative| normalize_rel_path(&relative.display().to_string()))
+        .unwrap_or_else(|_| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("module")
+                .to_string()
+        })
 }

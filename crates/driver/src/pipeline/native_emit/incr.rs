@@ -11,10 +11,14 @@ impl Drop for IncrementalBuildLock {
 }
 
 fn acquire_incremental_build_lock(build_dir: &Path) -> Result<IncrementalBuildLock> {
-    let lock_path = build_dir.join(".build.lock");
+    acquire_lock_file(&build_dir.join(".build.lock"), "incremental build")
+}
+
+fn acquire_lock_file(path: &Path, label: &str) -> Result<IncrementalBuildLock> {
     let owner = format!(
-        "pid={} started_at_unix_nanos={}\n",
+        "pid={} label={} started_at_unix_nanos={}\n",
         std::process::id(),
+        label,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -27,31 +31,32 @@ fn acquire_incremental_build_lock(build_dir: &Path) -> Result<IncrementalBuildLo
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&lock_path)
+            .open(path)
         {
             Ok(mut file) => {
                 use std::io::Write;
-                file.write_all(owner.as_bytes()).with_context(|| {
-                    format!("failed writing incremental build lock: {}", lock_path.display())
-                })?;
-                return Ok(IncrementalBuildLock { path: lock_path });
+                file.write_all(owner.as_bytes())
+                    .with_context(|| format!("failed writing {} lock: {}", label, path.display()))?;
+                return Ok(IncrementalBuildLock {
+                    path: path.to_path_buf(),
+                });
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 if start.elapsed() >= timeout {
-                    let holder = std::fs::read_to_string(&lock_path)
-                        .unwrap_or_else(|_| "<unknown lock holder>".to_string());
+                    let holder =
+                        std::fs::read_to_string(path).unwrap_or_else(|_| "<unknown lock holder>".to_string());
                     bail!(
-                        "timed out waiting for incremental build lock {} held by {}",
-                        lock_path.display(),
+                        "timed out waiting for {} lock {} held by {}",
+                        label,
+                        path.display(),
                         holder.trim()
                     );
                 }
                 std::thread::sleep(retry_delay);
             }
             Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("failed creating incremental build lock: {}", lock_path.display())
-                });
+                return Err(err)
+                    .with_context(|| format!("failed creating {} lock: {}", label, path.display()));
             }
         }
     }
@@ -68,6 +73,7 @@ pub(crate) fn emit_native_incremental_binary(
     fir: &fir::FirModule,
     parsed: &ParsedProgram,
     project_root: &Path,
+    object_store_root: &Path,
     artifact_stem: &str,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
@@ -109,6 +115,7 @@ pub(crate) fn emit_native_incremental_binary(
             emit_incremental_module_object(
                 lowered_fir,
                 &build_dir,
+                object_store_root,
                 profile,
                 manifest,
                 &backend,
@@ -159,6 +166,7 @@ pub(crate) fn emit_native_incremental_libraries(
     fir: &fir::FirModule,
     parsed: &ParsedProgram,
     project_root: &Path,
+    object_store_root: &Path,
     artifact_stem: &str,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
@@ -200,6 +208,7 @@ pub(crate) fn emit_native_incremental_libraries(
             emit_incremental_module_object(
                 lowered_fir,
                 &build_dir,
+                object_store_root,
                 profile,
                 manifest,
                 &backend,
@@ -259,6 +268,7 @@ pub(crate) fn emit_native_incremental_libraries(
 pub(super) fn emit_incremental_module_object(
     fir: &fir::FirModule,
     build_dir: &Path,
+    object_store_root: &Path,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
     backend: &str,
@@ -273,13 +283,6 @@ pub(super) fn emit_incremental_module_object(
             rebuilt: false,
         });
     }
-    let object_path = incremental_module_object_path(build_dir, backend, profile, plan);
-    let cache_marker = native_artifact_cache_marker(
-        build_dir,
-        &incremental_module_object_stem(plan),
-        "module",
-        backend,
-    );
     let cache_key = incremental_module_cache_key(
         backend,
         profile,
@@ -287,17 +290,37 @@ pub(super) fn emit_incremental_module_object(
         manifest_fingerprint,
         plan,
     );
-    if native_artifact_cache_hit(&cache_marker, &cache_key, &[&object_path]) {
+    let object_path = incremental_module_object_path(object_store_root, &cache_key);
+    if object_path.exists() {
         return Ok(IncrementalModuleObjectResult {
             plan: plan.clone(),
             object_path: Some(object_path),
             rebuilt: false,
         });
     }
+    if let Some(parent) = object_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating object store directory: {}", parent.display()))?;
+    }
+    let _object_lock = acquire_lock_file(&object_path.with_extension("lock"), "incremental object")?;
+    if object_path.exists() {
+        return Ok(IncrementalModuleObjectResult {
+            plan: plan.clone(),
+            object_path: Some(object_path),
+            rebuilt: false,
+        });
+    }
+    let temp_object = build_dir.join(format!(
+        "{}.{}.{}.{}.tmp.o",
+        incremental_module_object_stem(plan),
+        backend,
+        profile.as_str(),
+        std::process::id()
+    ));
     match backend {
         "llvm" => super::ll::emit_incremental_module_object_llvm(
             fir,
-            &object_path,
+            &temp_object,
             profile,
             manifest,
             &plan.local_functions,
@@ -305,7 +328,7 @@ pub(super) fn emit_incremental_module_object(
         )?,
         "cranelift" => super::crane::emit_incremental_module_object_cranelift(
             fir,
-            &object_path,
+            &temp_object,
             profile,
             manifest,
             &plan.local_functions,
@@ -313,7 +336,13 @@ pub(super) fn emit_incremental_module_object(
         )?,
         other => bail!("unknown backend `{other}`"),
     }
-    write_native_artifact_cache_key(&cache_marker, &cache_key)?;
+    std::fs::rename(&temp_object, &object_path).with_context(|| {
+        format!(
+            "failed publishing incremental object {} -> {}",
+            temp_object.display(),
+            object_path.display()
+        )
+    })?;
     Ok(IncrementalModuleObjectResult {
         plan: plan.clone(),
         object_path: Some(object_path),
@@ -362,23 +391,14 @@ pub(super) fn link_incremental_binary(
     ))
 }
 
-pub(super) fn incremental_module_object_path(
-    build_dir: &Path,
-    backend: &str,
-    profile: BuildProfile,
-    plan: &IncrementalModuleUnitPlan,
-) -> PathBuf {
-    build_dir.join(format!(
-        "{}.{}.{}.o",
-        incremental_module_object_stem(plan),
-        backend,
-        profile.as_str()
-    ))
+pub(super) fn incremental_module_object_path(object_store_root: &Path, cache_key: &str) -> PathBuf {
+    let shard = &cache_key[..2];
+    object_store_root.join(shard).join(format!("{cache_key}.o"))
 }
 
 pub(super) fn incremental_module_object_stem(plan: &IncrementalModuleUnitPlan) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(plan.path.to_string_lossy().as_bytes());
+    hasher.update(plan.identity.as_bytes());
     let digest = hex_encode(hasher.finalize().as_slice());
     format!("module-{}", &digest[..16])
 }
@@ -395,7 +415,7 @@ pub(super) fn incremental_module_cache_key(
     hasher.update(profile.as_str().as_bytes());
     hasher.update(global_interface_fingerprint.as_bytes());
     hasher.update(manifest_fingerprint.as_bytes());
-    hasher.update(plan.path.to_string_lossy().as_bytes());
+    hasher.update(plan.identity.as_bytes());
     hasher.update(plan.namespace.as_bytes());
     hasher.update(plan.source_fingerprint.as_bytes());
     let mut local_functions = plan.local_functions.iter().collect::<Vec<_>>();

@@ -48,6 +48,7 @@ mod policy_artifacts;
 
 pub(crate) use self::gpu_backend::gpu_backend_report_json;
 pub(crate) use self::graph::embedded_core_stdlib_module_source;
+pub(crate) use self::snapshot::prepare_build_snapshot;
 pub use self::compile::{
     check_file, compile_file, compile_file_incremental_with_backend, compile_file_with_backend,
     compile_library_incremental_with_backend, compile_library_with_backend, emit_ir,
@@ -96,6 +97,7 @@ use self::native_lowering::*;
 use self::reports::*;
 use self::audit::*;
 use self::source_graph::*;
+use self::snapshot::*;
 use self::task::*;
 
 #[derive(Clone, Copy)]
@@ -254,6 +256,8 @@ mod flow;
 mod native_lowering;
 #[path = "pipeline/source_graph.rs"]
 mod source_graph;
+#[path = "pipeline/snapshot.rs"]
+mod snapshot;
 #[path = "pipeline/native_emit.rs"]
 mod native_emit;
 
@@ -322,6 +326,7 @@ pub struct IncrementalModuleReport {
 #[derive(Debug, Clone)]
 pub(crate) struct IncrementalModuleUnitPlan {
     pub path: PathBuf,
+    pub identity: String,
     pub namespace: String,
     pub source_fingerprint: String,
     pub local_functions: HashSet<String>,

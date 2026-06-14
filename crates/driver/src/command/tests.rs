@@ -7900,6 +7900,138 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn incremental_build_compiles_distinct_snapshots_in_parallel() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-incr-snapshots-{suffix}"));
+        std::fs::create_dir_all(root.join("src/services")).expect("project dirs should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"incr_snapshots\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"incr_snapshots\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\nfn main() -> i32 {\n    return services.boot() + 1\n}\n",
+        )
+        .expect("main should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn boot() -> i32 {\n    return 7\n}\n",
+        )
+        .expect("service should be written");
+
+        let snapshot_a = crate::pipeline::prepare_build_snapshot(&root)
+            .expect("first snapshot capture should succeed");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn boot() -> i32 {\n    return 8\n}\n",
+        )
+        .expect("service should mutate");
+        let snapshot_b = crate::pipeline::prepare_build_snapshot(&root)
+            .expect("second snapshot capture should succeed");
+        assert_ne!(
+            snapshot_a.snapshot_project_root,
+            snapshot_b.snapshot_project_root
+        );
+
+        let barrier = Arc::new(Barrier::new(2));
+        let root_a = snapshot_a.snapshot_project_root.clone();
+        let root_b = snapshot_b.snapshot_project_root.clone();
+        let handle_a = {
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                compile_file_incremental_with_backend_with_root_guidance(
+                    &root_a,
+                    BuildProfile::Dev,
+                    None,
+                )
+            })
+        };
+        let handle_b = {
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                compile_file_incremental_with_backend_with_root_guidance(
+                    &root_b,
+                    BuildProfile::Dev,
+                    None,
+                )
+            })
+        };
+
+        let artifact_a = handle_a
+            .join()
+            .expect("snapshot A build thread should not panic")
+            .expect("snapshot A build should succeed");
+        let artifact_b = handle_b
+            .join()
+            .expect("snapshot B build thread should not panic")
+            .expect("snapshot B build should succeed");
+        assert_eq!(artifact_a.status, "ok");
+        assert_eq!(artifact_b.status, "ok");
+
+        let output_a = artifact_a
+            .output
+            .as_ref()
+            .expect("snapshot A output should be present");
+        let output_b = artifact_b
+            .output
+            .as_ref()
+            .expect("snapshot B output should be present");
+        assert_ne!(output_a, output_b);
+        assert!(output_a.to_string_lossy().contains("/.fz/snapshots/"));
+        assert!(output_b.to_string_lossy().contains("/.fz/snapshots/"));
+
+        let status_a = std::process::Command::new(output_a)
+            .status()
+            .expect("snapshot A binary should execute");
+        let status_b = std::process::Command::new(output_b)
+            .status()
+            .expect("snapshot B binary should execute");
+        assert_eq!(status_a.code(), Some(8));
+        assert_eq!(status_b.code(), Some(9));
+
+        let report_a = artifact_a
+            .incremental
+            .expect("snapshot A incremental report should be present");
+        let report_b = artifact_b
+            .incremental
+            .expect("snapshot B incremental report should be present");
+        let main_object_a = report_a
+            .module_details
+            .iter()
+            .find(|module| module.path.ends_with("src/main.fzy"))
+            .and_then(|module| module.object.clone())
+            .expect("snapshot A main object should exist");
+        let main_object_b = report_b
+            .module_details
+            .iter()
+            .find(|module| module.path.ends_with("src/main.fzy"))
+            .and_then(|module| module.object.clone())
+            .expect("snapshot B main object should exist");
+        let service_object_a = report_a
+            .module_details
+            .iter()
+            .find(|module| module.path.ends_with("src/services/mod.fzy"))
+            .and_then(|module| module.object.clone())
+            .expect("snapshot A service object should exist");
+        let service_object_b = report_b
+            .module_details
+            .iter()
+            .find(|module| module.path.ends_with("src/services/mod.fzy"))
+            .and_then(|module| module.object.clone())
+            .expect("snapshot B service object should exist");
+        assert_eq!(main_object_a, main_object_b);
+        assert_ne!(service_object_a, service_object_b);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn init_command_requires_force_when_scaffold_paths_exist() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

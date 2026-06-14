@@ -42,6 +42,9 @@ Core implementation files:
 - `crates/driver/src/pipeline.rs`
 - `crates/driver/src/command.rs`
 
+Related production architecture docs:
+- `docs/snapshots-v1.md`
+
 ## Validation Commands
 
 Compiler/tests:

@@ -19,6 +19,7 @@ This workflow assumes the current production posture:
 - explicit unsafe islands instead of ambient unsafety
 - deterministic validation and replay as release evidence
 - native and host-backed execution both matter for confidence
+- snapshot-isolated builds are the canonical multi-agent parallel build model for one shared codebase
 
 ## 1. Author
 
@@ -145,3 +146,4 @@ For failures, use:
 - `docs/exit-criteria-v1.md`
 - `docs/traits-generics-contract-v1.md`
 - `docs/traits-generics-style-guide-v1.md`
+- `docs/snapshots-v1.md`
