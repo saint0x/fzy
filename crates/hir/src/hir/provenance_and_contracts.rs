@@ -1,4 +1,6 @@
-fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
+use crate::*;
+
+pub(crate) fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let signatures = build_call_shapes(functions);
     for function in functions {
@@ -22,7 +24,7 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn build_call_shapes(functions: &[TypedFunction]) -> BTreeMap<String, CallShape> {
+pub(crate) fn build_call_shapes(functions: &[TypedFunction]) -> BTreeMap<String, CallShape> {
     let mut signatures = functions
         .iter()
         .map(|function| {
@@ -43,12 +45,12 @@ fn build_call_shapes(functions: &[TypedFunction]) -> BTreeMap<String, CallShape>
 }
 
 #[derive(Debug, Clone, Default)]
-struct ProvenanceState {
+pub(crate) struct ProvenanceState {
     roots: BTreeMap<String, usize>,
     freed_roots: BTreeSet<usize>,
 }
 
-fn analyze_provenance_block(
+pub(crate) fn analyze_provenance_block(
     body: &[Stmt],
     state: &mut ProvenanceState,
     next_root: &mut usize,
@@ -68,7 +70,7 @@ fn analyze_provenance_block(
     }
 }
 
-fn analyze_provenance_stmt(
+pub(crate) fn analyze_provenance_stmt(
     stmt: &Stmt,
     state: &mut ProvenanceState,
     next_root: &mut usize,
@@ -267,7 +269,7 @@ fn analyze_provenance_stmt(
     }
 }
 
-fn assign_provenance_value(
+pub(crate) fn assign_provenance_value(
     target: &str,
     value: &Expr,
     state: &mut ProvenanceState,
@@ -288,7 +290,7 @@ fn assign_provenance_value(
     }
 }
 
-fn assign_pattern_provenance(
+pub(crate) fn assign_pattern_provenance(
     pattern: &ast::Pattern,
     value: &Expr,
     state: &mut ProvenanceState,
@@ -408,7 +410,7 @@ fn assign_pattern_provenance(
     }
 }
 
-fn assign_pattern_binding_from_source(
+pub(crate) fn assign_pattern_binding_from_source(
     pattern: &ast::Pattern,
     source: ExprProvenanceSource,
     state: &mut ProvenanceState,
@@ -451,7 +453,7 @@ fn assign_pattern_binding_from_source(
     }
 }
 
-fn assign_name_from_expr(
+pub(crate) fn assign_name_from_expr(
     name: &str,
     value: &Expr,
     state: &mut ProvenanceState,
@@ -463,7 +465,7 @@ fn assign_name_from_expr(
     }
 }
 
-fn assign_name_from_source(
+pub(crate) fn assign_name_from_source(
     name: &str,
     source: ExprProvenanceSource,
     state: &mut ProvenanceState,
@@ -487,13 +489,13 @@ fn assign_name_from_source(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExprProvenanceSource {
+pub(crate) enum ExprProvenanceSource {
     Existing(usize),
     Fresh,
     Unknown,
 }
 
-fn infer_expr_provenance_source(
+pub(crate) fn infer_expr_provenance_source(
     expr: &Expr,
     state: &ProvenanceState,
     signatures: &BTreeMap<String, CallShape>,
@@ -530,7 +532,7 @@ fn infer_expr_provenance_source(
     }
 }
 
-fn populate_return_provenance_summaries(
+pub(crate) fn populate_return_provenance_summaries(
     functions: &[TypedFunction],
     signatures: &mut BTreeMap<String, CallShape>,
 ) {
@@ -551,7 +553,7 @@ fn populate_return_provenance_summaries(
     }
 }
 
-fn infer_function_return_provenance(
+pub(crate) fn infer_function_return_provenance(
     function: &TypedFunction,
     signatures: &BTreeMap<String, CallShape>,
 ) -> ReturnProvenanceSummary {
@@ -580,7 +582,7 @@ fn infer_function_return_provenance(
     }
 }
 
-fn collect_return_provenance_from_stmts(
+pub(crate) fn collect_return_provenance_from_stmts(
     body: &[Stmt],
     param_indexes: &BTreeMap<&str, usize>,
     signatures: &BTreeMap<String, CallShape>,
@@ -647,7 +649,7 @@ fn collect_return_provenance_from_stmts(
     }
 }
 
-fn collect_return_provenance_from_expr(
+pub(crate) fn collect_return_provenance_from_expr(
     expr: &Expr,
     param_indexes: &BTreeMap<&str, usize>,
     signatures: &BTreeMap<String, CallShape>,
@@ -681,7 +683,7 @@ fn collect_return_provenance_from_expr(
     }
 }
 
-fn infer_return_expr_provenance(
+pub(crate) fn infer_return_expr_provenance(
     expr: &Expr,
     param_indexes: &BTreeMap<&str, usize>,
     signatures: &BTreeMap<String, CallShape>,
@@ -748,7 +750,7 @@ fn infer_return_expr_provenance(
     }
 }
 
-fn analyze_provenance_call(
+pub(crate) fn analyze_provenance_call(
     callee: &str,
     args: &[Expr],
     state: &mut ProvenanceState,
@@ -827,7 +829,7 @@ fn analyze_provenance_call(
     }
 }
 
-fn expr_provenance_root(
+pub(crate) fn expr_provenance_root(
     expr: &Expr,
     state: &ProvenanceState,
     signatures: &BTreeMap<String, CallShape>,
@@ -838,7 +840,7 @@ fn expr_provenance_root(
     }
 }
 
-fn provenance_expr_alias_key(
+pub(crate) fn provenance_expr_alias_key(
     expr: &Expr,
     state: &ProvenanceState,
     signatures: &BTreeMap<String, CallShape>,
@@ -848,7 +850,7 @@ fn provenance_expr_alias_key(
         .unwrap_or_else(|| format!("label:{}", provenance_expr_label(expr)))
 }
 
-fn provenance_expr_label(expr: &Expr) -> String {
+pub(crate) fn provenance_expr_label(expr: &Expr) -> String {
     match expr {
         Expr::Ident(name) => name.clone(),
         Expr::Group(inner) => provenance_expr_label(inner),
@@ -858,7 +860,7 @@ fn provenance_expr_label(expr: &Expr) -> String {
     }
 }
 
-fn analyze_provenance_expr(
+pub(crate) fn analyze_provenance_expr(
     expr: &Expr,
     state: &mut ProvenanceState,
     next_root: &mut usize,
@@ -938,7 +940,7 @@ fn analyze_provenance_expr(
     }
 }
 
-fn merge_provenance_states(
+pub(crate) fn merge_provenance_states(
     function_name: &str,
     control_kind: &str,
     entry_state: &ProvenanceState,
@@ -977,7 +979,7 @@ fn merge_provenance_states(
     merged
 }
 
-fn analyze_atomic_ordering_claims(functions: &[TypedFunction]) -> Vec<String> {
+pub(crate) fn analyze_atomic_ordering_claims(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     struct Collector {
         function: String,
@@ -1009,7 +1011,7 @@ fn analyze_atomic_ordering_claims(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn validate_atomic_call(callee: &str, args: &[Expr]) -> Option<String> {
+pub(crate) fn validate_atomic_call(callee: &str, args: &[Expr]) -> Option<String> {
     let ordering = |index: usize| {
         args.get(index).and_then(|arg| match arg {
             Expr::Str(value) | Expr::Ident(value) => Some(value.as_str()),
@@ -1109,7 +1111,7 @@ fn validate_atomic_call(callee: &str, args: &[Expr]) -> Option<String> {
     None
 }
 
-fn stmt_is_direct_free_of(stmt: &Stmt, name: &str) -> bool {
+pub(crate) fn stmt_is_direct_free_of(stmt: &Stmt, name: &str) -> bool {
     matches!(
         stmt,
         Stmt::Expr(Expr::Call { callee, args })
@@ -1118,7 +1120,7 @@ fn stmt_is_direct_free_of(stmt: &Stmt, name: &str) -> bool {
     )
 }
 
-fn collect_stmt_idents(stmt: &Stmt) -> Vec<String> {
+pub(crate) fn collect_stmt_idents(stmt: &Stmt) -> Vec<String> {
     let mut out = Vec::new();
     match stmt {
         Stmt::Let { value, .. }
@@ -1194,7 +1196,7 @@ fn collect_stmt_idents(stmt: &Stmt) -> Vec<String> {
     out
 }
 
-fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
+pub(crate) fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
     match expr {
         Expr::Ident(name) => out.push(name.clone()),
         Expr::Call { args, .. } => {
@@ -1332,7 +1334,7 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
     }
 }
 
-fn build_call_graph(module: &Module) -> Vec<(String, String)> {
+pub(crate) fn build_call_graph(module: &Module) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for item in &module.items {
         let ast::Item::Function(function) = item else {
@@ -1363,7 +1365,7 @@ fn build_call_graph(module: &Module) -> Vec<(String, String)> {
     out
 }
 
-fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
+pub(crate) fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
     let mut caps = BTreeSet::new();
     for function in functions {
         if function.is_async {
@@ -1427,7 +1429,7 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
     caps.into_iter().collect()
 }
 
-fn is_thread_capability_callee(callee: &str) -> bool {
+pub(crate) fn is_thread_capability_callee(callee: &str) -> bool {
     matches!(
         callee,
         "spawn"
@@ -1447,7 +1449,7 @@ fn is_thread_capability_callee(callee: &str) -> bool {
         || callee.starts_with("task.")
 }
 
-fn collect_generic_instantiations(module: &Module) -> Vec<String> {
+pub(crate) fn collect_generic_instantiations(module: &Module) -> Vec<String> {
     let mut out = Vec::new();
     for item in &module.items {
         match item {
@@ -1523,7 +1525,7 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
     out
 }
 
-fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
+pub(crate) fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
     match ty {
         Type::Vec(inner) => {
             out.push(format!("Vec<{inner}>"));
@@ -1626,7 +1628,7 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
     }
 }
 
-fn collect_semantic_hints(
+pub(crate) fn collect_semantic_hints(
     functions: &[TypedFunction],
 ) -> (Vec<String>, Vec<String>, usize, usize, usize) {
     let mut linear_resources = BTreeSet::new();
@@ -1706,7 +1708,7 @@ fn collect_semantic_hints(
     )
 }
 
-fn collect_effect_markers(
+pub(crate) fn collect_effect_markers(
     functions: &[TypedFunction],
 ) -> (usize, usize, usize, usize, usize, usize) {
     let mut host_syscall_sites = 0usize;
@@ -1783,7 +1785,7 @@ fn collect_effect_markers(
     )
 }
 
-fn collect_unsafe_contract_sites(functions: &[TypedFunction]) -> Vec<UnsafeContractSite> {
+pub(crate) fn collect_unsafe_contract_sites(functions: &[TypedFunction]) -> Vec<UnsafeContractSite> {
     let unsafe_functions = functions
         .iter()
         .filter(|function| function.is_unsafe)
@@ -1839,7 +1841,7 @@ fn collect_unsafe_contract_sites(functions: &[TypedFunction]) -> Vec<UnsafeContr
     out
 }
 
-fn collect_unsafe_contract_sites_from_stmt(
+pub(crate) fn collect_unsafe_contract_sites_from_stmt(
     stmt: &Stmt,
     function_name: &str,
     in_unsafe_context: bool,
@@ -2060,7 +2062,7 @@ fn collect_unsafe_contract_sites_from_stmt(
     }
 }
 
-fn collect_unsafe_contract_sites_from_expr(
+pub(crate) fn collect_unsafe_contract_sites_from_expr(
     expr: &Expr,
     function_name: &str,
     in_unsafe_context: bool,
@@ -2490,7 +2492,7 @@ fn collect_unsafe_contract_sites_from_expr(
     }
 }
 
-fn generated_unsafe_contract_site(
+pub(crate) fn generated_unsafe_contract_site(
     kind: &str,
     function_name: &str,
     snippet: &str,
@@ -2529,7 +2531,7 @@ fn generated_unsafe_contract_site(
     }
 }
 
-fn unsafe_violation_site(
+pub(crate) fn unsafe_violation_site(
     function_name: &str,
     snippet: &str,
     async_context: bool,
@@ -2551,7 +2553,7 @@ fn unsafe_violation_site(
     }
 }
 
-fn stable_unsafe_site_id(kind: &str, function_name: &str, snippet: &str) -> String {
+pub(crate) fn stable_unsafe_site_id(kind: &str, function_name: &str, snippet: &str) -> String {
     let material = format!("{kind}|{function_name}|{snippet}");
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in material.as_bytes() {
@@ -2561,7 +2563,7 @@ fn stable_unsafe_site_id(kind: &str, function_name: &str, snippet: &str) -> Stri
     format!("usite_{hash:016x}")
 }
 
-fn collect_cleanup_targets(expr: &ast::Expr, out: &mut BTreeSet<String>) {
+pub(crate) fn collect_cleanup_targets(expr: &ast::Expr, out: &mut BTreeSet<String>) {
     match expr {
         ast::Expr::Call { callee, args } if is_free_callee(callee) || is_close_callee(callee) => {
             if let Some(ast::Expr::Ident(name)) = args.first() {
@@ -2698,7 +2700,7 @@ fn collect_cleanup_targets(expr: &ast::Expr, out: &mut BTreeSet<String>) {
     }
 }
 
-fn collect_entry_contracts(
+pub(crate) fn collect_entry_contracts(
     functions: &[TypedFunction],
     fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
 ) -> (Vec<Option<bool>>, Vec<Option<bool>>) {

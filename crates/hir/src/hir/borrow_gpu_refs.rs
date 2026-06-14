@@ -1,4 +1,6 @@
-fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
+use crate::*;
+
+pub(crate) fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let signatures = functions
         .iter()
@@ -20,7 +22,7 @@ fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn analyze_gpu_kernel_contracts(functions: &[TypedFunction]) -> Vec<String> {
+pub(crate) fn analyze_gpu_kernel_contracts(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let signatures = functions
         .iter()
@@ -57,7 +59,7 @@ fn analyze_gpu_kernel_contracts(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn analyze_gpu_kernel_contract_block(
+pub(crate) fn analyze_gpu_kernel_contract_block(
     function: &TypedFunction,
     body: &[Stmt],
     bindings: &mut BTreeMap<String, BorrowBinding>,
@@ -336,7 +338,7 @@ fn analyze_gpu_kernel_contract_block(
     }
 }
 
-fn validate_gpu_kernel_launch_abi(functions: &[TypedFunction]) -> Vec<String> {
+pub(crate) fn validate_gpu_kernel_launch_abi(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     for function in functions {
         if function.execution_space != ast::ExecutionSpace::Kernel {
@@ -354,7 +356,7 @@ fn validate_gpu_kernel_launch_abi(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn is_supported_gpu_launch_abi_type(ty: &Type) -> bool {
+pub(crate) fn is_supported_gpu_launch_abi_type(ty: &Type) -> bool {
     match ty {
         Type::Int {
             signed: true,
@@ -381,7 +383,7 @@ fn is_supported_gpu_launch_abi_type(ty: &Type) -> bool {
     }
 }
 
-fn analyze_gpu_kernel_contract_expr(
+pub(crate) fn analyze_gpu_kernel_contract_expr(
     function: &TypedFunction,
     expr: &Expr,
     bindings: &mut BTreeMap<String, BorrowBinding>,
@@ -784,18 +786,18 @@ fn analyze_gpu_kernel_contract_expr(
     }
 }
 
-fn is_gpu_launch_callee(callee: &str) -> bool {
+pub(crate) fn is_gpu_launch_callee(callee: &str) -> bool {
     matches!(
         callee,
         "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4"
     )
 }
 
-fn gpu_base_callee(callee: &str) -> &str {
+pub(crate) fn gpu_base_callee(callee: &str) -> &str {
     callee.split('<').next().unwrap_or(callee)
 }
 
-fn analyze_gpu_launch_aliases(
+pub(crate) fn analyze_gpu_launch_aliases(
     function: &TypedFunction,
     callee: &str,
     args: &[Expr],
@@ -857,7 +859,7 @@ fn analyze_gpu_launch_aliases(
     }
 }
 
-fn build_gpu_slice_access_summaries(
+pub(crate) fn build_gpu_slice_access_summaries(
     functions: &[TypedFunction],
     signatures: &BTreeMap<String, TypedFunction>,
 ) -> BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>> {
@@ -918,7 +920,7 @@ fn build_gpu_slice_access_summaries(
     summaries
 }
 
-fn collect_gpu_stmt_slice_access(
+pub(crate) fn collect_gpu_stmt_slice_access(
     function: &TypedFunction,
     body: &[Stmt],
     bindings: &mut BTreeMap<String, BorrowBinding>,
@@ -1102,7 +1104,7 @@ fn collect_gpu_stmt_slice_access(
     }
 }
 
-fn collect_gpu_expr_slice_access(
+pub(crate) fn collect_gpu_expr_slice_access(
     function: &TypedFunction,
     expr: &Expr,
     bindings: &BTreeMap<String, BorrowBinding>,
@@ -1353,7 +1355,7 @@ fn collect_gpu_expr_slice_access(
     }
 }
 
-fn mark_gpu_slice_read(
+pub(crate) fn mark_gpu_slice_read(
     expr: &Expr,
     bindings: &BTreeMap<String, BorrowBinding>,
     signatures: &BTreeMap<String, TypedFunction>,
@@ -1365,7 +1367,7 @@ fn mark_gpu_slice_read(
     }
 }
 
-fn mark_gpu_slice_write(
+pub(crate) fn mark_gpu_slice_write(
     expr: &Expr,
     bindings: &BTreeMap<String, BorrowBinding>,
     signatures: &BTreeMap<String, TypedFunction>,
@@ -1377,7 +1379,7 @@ fn mark_gpu_slice_write(
     }
 }
 
-fn build_gpu_barrier_summary(functions: &[TypedFunction]) -> BTreeMap<String, bool> {
+pub(crate) fn build_gpu_barrier_summary(functions: &[TypedFunction]) -> BTreeMap<String, bool> {
     let function_map = functions
         .iter()
         .map(|function| (function.name.clone(), function))
@@ -1392,7 +1394,7 @@ fn build_gpu_barrier_summary(functions: &[TypedFunction]) -> BTreeMap<String, bo
     cache
 }
 
-fn function_contains_gpu_barrier(
+pub(crate) fn function_contains_gpu_barrier(
     function: &TypedFunction,
     functions: &BTreeMap<String, &TypedFunction>,
     cache: &mut BTreeMap<String, bool>,
@@ -1410,7 +1412,7 @@ fn function_contains_gpu_barrier(
     contains
 }
 
-fn block_contains_gpu_barrier(
+pub(crate) fn block_contains_gpu_barrier(
     body: &[Stmt],
     functions: &BTreeMap<String, &TypedFunction>,
     cache: &mut BTreeMap<String, bool>,
@@ -1420,7 +1422,7 @@ fn block_contains_gpu_barrier(
         .any(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
 }
 
-fn stmt_contains_gpu_barrier(
+pub(crate) fn stmt_contains_gpu_barrier(
     stmt: &Stmt,
     functions: &BTreeMap<String, &TypedFunction>,
     cache: &mut BTreeMap<String, bool>,
@@ -1482,7 +1484,7 @@ fn stmt_contains_gpu_barrier(
     }
 }
 
-fn expr_contains_gpu_barrier(
+pub(crate) fn expr_contains_gpu_barrier(
     expr: &Expr,
     functions: &BTreeMap<String, &TypedFunction>,
     cache: &mut BTreeMap<String, bool>,
@@ -1587,7 +1589,7 @@ fn expr_contains_gpu_barrier(
     }
 }
 
-fn analyze_live_borrow_block(
+pub(crate) fn analyze_live_borrow_block(
     function: &TypedFunction,
     body: &[Stmt],
     suffix_after_block: &[Stmt],
@@ -1799,20 +1801,20 @@ fn analyze_live_borrow_block(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BorrowConsume {
+pub(crate) struct BorrowConsume {
     owner: String,
     via: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BorrowCreation {
+pub(crate) struct BorrowCreation {
     owner: String,
     via: String,
     mutable: bool,
     alias: Option<String>,
 }
 
-fn stmt_borrow_consumptions(
+pub(crate) fn stmt_borrow_consumptions(
     stmt: &Stmt,
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
 ) -> Vec<BorrowConsume> {
@@ -1865,7 +1867,7 @@ fn stmt_borrow_consumptions(
     out
 }
 
-fn stmt_borrow_creations(
+pub(crate) fn stmt_borrow_creations(
     function: &TypedFunction,
     stmt: &Stmt,
     bindings: &CowBindings<BorrowBinding>,
@@ -1953,7 +1955,7 @@ fn stmt_borrow_creations(
     out
 }
 
-fn stmt_direct_owner_access_label(
+pub(crate) fn stmt_direct_owner_access_label(
     function: &TypedFunction,
     stmt: &Stmt,
     owner: &str,
@@ -1992,7 +1994,7 @@ fn stmt_direct_owner_access_label(
     }
 }
 
-fn expr_direct_owner_access_label(expr: &Expr, owner: &str) -> Option<String> {
+pub(crate) fn expr_direct_owner_access_label(expr: &Expr, owner: &str) -> Option<String> {
     match expr {
         Expr::Ident(name) if name == owner => Some(name.clone()),
         Expr::Call { callee, args } if args.iter().any(|arg| expr_uses_ident(arg, owner)) => {
@@ -2007,7 +2009,7 @@ fn expr_direct_owner_access_label(expr: &Expr, owner: &str) -> Option<String> {
     }
 }
 
-fn borrow_creation_expr_label(expr: &Expr) -> String {
+pub(crate) fn borrow_creation_expr_label(expr: &Expr) -> String {
     match expr {
         Expr::Ident(name) => name.clone(),
         Expr::Group(inner) => borrow_creation_expr_label(inner),
@@ -2026,7 +2028,7 @@ fn borrow_creation_expr_label(expr: &Expr) -> String {
     }
 }
 
-fn infer_borrow_binding_from_expr(
+pub(crate) fn infer_borrow_binding_from_expr(
     value: &Expr,
     explicit_ty: Option<&Type>,
     bindings: &CowBindings<BorrowBinding>,
@@ -2052,7 +2054,7 @@ fn infer_borrow_binding_from_expr(
     }
 }
 
-fn infer_borrow_binding_from_expr_owned(
+pub(crate) fn infer_borrow_binding_from_expr_owned(
     value: &Expr,
     explicit_ty: Option<&Type>,
     bindings: &BTreeMap<String, BorrowBinding>,
@@ -2074,7 +2076,7 @@ fn infer_borrow_binding_from_expr_owned(
     }
 }
 
-fn infer_borrow_owner_name(
+pub(crate) fn infer_borrow_owner_name(
     expr: &Expr,
     bindings: &CowBindings<BorrowBinding>,
     signatures: &FunctionSignatures<'_>,
@@ -2148,7 +2150,7 @@ fn infer_borrow_owner_name(
     }
 }
 
-fn infer_borrow_owner_name_owned(
+pub(crate) fn infer_borrow_owner_name_owned(
     expr: &Expr,
     bindings: &BTreeMap<String, BorrowBinding>,
     signatures: &BTreeMap<String, TypedFunction>,
@@ -2222,7 +2224,7 @@ fn infer_borrow_owner_name_owned(
     }
 }
 
-fn infer_gpu_slice_owner_name_borrowed(
+pub(crate) fn infer_gpu_slice_owner_name_borrowed(
     expr: &Expr,
     bindings: &CowBindings<BorrowBinding>,
     signatures: &FunctionSignatures<'_>,
@@ -2289,7 +2291,7 @@ fn infer_gpu_slice_owner_name_borrowed(
     }
 }
 
-fn infer_gpu_slice_owner_name(
+pub(crate) fn infer_gpu_slice_owner_name(
     expr: &Expr,
     bindings: &BTreeMap<String, BorrowBinding>,
     signatures: &BTreeMap<String, TypedFunction>,
@@ -2351,7 +2353,7 @@ fn infer_gpu_slice_owner_name(
     }
 }
 
-fn execution_space_label(execution: ast::ExecutionSpace) -> &'static str {
+pub(crate) fn execution_space_label(execution: ast::ExecutionSpace) -> &'static str {
     match execution {
         ast::ExecutionSpace::Host => "host",
         ast::ExecutionSpace::Pure => "pure",
@@ -2360,7 +2362,7 @@ fn execution_space_label(execution: ast::ExecutionSpace) -> &'static str {
     }
 }
 
-fn validate_reference_returns(
+pub(crate) fn validate_reference_returns(
     body: &[Stmt],
     function: &TypedFunction,
     ref_bindings: &mut CowBindings<(Option<String>, bool)>,
@@ -2512,7 +2514,7 @@ fn validate_reference_returns(
     true
 }
 
-fn validate_reference_return_expr(
+pub(crate) fn validate_reference_return_expr(
     expr: &Expr,
     function: &TypedFunction,
     ref_bindings: &mut CowBindings<(Option<String>, bool)>,
@@ -2605,7 +2607,7 @@ fn validate_reference_return_expr(
     }
 }
 
-fn merge_reference_bindings(
+pub(crate) fn merge_reference_bindings(
     entry: &CowBindings<(Option<String>, bool)>,
     branches: &[CowBindings<(Option<String>, bool)>],
 ) -> CowBindings<(Option<String>, bool)> {
@@ -2628,7 +2630,7 @@ fn merge_reference_bindings(
     merged
 }
 
-fn update_reference_binding(
+pub(crate) fn update_reference_binding(
     name: &str,
     value: &Expr,
     ref_bindings: &mut CowBindings<(Option<String>, bool)>,
@@ -2641,7 +2643,7 @@ fn update_reference_binding(
     ref_bindings.insert(name.to_string(), (next_lifetime, mutable));
 }
 
-fn infer_reference_lifetime(
+pub(crate) fn infer_reference_lifetime(
     expr: &Expr,
     ref_bindings: &CowBindings<(Option<String>, bool)>,
     signatures: &FunctionSignatures<'_>,
@@ -2712,12 +2714,12 @@ fn infer_reference_lifetime(
     }
 }
 
-fn ref_used_after_await(body: &[Stmt], name: &str, _mutable: bool) -> bool {
+pub(crate) fn ref_used_after_await(body: &[Stmt], name: &str, _mutable: bool) -> bool {
     let mut seen_await = false;
     body_uses_ident_after_await(body, name, &mut seen_await)
 }
 
-fn body_uses_ident_after_await(body: &[Stmt], name: &str, seen_await: &mut bool) -> bool {
+pub(crate) fn body_uses_ident_after_await(body: &[Stmt], name: &str, seen_await: &mut bool) -> bool {
     for stmt in body {
         if *seen_await && stmt_uses_ident(stmt, name) {
             return true;
@@ -2729,7 +2731,7 @@ fn body_uses_ident_after_await(body: &[Stmt], name: &str, seen_await: &mut bool)
     false
 }
 
-fn stmt_uses_ident_after_await(stmt: &Stmt, name: &str, seen_await: &mut bool) -> bool {
+pub(crate) fn stmt_uses_ident_after_await(stmt: &Stmt, name: &str, seen_await: &mut bool) -> bool {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::LetPattern { value, .. }
@@ -2848,7 +2850,7 @@ fn stmt_uses_ident_after_await(stmt: &Stmt, name: &str, seen_await: &mut bool) -
     }
 }
 
-fn expr_uses_ident_after_await(expr: &Expr, name: &str, seen_await: &mut bool) -> bool {
+pub(crate) fn expr_uses_ident_after_await(expr: &Expr, name: &str, seen_await: &mut bool) -> bool {
     match expr {
         Expr::Ident(ident) => *seen_await && ident == name,
         Expr::Await(inner) => {

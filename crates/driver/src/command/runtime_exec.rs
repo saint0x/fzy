@@ -1,4 +1,9 @@
-fn run_native_binary_with_bounds(
+use super::*;
+use super::dispatch::{NativeRunOutcome, RunBounds};
+#[cfg(test)]
+use super::dispatch::ScenarioRunRouting;
+
+pub(super) fn run_native_binary_with_bounds(
     binary: &Path,
     args: &[String],
     bounds: RunBounds<'_>,
@@ -77,7 +82,7 @@ fn run_native_binary_with_bounds(
     }
 }
 
-fn read_child_output(child: &mut std::process::Child) -> Result<(String, String)> {
+pub(super) fn read_child_output(child: &mut std::process::Child) -> Result<(String, String)> {
     let mut stdout = String::new();
     let mut stderr = String::new();
     if let Some(mut out) = child.stdout.take() {
@@ -91,7 +96,7 @@ fn read_child_output(child: &mut std::process::Child) -> Result<(String, String)
     Ok((stdout, stderr))
 }
 
-fn probe_http_ok(url: &str) -> Result<bool> {
+pub(super) fn probe_http_ok(url: &str) -> Result<bool> {
     let Some(without_scheme) = url.strip_prefix("http://") else {
         bail!("unsupported URL for smoke/health probe: {url} (only http:// is supported)");
     };
@@ -134,7 +139,7 @@ fn probe_http_ok(url: &str) -> Result<bool> {
 }
 
 #[cfg(test)]
-fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> ScenarioRunRouting {
+pub(super) fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> ScenarioRunRouting {
     if deterministic_requested && host_backends {
         return ScenarioRunRouting {
             deterministic_applied: true,
@@ -156,7 +161,7 @@ fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> S
     }
 }
 
-fn init_project(
+pub(super) fn init_project(
     path: &Path,
     package_name: Option<&str>,
     template: Option<&str>,
@@ -220,7 +225,7 @@ fn init_project(
     Ok(())
 }
 
-fn parse_init_template(template: Option<&str>) -> Result<fzscenario::InitTemplate> {
+pub(super) fn parse_init_template(template: Option<&str>) -> Result<fzscenario::InitTemplate> {
     match template
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -235,7 +240,7 @@ fn parse_init_template(template: Option<&str>) -> Result<fzscenario::InitTemplat
     }
 }
 
-fn parse_init_test_types(values: &[String]) -> Result<Vec<fzscenario::InitTestType>> {
+pub(super) fn parse_init_test_types(values: &[String]) -> Result<Vec<fzscenario::InitTestType>> {
     let mut parsed = Vec::new();
     for value in values {
         let normalized = value.trim().to_ascii_lowercase();
@@ -256,7 +261,7 @@ fn parse_init_test_types(values: &[String]) -> Result<Vec<fzscenario::InitTestTy
     Ok(parsed)
 }
 
-fn normalize_init_package_name(raw: &str) -> String {
+pub(super) fn normalize_init_package_name(raw: &str) -> String {
     let mut out = String::new();
     for ch in raw.trim().chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
@@ -268,7 +273,7 @@ fn normalize_init_package_name(raw: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-fn ensure_init_target_ready(
+pub(super) fn ensure_init_target_ready(
     root: &Path,
     template: &fzscenario::InitTemplate,
     force: bool,
@@ -295,7 +300,7 @@ fn ensure_init_target_ready(
     Ok(())
 }
 
-fn init_collision_paths(root: &Path, template: &fzscenario::InitTemplate) -> Vec<PathBuf> {
+pub(super) fn init_collision_paths(root: &Path, template: &fzscenario::InitTemplate) -> Vec<PathBuf> {
     let mut paths = vec![
         root.join("fozzy.toml"),
         root.join("src"),
@@ -308,17 +313,17 @@ fn init_collision_paths(root: &Path, template: &fzscenario::InitTemplate) -> Vec
     paths
 }
 
-fn render_init_manifest(package: &str) -> String {
+pub(super) fn render_init_manifest(package: &str) -> String {
     format!(
         "base_dir = \".fozzy\"\n\n[package]\nname = \"{package}\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"{package}\"\npath = \"src/main.fzy\"\n\n[unsafe]\ncontracts = \"compiler\"\nenforce_dev = false\nenforce_verify = true\nenforce_release = true\ndeny_unsafe_in = []\nallow_unsafe_in = []\n"
     )
 }
 
-fn render_init_main(package: &str) -> String {
+pub(super) fn render_init_main(package: &str) -> String {
     format!("fn main() -> i32 {{\n    let _app = \"{package}\"\n    return 0\n}}\n")
 }
 
-fn write_init_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
+pub(super) fn write_init_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
     if path.exists() && !force {
         return Ok(());
     }
@@ -329,4 +334,3 @@ fn write_init_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
     std::fs::write(path, bytes).with_context(|| format!("failed writing {}", path.display()))?;
     Ok(())
 }
-

@@ -1,4 +1,6 @@
-fn perf_command(artifact: Option<&Path>, format: Format) -> Result<String> {
+use super::*;
+
+pub(super) fn perf_command(artifact: Option<&Path>, format: Format) -> Result<String> {
     let path = artifact
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("artifacts/bench_core_rust_vs_fzy.json"));
@@ -53,7 +55,7 @@ fn perf_command(artifact: Option<&Path>, format: Format) -> Result<String> {
     }
 }
 
-fn stability_dashboard_command(format: Format) -> Result<String> {
+pub(super) fn stability_dashboard_command(format: Format) -> Result<String> {
     let repo_root = repo_root();
     let exit_criteria_script = repo_root.join("scripts/exit_criteria.py");
     let exit_status = ProcessCommand::new("python3")
@@ -119,7 +121,7 @@ fn stability_dashboard_command(format: Format) -> Result<String> {
     }
 }
 
-fn chrono_like_now_utc() -> String {
+pub(super) fn chrono_like_now_utc() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -129,14 +131,14 @@ fn chrono_like_now_utc() -> String {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DoctorCheck {
-    name: String,
-    status: String,
-    detail: String,
-    fix: String,
+pub(super) struct DoctorCheck {
+    pub(super) name: String,
+    pub(super) status: String,
+    pub(super) detail: String,
+    pub(super) fix: String,
 }
 
-fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<String> {
+pub(super) fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<String> {
     let project_root = if path.is_file() {
         path.parent()
             .unwrap_or_else(|| Path::new("."))
@@ -367,7 +369,7 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
     }
 }
 
-fn devloop_command(path: &Path, backend: Option<&str>, format: Format) -> Result<String> {
+pub(super) fn devloop_command(path: &Path, backend: Option<&str>, format: Format) -> Result<String> {
     let verify = verify_file_with_root_guidance(path)?;
     let compile = compile_file_with_backend_with_root_guidance(path, BuildProfile::Dev, backend)?;
     let plan = run_non_scenario_test_plan_with_root_guidance(
@@ -426,24 +428,24 @@ fn devloop_command(path: &Path, backend: Option<&str>, format: Format) -> Result
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SemanticsOutcome {
-    mode: String,
+pub(super) struct SemanticsOutcome {
+    pub(super) mode: String,
     #[serde(rename = "exitClass")]
-    exit_class: String,
+    pub(super) exit_class: String,
     #[serde(rename = "eventKinds")]
-    event_kinds: Vec<String>,
-    invariants: BTreeMap<String, String>,
+    pub(super) event_kinds: Vec<String>,
+    pub(super) invariants: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct FozzyTestSummary {
+pub(super) struct FozzyTestSummary {
     #[serde(rename = "exitClass")]
-    exit_class: String,
-    passed: u64,
-    failed: u64,
+    pub(super) exit_class: String,
+    pub(super) passed: u64,
+    pub(super) failed: u64,
 }
 
-fn spec_doc_path() -> PathBuf {
+pub(super) fn spec_doc_path() -> PathBuf {
     if let Ok(explicit) = std::env::var("FZ_SPEC_PATH") {
         if !explicit.trim().is_empty() {
             return PathBuf::from(explicit);
@@ -453,13 +455,13 @@ fn spec_doc_path() -> PathBuf {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DxIssue {
+pub(super) struct DxIssue {
     level: &'static str,
     file: String,
     message: String,
 }
 
-fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String> {
+pub(super) fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String> {
     if !path.is_dir() {
         bail!("dx-check requires a project directory: {}", path.display());
     }
@@ -605,7 +607,7 @@ fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String>
     }
 }
 
-fn parsed_module_source(project_root: &Path, source_path: &Path) -> Result<String> {
+pub(super) fn parsed_module_source(project_root: &Path, source_path: &Path) -> Result<String> {
     let parsed = parse_program(source_path)?;
     let mut combined = String::new();
     for path in parsed.module_paths {
@@ -625,4 +627,3 @@ fn parsed_module_source(project_root: &Path, source_path: &Path) -> Result<Strin
     }
     Ok(combined)
 }
-

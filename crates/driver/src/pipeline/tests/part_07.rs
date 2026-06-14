@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn verify_thread_boundary_shared_param_diagnostic_is_snapshot_stable() {
     let file_name = format!(
@@ -759,4 +761,3 @@ fn verify_if_expression_reference_lifetime_diagnostic_is_snapshot_stable() {
 
     let _ = std::fs::remove_file(path);
 }
-

@@ -1,5 +1,8 @@
+#[path = "native_runtime_support/ffi_exports.rs"]
 mod ffi_exports;
+#[path = "native_runtime_support/import_usage.rs"]
 mod import_usage;
+#[path = "native_runtime_support/runtime_shim.rs"]
 mod runtime_shim;
 
 #[cfg(test)]

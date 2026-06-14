@@ -1,487 +1,17 @@
-fn vendor_command(path: &Path, format: Format) -> Result<String> {
-    if !path.is_dir() {
-        bail!("vendor requires a project directory: {}", path.display());
-    }
-    let manifest_path = path.join("fozzy.toml");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("missing manifest: {}", manifest_path.display()))?;
-    let manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
-    manifest
-        .validate()
-        .map_err(|error| anyhow!("invalid fozzy.toml: {error}"))?;
-    let lock_hash = refresh_lockfile(path)?;
-    let lock_path = path.join("fozzy.lock");
-    let lock_text = std::fs::read_to_string(&lock_path)
-        .with_context(|| format!("failed reading lockfile: {}", lock_path.display()))?;
-    let lock_json: serde_json::Value = serde_json::from_str(&lock_text)
-        .with_context(|| format!("failed parsing lockfile: {}", lock_path.display()))?;
-    let lock_deps = lock_json
-        .get("graph")
-        .and_then(|value| value.get("deps"))
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut lock_dep_by_name = BTreeMap::new();
-    for dep in &lock_deps {
-        if let Some(name) = dep.get("name").and_then(|value| value.as_str()) {
-            lock_dep_by_name.insert(name.to_string(), dep.clone());
-        }
-    }
-    let vendor_dir = path.join("vendor");
-    std::fs::create_dir_all(&vendor_dir)
-        .with_context(|| format!("failed creating vendor dir: {}", vendor_dir.display()))?;
-    let mut copied = Vec::new();
-    for (name, dependency) in &manifest.deps {
-        let lock_dep = lock_dep_by_name
-            .get(name.as_str())
-            .ok_or_else(|| anyhow!("lockfile missing dependency entry for `{name}`"))?;
-        match dependency {
-            manifest::Dependency::Path { path: dep_path } => {
-                let source_dir = path.join(dep_path);
-                if !source_dir.exists() {
-                    bail!(
-                        "path dependency `{}` not found at {}",
-                        name,
-                        source_dir.display()
-                    );
-                }
-                let target_dir = vendor_dir.join(name);
-                if target_dir.exists() {
-                    std::fs::remove_dir_all(&target_dir).with_context(|| {
-                        format!(
-                            "failed cleaning existing vendor target: {}",
-                            target_dir.display()
-                        )
-                    })?;
-                }
-                copy_dir_recursive(&source_dir, &target_dir)?;
-                let source_hash = lock_dep
-                    .get("sourceHash")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let vendor_hash = hash_directory_tree(&target_dir)?;
-                if !source_hash.is_empty() && source_hash != vendor_hash {
-                    bail!(
-                        "vendor copy hash mismatch for `{}`: lock sourceHash={} vendorHash={}",
-                        name,
-                        source_hash,
-                        vendor_hash
-                    );
-                }
-                copied.push(serde_json::json!({
-                    "name": name,
-                    "sourceType": "path",
-                    "source": source_dir.display().to_string(),
-                    "target": target_dir.display().to_string(),
-                    "sourceHash": source_hash,
-                    "vendorHash": vendor_hash,
-                    "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
-                }));
-            }
-            manifest::Dependency::Version { version, source } => {
-                copied.push(serde_json::json!({
-                    "name": name,
-                    "sourceType": "version",
-                    "version": version,
-                    "source": source.clone().unwrap_or_else(|| "registry+https://crates.io".to_string()),
-                    "sourceHash": lock_dep.get("sourceHash").and_then(|value| value.as_str()).unwrap_or_default(),
-                    "vendored": false,
-                    "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
-                }));
-            }
-            manifest::Dependency::Git { git, rev } => {
-                copied.push(serde_json::json!({
-                    "name": name,
-                    "sourceType": "git",
-                    "git": git,
-                    "rev": rev,
-                    "sourceHash": lock_dep.get("sourceHash").and_then(|value| value.as_str()).unwrap_or_default(),
-                    "vendored": false,
-                    "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
-                }));
-            }
-        }
-    }
-    let vendor_manifest = vendor_dir.join("fozzy-vendor.json");
-    let vendor_payload = serde_json::json!({
-        "schemaVersion": "fozzylang.vendor.v0",
-        "lockHash": lock_hash,
-        "lockfile": lock_path.display().to_string(),
-        "dependencies": copied,
-    });
-    std::fs::write(
-        &vendor_manifest,
-        serde_json::to_vec_pretty(&vendor_payload)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing vendor manifest: {}",
-            vendor_manifest.display()
-        )
-    })?;
-    match format {
-        Format::Text => Ok(render_text_fields(&[
-            ("status", "ok".to_string()),
-            ("mode", "vendor".to_string()),
-            ("dependencies", copied.len().to_string()),
-            ("dir", vendor_dir.display().to_string()),
-            ("lock_hash", lock_hash.clone()),
-        ])),
-        Format::Json => Ok(serde_json::json!({
-            "ok": true,
-            "vendorDir": vendor_dir.display().to_string(),
-            "lockHash": lock_hash,
-            "lockfile": lock_path.display().to_string(),
-            "vendorManifest": vendor_manifest.display().to_string(),
-            "dependencies": copied,
-        })
-        .to_string()),
-    }
-}
+use super::*;
 
-fn copy_dir_recursive(source: &Path, target: &Path) -> Result<()> {
-    std::fs::create_dir_all(target)
-        .with_context(|| format!("failed creating directory: {}", target.display()))?;
-    for entry in std::fs::read_dir(source)
-        .with_context(|| format!("failed reading directory: {}", source.display()))?
-    {
-        let entry = entry?;
-        let src = entry.path();
-        let dst = target.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src, &dst)?;
-        } else {
-            std::fs::copy(&src, &dst).with_context(|| {
-                format!(
-                    "failed copying file from {} to {}",
-                    src.display(),
-                    dst.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
+#[path = "gpu/fs.rs"]
+mod fs;
+#[path = "gpu/abi.rs"]
+mod abi;
+#[path = "gpu/lsp.rs"]
+mod lsp;
 
-fn abi_check_command(current: &Path, baseline: &Path, format: Format) -> Result<String> {
-    ensure_exists(current)?;
-    ensure_exists(baseline)?;
-    let current_text = std::fs::read_to_string(current)
-        .with_context(|| format!("failed reading current abi: {}", current.display()))?;
-    let baseline_text = std::fs::read_to_string(baseline)
-        .with_context(|| format!("failed reading baseline abi: {}", baseline.display()))?;
-    let current_json: serde_json::Value = serde_json::from_str(&current_text)
-        .with_context(|| format!("failed parsing current abi: {}", current.display()))?;
-    let baseline_json: serde_json::Value = serde_json::from_str(&baseline_text)
-        .with_context(|| format!("failed parsing baseline abi: {}", baseline.display()))?;
-    let current_manifest = parse_abi_manifest(&current_json, current)?;
-    let baseline_manifest = parse_abi_manifest(&baseline_json, baseline)?;
-    let mut issues = Vec::new();
-    if let (Some(current_package), Some(baseline_package)) = (
-        current_manifest.package_name.as_deref(),
-        baseline_manifest.package_name.as_deref(),
-    ) {
-        if current_package != baseline_package {
-            issues.push(format!(
-                "package mismatch: current={} baseline={}",
-                current_package, baseline_package
-            ));
-        }
-    }
-    if let (Some(current_boundary), Some(baseline_boundary)) = (
-        current_manifest.panic_boundary.as_deref(),
-        baseline_manifest.panic_boundary.as_deref(),
-    ) {
-        if current_boundary != baseline_boundary {
-            issues.push(format!(
-                "panicBoundary mismatch: current={} baseline={}",
-                current_boundary, baseline_boundary
-            ));
-        }
-    }
-    for (name, baseline_export) in &baseline_manifest.exports {
-        let Some(current_export) = current_manifest.exports.get(name) else {
-            issues.push(format!(
-                "missing export in current ABI: {}",
-                baseline_export.signature()
-            ));
-            continue;
-        };
-        if current_export.normalized_signature != baseline_export.normalized_signature {
-            issues.push(format!(
-                "signature changed for export `{}`: current={} baseline={}",
-                name, current_export.normalized_signature, baseline_export.normalized_signature
-            ));
-        }
-        if current_export.contract_signature != baseline_export.contract_signature {
-            issues.push(format!(
-                "contract weakened/changed for export `{}`: current={} baseline={}",
-                name, current_export.contract_signature, baseline_export.contract_signature
-            ));
-        }
-        if current_export.symbol_version < baseline_export.symbol_version {
-            issues.push(format!(
-                "symbolVersion regressed for `{}`: current={} baseline={}",
-                name, current_export.symbol_version, baseline_export.symbol_version
-            ));
-        }
-    }
-    let mut added_exports = Vec::new();
-    for (name, export) in &current_manifest.exports {
-        if !baseline_manifest.exports.contains_key(name) {
-            added_exports.push(export.signature());
-        }
-    }
-    if !issues.is_empty() {
-        bail!(
-            "abi-check failed for {} vs {}: {}",
-            current.display(),
-            baseline.display(),
-            issues.join("; ")
-        );
-    }
-    match format {
-        Format::Text => Ok(render_text_fields(&[
-            ("status", "ok".to_string()),
-            ("mode", "abi-check".to_string()),
-            ("current", current.display().to_string()),
-            ("baseline", baseline.display().to_string()),
-            (
-                "compared_exports",
-                baseline_manifest.exports.len().to_string(),
-            ),
-            ("added_exports", added_exports.len().to_string()),
-        ])),
-        Format::Json => Ok(serde_json::json!({
-            "ok": true,
-            "current": current.display().to_string(),
-            "baseline": baseline.display().to_string(),
-            "package": current_manifest.package_name,
-            "panicBoundary": current_manifest.panic_boundary,
-            "comparedExports": baseline_manifest.exports.keys().cloned().collect::<Vec<_>>(),
-            "addedExports": added_exports,
-            "issues": issues,
-        })
-        .to_string()),
-    }
-}
+pub(super) use self::abi::*;
+pub(super) use self::fs::*;
+pub(super) use self::lsp::*;
 
-#[derive(Debug, Clone)]
-struct AbiManifest {
-    package_name: Option<String>,
-    panic_boundary: Option<String>,
-    exports: BTreeMap<String, AbiExport>,
-}
-
-#[derive(Debug, Clone)]
-struct AbiExport {
-    normalized_signature: String,
-    contract_signature: String,
-    symbol_version: u64,
-}
-
-impl AbiExport {
-    fn signature(&self) -> String {
-        self.normalized_signature.clone()
-    }
-}
-
-fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManifest> {
-    let schema = value
-        .get("schemaVersion")
-        .and_then(|item| item.as_str())
-        .ok_or_else(|| anyhow!("abi manifest missing schemaVersion: {}", path.display()))?;
-    if schema != "fozzylang.ffi_abi.v1" {
-        bail!(
-            "unsupported abi schema `{}` in {}; expected fozzylang.ffi_abi.v1",
-            schema,
-            path.display()
-        );
-    }
-    let package_name = match value.get("package") {
-        Some(serde_json::Value::String(name)) => Some(name.clone()),
-        Some(serde_json::Value::Object(obj)) => obj
-            .get("name")
-            .and_then(|item| item.as_str())
-            .map(str::to_string),
-        _ => None,
-    };
-    let panic_boundary = value
-        .get("panicBoundary")
-        .and_then(|item| item.as_str())
-        .map(str::to_string);
-    let mut exports = BTreeMap::new();
-    let export_items = value
-        .get("exports")
-        .and_then(|item| item.as_array())
-        .cloned()
-        .unwrap_or_default();
-    for export in export_items {
-        let name = export
-            .get("name")
-            .and_then(|item| item.as_str())
-            .unwrap_or("<unknown>")
-            .to_string();
-        let params = export
-            .get("params")
-            .and_then(|item| item.as_array())
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|param| {
-                param
-                    .get("c")
-                    .and_then(|item| item.as_str())
-                    .unwrap_or("void*")
-                    .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let ret = export
-            .get("return")
-            .and_then(|item| item.get("c"))
-            .and_then(|item| item.as_str())
-            .unwrap_or("void*");
-        let symbol_version = export
-            .get("symbolVersion")
-            .and_then(|item| item.as_u64())
-            .unwrap_or(1);
-        let export_mode = if export
-            .get("async")
-            .and_then(|item| item.as_bool())
-            .unwrap_or(false)
-        {
-            "async"
-        } else {
-            "sync"
-        };
-        let param_contracts = export
-            .get("params")
-            .and_then(|item| item.as_array())
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|param| {
-                serde_json::json!({
-                    "name": param.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                    "contract": param.get("contract").cloned().unwrap_or(serde_json::Value::Null),
-                })
-            })
-            .collect::<Vec<_>>();
-        let return_contract = export
-            .get("return")
-            .and_then(|item| item.get("contract"))
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        let export_contract =
-            normalize_abi_export_contract(export.get("contract"), export_mode == "async");
-        let contract_signature = serde_json::to_string(&serde_json::json!({
-            "params": param_contracts,
-            "return": return_contract,
-            "export": export_contract,
-        }))
-        .unwrap_or_else(|_| "{}".to_string());
-        exports.insert(
-            name.clone(),
-            AbiExport {
-                normalized_signature: format!("{name}:{export_mode}({params})->{ret}"),
-                contract_signature,
-                symbol_version,
-            },
-        );
-    }
-    Ok(AbiManifest {
-        package_name,
-        panic_boundary,
-        exports,
-    })
-}
-
-fn normalize_abi_export_contract(
-    contract: Option<&serde_json::Value>,
-    is_async: bool,
-) -> serde_json::Value {
-    let mut normalized = match contract {
-        Some(serde_json::Value::Object(map)) => map.clone(),
-        _ => serde_json::Map::new(),
-    };
-    normalized
-        .entry("callbackBindings".to_string())
-        .or_insert_with(|| serde_json::json!([]));
-    normalized
-        .entry("execution".to_string())
-        .or_insert_with(|| {
-            serde_json::Value::String(if is_async {
-                "async-handle-v1".to_string()
-            } else {
-                "sync".to_string()
-            })
-        });
-    normalized
-        .entry("asyncBoundary".to_string())
-        .or_insert(serde_json::Value::Null);
-    serde_json::Value::Object(normalized)
-}
-
-fn hash_directory_tree(root: &Path) -> Result<String> {
-    let mut files = Vec::new();
-    collect_files_recursive(root, root, &mut files)?;
-    let mut hasher = Sha256::new();
-    for (rel, full) in files {
-        hasher.update(rel.as_bytes());
-        let bytes = std::fs::read(&full)
-            .with_context(|| format!("failed reading file for hash: {}", full.display()))?;
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(bytes);
-    }
-    Ok(hex_encode(hasher.finalize().as_slice()))
-}
-
-fn collect_files_recursive(
-    root: &Path,
-    current: &Path,
-    out: &mut Vec<(String, PathBuf)>,
-) -> Result<()> {
-    let mut entries = std::fs::read_dir(current)
-        .with_context(|| format!("failed reading directory: {}", current.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("failed iterating directory: {}", current.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let full = entry.path();
-        let rel = full
-            .strip_prefix(root)
-            .with_context(|| format!("failed deriving relative path for {}", full.display()))?;
-        let rel_str = rel.display().to_string().replace('\\', "/");
-        if rel_str.starts_with(".git/")
-            || rel_str.starts_with(".fz/")
-            || rel_str.starts_with("vendor/")
-            || rel_str.starts_with("target/")
-        {
-            continue;
-        }
-        if entry
-            .file_type()
-            .with_context(|| format!("failed reading file type for {}", full.display()))?
-            .is_dir()
-        {
-            collect_files_recursive(root, &full, out)?;
-        } else {
-            out.push((rel_str, full));
-        }
-    }
-    Ok(())
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
-}
-
-fn debug_check_command(path: &Path, format: Format) -> Result<String> {
+pub(super) fn debug_check_command(path: &Path, format: Format) -> Result<String> {
     let artifact = compile_file_with_backend(path, BuildProfile::Dev, None)?;
     if artifact.status != "ok" {
         let rendered = render_artifact(Format::Text, artifact, None, None, None);
@@ -556,231 +86,82 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
     }
 }
 
-fn lsp_diagnostics_command(path: &Path, format: Format) -> Result<String> {
-    let payload = lsp::diagnostics_for_path(path)?;
-    let ok = payload
-        .get("ok")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let module = payload
-        .get("module")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    let diagnostics = payload
-        .get("diagnostics")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    match format {
-        Format::Text => {
-            let parsed_items = diagnostics
-                .iter()
-                .filter_map(|value| {
-                    serde_json::from_value::<diagnostics::Diagnostic>(value.clone()).ok()
-                })
-                .collect::<Vec<_>>();
-            let details = render_diagnostics_text(&parsed_items);
-            let mut rendered = render_text_fields(&[
-                ("status", if ok { "ok" } else { "error" }.to_string()),
-                ("mode", "lsp-diagnostics".to_string()),
-                ("module", module.to_string()),
-                ("diagnostics", diagnostics.len().to_string()),
-            ]);
-            if details.is_empty() {
-                Ok(rendered)
-            } else {
-                rendered.push('\n');
-                rendered.push_str(&details);
-                Ok(rendered)
-            }
-        }
-        Format::Json => Ok(payload.to_string()),
-    }
-}
 
-fn lsp_definition_command(path: &Path, symbol: &str, format: Format) -> Result<String> {
-    let hit = lsp::definition_for_symbol(path, symbol)?;
-    match format {
-        Format::Text => Ok(render_text_fields(&[
-            ("status", "ok".to_string()),
-            ("mode", "lsp-definition".to_string()),
-            ("symbol", symbol.to_string()),
-            ("kind", hit.kind.clone()),
-            ("file", hit.file.clone()),
-            ("line", hit.line.to_string()),
-            ("col", hit.col.to_string()),
-            ("detail", hit.detail.clone()),
-        ])),
-        Format::Json => Ok(serde_json::json!({
-            "ok": true,
-            "symbol": hit,
-        })
-        .to_string()),
-    }
-}
-
-fn lsp_hover_command(path: &Path, symbol: &str, format: Format) -> Result<String> {
-    let info = lsp::hover_for_symbol(path, symbol)?;
-    match format {
-        Format::Text => Ok(render_text_fields(&[
-            ("status", "ok".to_string()),
-            ("mode", "lsp-hover".to_string()),
-            ("symbol", symbol.to_string()),
-            (
-                "kind",
-                info.get("kind")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-            ),
-            (
-                "signature",
-                info.get("signature")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-            ),
-        ])),
-        Format::Json => Ok(serde_json::json!({
-            "ok": true,
-            "hover": info,
-        })
-        .to_string()),
-    }
-}
-
-fn lsp_rename_command(path: &Path, from: &str, to: &str, format: Format) -> Result<String> {
-    let summary = lsp::rename_on_disk(path, from, to)?;
-    match format {
-        Format::Text => Ok(render_text_fields(&[
-            ("status", "ok".to_string()),
-            ("mode", "lsp-rename".to_string()),
-            ("from", summary.from.clone()),
-            ("to", summary.to.clone()),
-            ("replacements", summary.replacements.to_string()),
-            ("files", summary.files.len().to_string()),
-        ])),
-        Format::Json => Ok(serde_json::json!({
-            "ok": true,
-            "from": summary.from,
-            "to": summary.to,
-            "replacements": summary.replacements,
-            "files": summary.files,
-        })
-        .to_string()),
-    }
-}
-
-fn lsp_smoke_command(path: &Path, format: Format) -> Result<String> {
-    let payload = lsp::smoke(path)?;
-    match format {
-        Format::Text => Ok(render_text_fields(&[
-            ("status", "ok".to_string()),
-            ("mode", "lsp-smoke".to_string()),
-            (
-                "symbols",
-                payload
-                    .get("symbols")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0)
-                    .to_string(),
-            ),
-            (
-                "diagnostics",
-                payload
-                    .get("diagnostics")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0)
-                    .to_string(),
-            ),
-        ])),
-        Format::Json => Ok(payload.to_string()),
-    }
-}
-
-fn ensure_exists(path: &Path) -> Result<()> {
-    if !path.exists() {
-        bail!("path does not exist: {}", path.display());
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct NonScenarioTestPlan {
-    module: String,
-    mode: &'static str,
-    scheduler: String,
-    diagnostics: usize,
-    discovered_tests: usize,
-    selected_tests: usize,
-    discovered_test_names: Vec<String>,
-    selected_test_names: Vec<String>,
-    deterministic_test_names: Vec<String>,
-    executed_tasks: usize,
-    execution_order: Vec<u64>,
-    async_checkpoint_count: usize,
-    async_execution: Vec<u64>,
-    rpc_frame_count: usize,
-    rpc_validation_errors: usize,
-    thread_findings: usize,
-    runtime_event_count: usize,
-    causal_link_count: usize,
-    coverage_ratio: f64,
-    artifacts: Option<NonScenarioTraceArtifacts>,
-    telemetry: NonScenarioPlanTelemetry,
+pub(super) struct NonScenarioTestPlan {
+    pub(super) module: String,
+    pub(super) mode: &'static str,
+    pub(super) scheduler: String,
+    pub(super) diagnostics: usize,
+    pub(super) discovered_tests: usize,
+    pub(super) selected_tests: usize,
+    pub(super) discovered_test_names: Vec<String>,
+    pub(super) selected_test_names: Vec<String>,
+    pub(super) deterministic_test_names: Vec<String>,
+    pub(super) executed_tasks: usize,
+    pub(super) execution_order: Vec<u64>,
+    pub(super) async_checkpoint_count: usize,
+    pub(super) async_execution: Vec<u64>,
+    pub(super) rpc_frame_count: usize,
+    pub(super) rpc_validation_errors: usize,
+    pub(super) thread_findings: usize,
+    pub(super) runtime_event_count: usize,
+    pub(super) causal_link_count: usize,
+    pub(super) coverage_ratio: f64,
+    pub(super) artifacts: Option<NonScenarioTraceArtifacts>,
+    pub(super) telemetry: NonScenarioPlanTelemetry,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
-struct NonScenarioPlanTelemetry {
-    parse_ms: u64,
-    lower_ms: u64,
-    verify_ms: u64,
-    execute_ms: u64,
-    artifact_write_ms: u64,
-    total_ms: u64,
-    parse_cache_hit: bool,
-    lower_cache_hit: bool,
-    input_bytes: usize,
+pub(super) struct NonScenarioPlanTelemetry {
+    pub(super) parse_ms: u64,
+    pub(super) lower_ms: u64,
+    pub(super) verify_ms: u64,
+    pub(super) execute_ms: u64,
+    pub(super) artifact_write_ms: u64,
+    pub(super) total_ms: u64,
+    pub(super) parse_cache_hit: bool,
+    pub(super) lower_cache_hit: bool,
+    pub(super) input_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
-struct NonScenarioTraceArtifacts {
-    trace_path: PathBuf,
-    report_path: Option<PathBuf>,
-    timeline_path: Option<PathBuf>,
-    manifest_path: PathBuf,
-    explore_path: Option<PathBuf>,
-    shrink_path: Option<PathBuf>,
-    scenarios_index_path: Option<PathBuf>,
-    primary_scenario_path: Option<PathBuf>,
-    goal_trace_path: Option<PathBuf>,
+pub(super) struct NonScenarioTraceArtifacts {
+    pub(super) trace_path: PathBuf,
+    pub(super) report_path: Option<PathBuf>,
+    pub(super) timeline_path: Option<PathBuf>,
+    pub(super) manifest_path: PathBuf,
+    pub(super) explore_path: Option<PathBuf>,
+    pub(super) shrink_path: Option<PathBuf>,
+    pub(super) scenarios_index_path: Option<PathBuf>,
+    pub(super) primary_scenario_path: Option<PathBuf>,
+    pub(super) goal_trace_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExecMode {
+pub(super) enum ExecMode {
     Fast,
     Det,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ArtifactDetail {
+pub(super) enum ArtifactDetail {
     Minimal,
     Rich,
 }
 
 #[derive(Debug, Clone)]
-struct NonScenarioPlanRequest<'a> {
-    deterministic: bool,
-    strict_verify: bool,
-    safe_profile: bool,
-    scheduler: Option<String>,
-    seed: Option<u64>,
-    record: Option<&'a Path>,
-    rich_artifacts: bool,
-    filter: Option<&'a str>,
+pub(super) struct NonScenarioPlanRequest<'a> {
+    pub(super) deterministic: bool,
+    pub(super) strict_verify: bool,
+    pub(super) safe_profile: bool,
+    pub(super) scheduler: Option<String>,
+    pub(super) seed: Option<u64>,
+    pub(super) record: Option<&'a Path>,
+    pub(super) rich_artifacts: bool,
+    pub(super) filter: Option<&'a str>,
 }
 
-struct NonScenarioTraceInputs<'a> {
+pub(super) struct NonScenarioTraceInputs<'a> {
     detail: ArtifactDetail,
     scheduler: &'a str,
     seed: u64,
@@ -798,60 +179,60 @@ struct NonScenarioTraceInputs<'a> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RpcFrameEvent {
+pub(super) struct RpcFrameEvent {
     #[serde(rename = "event")]
-    kind: &'static str,
-    method: String,
+    pub(super) kind: &'static str,
+    pub(super) method: String,
     #[serde(rename = "taskId")]
-    task_id: u64,
+    pub(super) task_id: u64,
 }
 
 #[derive(Debug, Clone)]
-struct WorkloadShape {
-    async_functions: usize,
-    spawn_markers: usize,
-    yield_markers: usize,
+pub(super) struct WorkloadShape {
+    pub(super) async_functions: usize,
+    pub(super) spawn_markers: usize,
+    pub(super) yield_markers: usize,
 }
 
 #[derive(Debug, Clone)]
-struct ExecutionOp {
+pub(super) struct ExecutionOp {
     kind: &'static str,
     label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RuntimeSemanticEvent {
+pub(super) struct RuntimeSemanticEvent {
     #[serde(rename = "taskId")]
-    task_id: u64,
-    phase: String,
-    kind: String,
-    label: String,
+    pub(super) task_id: u64,
+    pub(super) phase: String,
+    pub(super) kind: String,
+    pub(super) label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<serde_json::Value>,
+    pub(super) details: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct CausalLink {
-    from: u64,
-    to: u64,
-    relation: String,
+pub(super) struct CausalLink {
+    pub(super) from: u64,
+    pub(super) to: u64,
+    pub(super) relation: String,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum RpcValidationSeverity {
+pub(super) enum RpcValidationSeverity {
     Info,
     Warning,
     Error,
 }
 
 #[derive(Debug, Clone)]
-struct RpcValidationFinding {
-    kind: &'static str,
-    severity: RpcValidationSeverity,
-    message: String,
+pub(super) struct RpcValidationFinding {
+    pub(super) kind: &'static str,
+    pub(super) severity: RpcValidationSeverity,
+    pub(super) message: String,
 }
 
-fn run_non_scenario_test_plan(
+pub(super) fn run_non_scenario_test_plan(
     path: &Path,
     request: NonScenarioPlanRequest<'_>,
 ) -> Result<NonScenarioTestPlan> {
@@ -1163,7 +544,7 @@ fn run_non_scenario_test_plan(
     })
 }
 
-fn suppress_transitive_unsafe_summary_for_architecture_root(
+pub(super) fn suppress_transitive_unsafe_summary_for_architecture_root(
     source_path: &Path,
     _module: &ast::Module,
     diagnostics: &mut Vec<diagnostics::Diagnostic>,
@@ -1184,13 +565,13 @@ fn suppress_transitive_unsafe_summary_for_architecture_root(
     });
 }
 
-fn source_file_contains_unsafe_marker(source_path: &Path) -> bool {
+pub(super) fn source_file_contains_unsafe_marker(source_path: &Path) -> bool {
     std::fs::read_to_string(source_path)
         .map(|source| source.contains("unsafe"))
         .unwrap_or(true)
 }
 
-fn write_non_scenario_trace_artifacts(
+pub(super) fn write_non_scenario_trace_artifacts(
     trace_path: &Path,
     inputs: NonScenarioTraceInputs<'_>,
 ) -> Result<NonScenarioTraceArtifacts> {
@@ -1469,7 +850,7 @@ fn write_non_scenario_trace_artifacts(
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TaskEventRecord {
+pub(super) struct TaskEventRecord {
     event: &'static str,
     #[serde(rename = "taskId")]
     task_id: u64,
@@ -1626,7 +1007,7 @@ impl From<&TaskEvent> for TaskEventRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TracePayload<'a> {
+pub(super) struct TracePayload<'a> {
     #[serde(rename = "schemaVersion")]
     schema_version: &'static str,
     capability: &'static str,
@@ -1648,14 +1029,14 @@ struct TracePayload<'a> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TimelinePayload<'a> {
+pub(super) struct TimelinePayload<'a> {
     #[serde(rename = "schemaVersion")]
     schema_version: &'static str,
     entries: Vec<TimelineEntry<'a>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TimelineEntry<'a> {
+pub(super) struct TimelineEntry<'a> {
     step: usize,
     decision: &'a str,
     #[serde(rename = "taskId")]
@@ -1668,7 +1049,7 @@ struct TimelineEntry<'a> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ReportPayload {
+pub(super) struct ReportPayload {
     #[serde(rename = "schemaVersion")]
     schema_version: &'static str,
     status: &'static str,
@@ -1698,7 +1079,7 @@ struct ReportPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ExplorePayload {
+pub(super) struct ExplorePayload {
     #[serde(rename = "schemaVersion")]
     schema_version: &'static str,
     schedules: serde_json::Value,
@@ -1712,7 +1093,7 @@ struct ExplorePayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ShrinkPayload {
+pub(super) struct ShrinkPayload {
     #[serde(rename = "schemaVersion")]
     schema_version: &'static str,
     #[serde(rename = "scenarioPriorities")]
@@ -1723,7 +1104,7 @@ struct ShrinkPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ScenariosPayload {
+pub(super) struct ScenariosPayload {
     #[serde(rename = "schemaVersion")]
     schema_version: &'static str,
     primary: Option<String>,
@@ -1731,7 +1112,7 @@ struct ScenariosPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ManifestPayload {
+pub(super) struct ManifestPayload {
     #[serde(rename = "schemaVersion")]
     schema_version: &'static str,
     trace: String,
@@ -1752,13 +1133,13 @@ struct ManifestPayload {
     detail: &'static str,
 }
 
-fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+pub(super) fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value)?;
     std::fs::write(path, bytes)
         .with_context(|| format!("failed writing json file: {}", path.display()))
 }
 
-fn count_async_hooks_in_module(module: &ast::Module) -> usize {
+pub(super) fn count_async_hooks_in_module(module: &ast::Module) -> usize {
     let mut hooks = 0usize;
     for item in &module.items {
         let ast::Item::Function(function) = item else {
@@ -1774,7 +1155,7 @@ fn count_async_hooks_in_module(module: &ast::Module) -> usize {
     hooks
 }
 
-fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
+pub(super) fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::LetPattern { value, .. }
@@ -1837,7 +1218,7 @@ fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
     }
 }
 
-fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
+pub(super) fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
     match expr {
         ast::Expr::Await(inner) => 1 + count_async_hooks_in_expr(inner),
         ast::Expr::Discard(inner) => count_async_hooks_in_expr(inner),
@@ -1888,7 +1269,7 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
     }
 }
 
-fn analyze_workload_shape(module: &ast::Module) -> WorkloadShape {
+pub(super) fn analyze_workload_shape(module: &ast::Module) -> WorkloadShape {
     let mut async_functions = 0usize;
     let mut spawn_markers = 0usize;
     let mut yield_markers = 0usize;
@@ -1912,7 +1293,7 @@ fn analyze_workload_shape(module: &ast::Module) -> WorkloadShape {
     }
 }
 
-fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
+pub(super) fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::LetPattern { value, .. }
@@ -2015,7 +1396,7 @@ fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
     }
 }
 
-fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
+pub(super) fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
     match expr {
         ast::Expr::Call { callee, args } => {
             let mut spawns = usize::from(matches!(
@@ -2106,7 +1487,7 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
     }
 }
 
-fn build_execution_plan(
+pub(super) fn build_execution_plan(
     discovered_tests: usize,
     deterministic_test_names: &[String],
     async_functions: usize,
@@ -2154,7 +1535,7 @@ fn build_execution_plan(
     plan
 }
 
-fn derive_runtime_semantic_evidence(
+pub(super) fn derive_runtime_semantic_evidence(
     events: &[TaskEvent],
     execution_order: &[u64],
     task_ops: &BTreeMap<u64, ExecutionOp>,
@@ -2280,10 +1661,10 @@ fn derive_runtime_semantic_evidence(
     (runtime_events, causal_links)
 }
 
-const GPU_TRACE_EVENT_ID_BASE: u64 = 1_000_000_000_000;
+pub(super) const GPU_TRACE_EVENT_ID_BASE: u64 = 1_000_000_000_000;
 
 #[derive(Debug, Clone)]
-enum GpuTraceBinding {
+pub(super) enum GpuTraceBinding {
     Device {
         resource_id: String,
         event_id: u64,
@@ -2310,24 +1691,23 @@ enum GpuTraceBinding {
 }
 
 #[derive(Debug, Clone)]
-struct GpuLaunchArgTrace {
-    slot: usize,
-    layout: String,
-    detail: serde_json::Value,
-    source_event_ids: Vec<u64>,
+pub(super) struct GpuLaunchArgTrace {
+    pub(super) slot: usize,
+    pub(super) layout: String,
+    pub(super) detail: serde_json::Value,
+    pub(super) source_event_ids: Vec<u64>,
 }
 
 #[derive(Debug, Default)]
-struct GpuTraceAnalyzer {
-    next_trace_id: u64,
-    previous_trace_id: Option<u64>,
-    next_device_id: usize,
-    next_buffer_id: usize,
-    next_slice_id: usize,
-    next_event_id: usize,
-    runtime_events: Vec<RuntimeSemanticEvent>,
-    causal_links: Vec<CausalLink>,
-    bindings: HashMap<String, GpuTraceBinding>,
-    kernel_layouts: HashMap<String, String>,
+pub(super) struct GpuTraceAnalyzer {
+    pub(super) next_trace_id: u64,
+    pub(super) previous_trace_id: Option<u64>,
+    pub(super) next_device_id: usize,
+    pub(super) next_buffer_id: usize,
+    pub(super) next_slice_id: usize,
+    pub(super) next_event_id: usize,
+    pub(super) runtime_events: Vec<RuntimeSemanticEvent>,
+    pub(super) causal_links: Vec<CausalLink>,
+    pub(super) bindings: HashMap<String, GpuTraceBinding>,
+    pub(super) kernel_layouts: HashMap<String, String>,
 }
-

@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn verify_kv_close_wrapper_consumes_handle() {
     let file_name = format!(
@@ -777,4 +779,3 @@ fn verify_projected_owned_ffi_argument_reuse_diagnostic_is_snapshot_stable() {
 
     let _ = std::fs::remove_file(path);
 }
-

@@ -1,4 +1,6 @@
-fn render_c_header(
+use super::*;
+
+pub(super) fn render_c_header(
     package_name: &str,
     module: &ast::Module,
     exports: &[&ast::Function],
@@ -75,7 +77,7 @@ fn render_c_header(
     header
 }
 
-fn render_repr_c_type_defs(
+pub(super) fn render_repr_c_type_defs(
     module: &ast::Module,
     repr_c_aliases: &BTreeMap<String, String>,
 ) -> String {
@@ -114,7 +116,7 @@ fn render_repr_c_type_defs(
     out
 }
 
-fn validate_ffi_contracts(
+pub(super) fn validate_ffi_contracts(
     module: &ast::Module,
     imports: &[&ast::Function],
     exports: &[&ast::Function],
@@ -265,32 +267,32 @@ fn validate_ffi_contracts(
 }
 
 #[derive(Debug, Clone)]
-struct ReprCLayout {
-    name: String,
-    kind: &'static str,
-    size: usize,
-    align: usize,
-    fields: Vec<ReprCFieldLayout>,
-    variants: Vec<ReprCVariantLayout>,
-    storage: Option<&'static str>,
+pub(super) struct ReprCLayout {
+    pub(super) name: String,
+    pub(super) kind: &'static str,
+    pub(super) size: usize,
+    pub(super) align: usize,
+    pub(super) fields: Vec<ReprCFieldLayout>,
+    pub(super) variants: Vec<ReprCVariantLayout>,
+    pub(super) storage: Option<&'static str>,
 }
 
 #[derive(Debug, Clone)]
-struct ReprCFieldLayout {
-    name: String,
-    ty: ast::Type,
-    offset: usize,
-    size: usize,
-    align: usize,
+pub(super) struct ReprCFieldLayout {
+    pub(super) name: String,
+    pub(super) ty: ast::Type,
+    pub(super) offset: usize,
+    pub(super) size: usize,
+    pub(super) align: usize,
 }
 
 #[derive(Debug, Clone)]
-struct ReprCVariantLayout {
-    name: String,
-    value: u64,
+pub(super) struct ReprCVariantLayout {
+    pub(super) name: String,
+    pub(super) value: u64,
 }
 
-fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
+pub(super) fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
     let mut layouts = Vec::new();
     for item in &module.items {
         match item {
@@ -364,11 +366,11 @@ fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
     Ok(layouts)
 }
 
-fn is_repr_c(repr: Option<&str>) -> bool {
+pub(super) fn is_repr_c(repr: Option<&str>) -> bool {
     repr.is_some_and(|repr| repr.to_ascii_lowercase().contains('c'))
 }
 
-fn abi_identity_fields() -> (String, String, String) {
+pub(super) fn abi_identity_fields() -> (String, String, String) {
     let target_triple = std::env::var("TARGET")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -404,13 +406,13 @@ fn abi_identity_fields() -> (String, String, String) {
     )
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex_encode(hasher.finalize().as_slice())
 }
 
-fn ffi_type_layout(ty: &ast::Type) -> Option<(usize, usize)> {
+pub(super) fn ffi_type_layout(ty: &ast::Type) -> Option<(usize, usize)> {
     match ty {
         ast::Type::Void => Some((0, 1)),
         ast::Type::Bool => Some((1, 1)),
@@ -433,7 +435,7 @@ fn ffi_type_layout(ty: &ast::Type) -> Option<(usize, usize)> {
     }
 }
 
-fn align_up(value: usize, align: usize) -> usize {
+pub(super) fn align_up(value: usize, align: usize) -> usize {
     if align == 0 {
         return value;
     }
@@ -445,7 +447,7 @@ fn align_up(value: usize, align: usize) -> usize {
     }
 }
 
-fn detect_ffi_panic_boundary(
+pub(super) fn detect_ffi_panic_boundary(
     exports: &[&ast::Function],
     manifest: Option<&manifest::Manifest>,
 ) -> Result<&'static str> {
@@ -468,7 +470,7 @@ fn detect_ffi_panic_boundary(
     Ok("abort-or-translate")
 }
 
-fn pointer_base_name(name: &str) -> String {
+pub(super) fn pointer_base_name(name: &str) -> String {
     for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
         if let Some(stripped) = name.strip_suffix(suffix) {
             return stripped.to_string();
@@ -477,7 +479,7 @@ fn pointer_base_name(name: &str) -> String {
     name.to_string()
 }
 
-fn has_len_pair(function: &ast::Function, pointer_param_name: &str) -> bool {
+pub(super) fn has_len_pair(function: &ast::Function, pointer_param_name: &str) -> bool {
     let base = pointer_base_name(pointer_param_name);
     let expected = format!("{base}_len");
     function.params.iter().any(|candidate| {
@@ -488,7 +490,7 @@ fn has_len_pair(function: &ast::Function, pointer_param_name: &str) -> bool {
     })
 }
 
-fn is_i32_type(ty: &ast::Type) -> bool {
+pub(super) fn is_i32_type(ty: &ast::Type) -> bool {
     matches!(
         ty,
         ast::Type::Int {
@@ -498,7 +500,7 @@ fn is_i32_type(ty: &ast::Type) -> bool {
     )
 }
 
-fn callback_typedef_for<'a>(
+pub(super) fn callback_typedef_for<'a>(
     ty: &ast::Type,
     callback_types: &'a [interop::CallbackTypeDef],
 ) -> Option<&'a str> {
@@ -509,7 +511,7 @@ fn callback_typedef_for<'a>(
         .map(|candidate| candidate.typedef_name.as_str())
 }
 
-fn render_callback_type_defs(
+pub(super) fn render_callback_type_defs(
     callback_types: &[interop::CallbackTypeDef],
     repr_c_aliases: &BTreeMap<String, String>,
 ) -> String {
@@ -547,7 +549,7 @@ fn render_callback_type_defs(
     out
 }
 
-fn render_c_surface_type(
+pub(super) fn render_c_surface_type(
     ty: &ast::Type,
     repr_c_aliases: &BTreeMap<String, String>,
     callback_types: &[interop::CallbackTypeDef],
@@ -572,7 +574,7 @@ fn render_c_surface_type(
     }
 }
 
-fn render_c_params(
+pub(super) fn render_c_params(
     function: &ast::Function,
     repr_c_aliases: &BTreeMap<String, String>,
     callback_types: &[interop::CallbackTypeDef],
@@ -596,7 +598,7 @@ fn render_c_params(
     }
 }
 
-fn ffi_ownership_kind(name: &str) -> &'static str {
+pub(super) fn ffi_ownership_kind(name: &str) -> &'static str {
     if name.ends_with("_owned") {
         "owned"
     } else if name.ends_with("_out") {
@@ -608,7 +610,7 @@ fn ffi_ownership_kind(name: &str) -> &'static str {
     }
 }
 
-fn ffi_param_contract(
+pub(super) fn ffi_param_contract(
     function: &ast::Function,
     param: &ast::Param,
     callback_types: &[interop::CallbackTypeDef],
@@ -659,7 +661,7 @@ fn ffi_param_contract(
     })
 }
 
-fn ffi_return_contract(ty: &ast::Type) -> serde_json::Value {
+pub(super) fn ffi_return_contract(ty: &ast::Type) -> serde_json::Value {
     let (ownership, nullability, mutability) = match ty {
         ast::Type::Ptr { mutable, .. } => {
             ("owned", "non_null", if *mutable { "mut" } else { "const" })
@@ -673,7 +675,7 @@ fn ffi_return_contract(ty: &ast::Type) -> serde_json::Value {
     })
 }
 
-fn ffi_callback_bindings(
+pub(super) fn ffi_callback_bindings(
     function: &ast::Function,
     callback_types: &[interop::CallbackTypeDef],
 ) -> Vec<serde_json::Value> {
@@ -711,7 +713,7 @@ fn ffi_callback_bindings(
     out
 }
 
-fn ffi_async_contract(function: &ast::Function) -> serde_json::Value {
+pub(super) fn ffi_async_contract(function: &ast::Function) -> serde_json::Value {
     if !function.is_async {
         return serde_json::Value::Null;
     }
@@ -727,14 +729,14 @@ fn ffi_async_contract(function: &ast::Function) -> serde_json::Value {
     })
 }
 
-fn ffi_symbol_name(function: &ast::Function) -> &str {
+pub(super) fn ffi_symbol_name(function: &ast::Function) -> &str {
     function
         .link_name
         .as_deref()
         .unwrap_or(function.name.as_str())
 }
 
-fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
+pub(super) fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
     match ty {
         ast::Type::Never
         | ast::Type::Void
@@ -786,7 +788,7 @@ fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
     }
 }
 
-fn to_c_type(ty: &ast::Type) -> String {
+pub(super) fn to_c_type(ty: &ast::Type) -> String {
     match ty {
         ast::Type::Ptr { mutable, to } => {
             if *mutable {
@@ -847,4 +849,3 @@ fn to_c_type(ty: &ast::Type) -> String {
         _ => "void*".to_string(),
     }
 }
-

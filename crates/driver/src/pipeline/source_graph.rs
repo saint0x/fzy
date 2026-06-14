@@ -1,14 +1,16 @@
-struct ResolvedSource {
-    source_path: PathBuf,
-    project_root: PathBuf,
-    manifest: Option<manifest::Manifest>,
-    manifest_fingerprint: Option<String>,
-    dependency_graph_hash: Option<String>,
-    artifact_stem: String,
+use super::*;
+
+pub(super) struct ResolvedSource {
+    pub(super) source_path: PathBuf,
+    pub(super) project_root: PathBuf,
+    pub(super) manifest: Option<manifest::Manifest>,
+    pub(super) manifest_fingerprint: Option<String>,
+    pub(super) dependency_graph_hash: Option<String>,
+    pub(super) artifact_stem: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-struct WorkspacePolicyFile {
+pub(super) struct WorkspacePolicyFile {
     #[serde(default)]
     policy: WorkspacePolicySection,
     #[serde(default)]
@@ -16,7 +18,7 @@ struct WorkspacePolicyFile {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-struct WorkspacePolicySection {
+pub(super) struct WorkspacePolicySection {
     language_tier: Option<String>,
     allow_experimental: Option<bool>,
     unsafe_enforce_verify: Option<bool>,
@@ -24,16 +26,16 @@ struct WorkspacePolicySection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LockfileMode {
+pub(super) enum LockfileMode {
     ValidateOrCreate,
     ForceRewrite,
 }
 
-fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
+pub(super) fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
     resolve_source_path_with_target(input, false)
 }
 
-fn resolve_source_path_with_target(
+pub(super) fn resolve_source_path_with_target(
     input: &Path,
     prefer_lib_target: bool,
 ) -> Result<ResolvedSource> {
@@ -111,7 +113,7 @@ fn resolve_source_path_with_target(
     })
 }
 
-fn load_manifest(
+pub(super) fn load_manifest(
     dir: &Path,
     lock_mode: LockfileMode,
 ) -> Result<(manifest::Manifest, std::path::PathBuf, String)> {
@@ -129,13 +131,13 @@ fn load_manifest(
     Ok((parsed, primary, graph_hash))
 }
 
-fn manifest_fingerprint(manifest: &manifest::Manifest) -> Result<String> {
+pub(super) fn manifest_fingerprint(manifest: &manifest::Manifest) -> Result<String> {
     let bytes = serde_json::to_vec(manifest)
         .map_err(|error| anyhow!("failed serializing manifest fingerprint: {error}"))?;
     Ok(sha256_hex(&bytes))
 }
 
-fn apply_workspace_policy(dir: &Path, manifest: &mut manifest::Manifest) -> Result<()> {
+pub(super) fn apply_workspace_policy(dir: &Path, manifest: &mut manifest::Manifest) -> Result<()> {
     let Some((_, policy)) = load_workspace_policy(dir)? else {
         return Ok(());
     };
@@ -170,7 +172,7 @@ fn apply_workspace_policy(dir: &Path, manifest: &mut manifest::Manifest) -> Resu
     Ok(())
 }
 
-fn load_workspace_policy(dir: &Path) -> Result<Option<(PathBuf, WorkspacePolicyFile)>> {
+pub(super) fn load_workspace_policy(dir: &Path) -> Result<Option<(PathBuf, WorkspacePolicyFile)>> {
     let mut cursor = Some(dir.to_path_buf());
     while let Some(current) = cursor {
         let candidate = current.join("fozzy.workspace.toml");
@@ -186,7 +188,7 @@ fn load_workspace_policy(dir: &Path) -> Result<Option<(PathBuf, WorkspacePolicyF
     Ok(None)
 }
 
-fn validate_dependency_paths(dir: &Path, manifest: &manifest::Manifest) -> Result<()> {
+pub(super) fn validate_dependency_paths(dir: &Path, manifest: &manifest::Manifest) -> Result<()> {
     for (name, dependency) in &manifest.deps {
         if let manifest::Dependency::Path { path } = dependency {
             let resolved = dir.join(path);
@@ -207,7 +209,7 @@ pub fn refresh_lockfile(dir: &Path) -> Result<String> {
     Ok(graph_hash)
 }
 
-fn write_lockfile(
+pub(super) fn write_lockfile(
     dir: &Path,
     manifest: &manifest::Manifest,
     root_manifest_contents: &str,
@@ -260,7 +262,7 @@ fn write_lockfile(
     Ok(graph_hash)
 }
 
-fn build_dependency_graph(
+pub(super) fn build_dependency_graph(
     dir: &Path,
     manifest: &manifest::Manifest,
     root_manifest_hash: &str,
@@ -333,11 +335,11 @@ fn build_dependency_graph(
     }))
 }
 
-fn normalize_rel_path(path: &str) -> String {
+pub(super) fn normalize_rel_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-fn hash_stamped_files(root: &Path, files: &[ModuleStamp]) -> Result<String> {
+pub(super) fn hash_stamped_files(root: &Path, files: &[ModuleStamp]) -> Result<String> {
     let mut hasher = Sha256::new();
     for stamp in files {
         let rel = stamp.path.strip_prefix(root).with_context(|| {
@@ -357,13 +359,13 @@ fn hash_stamped_files(root: &Path, files: &[ModuleStamp]) -> Result<String> {
     Ok(hex_encode(hasher.finalize().as_slice()))
 }
 
-fn collect_file_stamps(root: &Path) -> Result<Vec<ModuleStamp>> {
+pub(super) fn collect_file_stamps(root: &Path) -> Result<Vec<ModuleStamp>> {
     let mut files = Vec::new();
     collect_files_recursive(root, root, &mut files)?;
     Ok(files)
 }
 
-fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<ModuleStamp>) -> Result<()> {
+pub(super) fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<ModuleStamp>) -> Result<()> {
     let mut entries = std::fs::read_dir(current)
         .with_context(|| format!("failed reading dependency directory: {}", current.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -399,7 +401,7 @@ fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<ModuleStam
     Ok(())
 }
 
-fn dependency_source_state(canonical: &Path) -> Result<DependencySourceCacheEntry> {
+pub(super) fn dependency_source_state(canonical: &Path) -> Result<DependencySourceCacheEntry> {
     let manifest_path = canonical.join("fozzy.toml");
     let manifest_stamp = module_stamp(&manifest_path).ok_or_else(|| {
         anyhow!(
@@ -450,27 +452,27 @@ fn dependency_source_state(canonical: &Path) -> Result<DependencySourceCacheEntr
     Ok(entry)
 }
 
-fn should_skip_hash_path(rel: &str) -> bool {
+pub(super) fn should_skip_hash_path(rel: &str) -> bool {
     rel.starts_with(".git/")
         || rel.starts_with(".fz/")
         || rel.starts_with("vendor/")
         || rel.starts_with("target/")
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex_encode(hasher.finalize().as_slice())
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
     bytes
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
 }
 
-fn native_artifact_cache_marker(
+pub(super) fn native_artifact_cache_marker(
     build_dir: &Path,
     artifact_stem: &str,
     kind: &str,
@@ -479,14 +481,14 @@ fn native_artifact_cache_marker(
     build_dir.join(format!("{artifact_stem}.{kind}.{backend}.cachekey"))
 }
 
-fn read_native_artifact_cache_key(marker: &Path) -> Option<String> {
+pub(super) fn read_native_artifact_cache_key(marker: &Path) -> Option<String> {
     std::fs::read_to_string(marker)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
 
-fn write_native_artifact_cache_key(marker: &Path, key: &str) -> Result<()> {
+pub(super) fn write_native_artifact_cache_key(marker: &Path, key: &str) -> Result<()> {
     std::fs::write(marker, key).with_context(|| {
         format!(
             "failed writing native artifact cache marker: {}",
@@ -495,12 +497,12 @@ fn write_native_artifact_cache_key(marker: &Path, key: &str) -> Result<()> {
     })
 }
 
-fn native_artifact_cache_hit(marker: &Path, key: &str, outputs: &[&Path]) -> bool {
+pub(super) fn native_artifact_cache_hit(marker: &Path, key: &str, outputs: &[&Path]) -> bool {
     outputs.iter().all(|output| output.exists())
         && read_native_artifact_cache_key(marker).as_deref() == Some(key)
 }
 
-fn native_artifact_cache_key(
+pub(super) fn native_artifact_cache_key(
     kind: &str,
     backend: &str,
     artifact_stem: &str,
@@ -536,7 +538,7 @@ fn native_artifact_cache_key(
     Ok(hex_encode(hasher.finalize().as_slice()))
 }
 
-fn successful_build_cache_path(
+pub(super) fn successful_build_cache_path(
     build_dir: &Path,
     artifact_stem: &str,
     kind: &str,
@@ -545,7 +547,7 @@ fn successful_build_cache_path(
     build_dir.join(format!("{artifact_stem}.{kind}.{backend}.buildcache.json"))
 }
 
-fn pgo_signature(pgo: &PgoConfig) -> String {
+pub(super) fn pgo_signature(pgo: &PgoConfig) -> String {
     format!(
         "generate={};use={}",
         pgo.generate_dir
@@ -559,7 +561,7 @@ fn pgo_signature(pgo: &PgoConfig) -> String {
     )
 }
 
-fn successful_build_cache_hit(
+pub(super) fn successful_build_cache_hit(
     entry: &SuccessfulBuildCacheEntry,
     resolved: &ResolvedSource,
     profile: BuildProfile,
@@ -576,12 +578,12 @@ fn successful_build_cache_hit(
         && entry.source_stamps.par_iter().all(module_stamp_matches)
 }
 
-fn read_successful_build_cache(path: &Path) -> Option<SuccessfulBuildCacheEntry> {
+pub(super) fn read_successful_build_cache(path: &Path) -> Option<SuccessfulBuildCacheEntry> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-fn write_successful_build_cache(
+pub(super) fn write_successful_build_cache(
     path: &Path,
     entry: &SuccessfulBuildCacheEntry,
 ) -> Result<()> {
@@ -589,7 +591,7 @@ fn write_successful_build_cache(
         .with_context(|| format!("failed writing successful build cache: {}", path.display()))
 }
 
-fn runtime_shim_language_arg(fir: &fir::FirModule) -> &'static str {
+pub(super) fn runtime_shim_language_arg(fir: &fir::FirModule) -> &'static str {
     if native_runtime_shim_uses_objc(fir) {
         "objective-c"
     } else {
@@ -597,7 +599,7 @@ fn runtime_shim_language_arg(fir: &fir::FirModule) -> &'static str {
     }
 }
 
-fn apply_gpu_backend_link_args(cmd: &mut Command, fir: &fir::FirModule) {
+pub(super) fn apply_gpu_backend_link_args(cmd: &mut Command, fir: &fir::FirModule) {
     if cfg!(target_vendor = "apple") && fir_module_uses_gpu(fir) {
         cmd.arg("-framework").arg("Metal");
         cmd.arg("-framework").arg("Foundation");

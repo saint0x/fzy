@@ -1,12 +1,14 @@
-fn check_file_with_root_guidance(path: &Path) -> Result<Output> {
+use super::*;
+
+pub(super) fn check_file_with_root_guidance(path: &Path) -> Result<Output> {
     check_file(path).map_err(|error| attach_project_root_guidance(path, error))
 }
 
-fn verify_file_with_root_guidance(path: &Path) -> Result<Output> {
+pub(super) fn verify_file_with_root_guidance(path: &Path) -> Result<Output> {
     verify_file(path).map_err(|error| attach_project_root_guidance(path, error))
 }
 
-fn compile_file_with_backend_with_root_guidance(
+pub(super) fn compile_file_with_backend_with_root_guidance(
     path: &Path,
     profile: BuildProfile,
     backend_override: Option<&str>,
@@ -15,7 +17,7 @@ fn compile_file_with_backend_with_root_guidance(
         .map_err(|error| attach_project_root_guidance(path, error))
 }
 
-fn compile_file_incremental_with_backend_with_root_guidance(
+pub(super) fn compile_file_incremental_with_backend_with_root_guidance(
     path: &Path,
     profile: BuildProfile,
     backend_override: Option<&str>,
@@ -24,7 +26,7 @@ fn compile_file_incremental_with_backend_with_root_guidance(
         .map_err(|error| attach_project_root_guidance(path, error))
 }
 
-fn compile_library_with_backend_with_root_guidance(
+pub(super) fn compile_library_with_backend_with_root_guidance(
     path: &Path,
     profile: BuildProfile,
     backend_override: Option<&str>,
@@ -33,7 +35,7 @@ fn compile_library_with_backend_with_root_guidance(
         .map_err(|error| attach_project_root_guidance(path, error))
 }
 
-fn compile_library_incremental_with_backend_with_root_guidance(
+pub(super) fn compile_library_incremental_with_backend_with_root_guidance(
     path: &Path,
     profile: BuildProfile,
     backend_override: Option<&str>,
@@ -42,7 +44,7 @@ fn compile_library_incremental_with_backend_with_root_guidance(
         .map_err(|error| attach_project_root_guidance(path, error))
 }
 
-fn attach_project_root_guidance(path: &Path, error: anyhow::Error) -> anyhow::Error {
+pub(super) fn attach_project_root_guidance(path: &Path, error: anyhow::Error) -> anyhow::Error {
     let text = error.to_string();
     if !(text.contains("no valid compiler manifest found")
         || text.contains("path is neither a source file nor a project directory")
@@ -78,7 +80,7 @@ fn attach_project_root_guidance(path: &Path, error: anyhow::Error) -> anyhow::Er
     }
 }
 
-fn maybe_generate_build_interop_artifacts(
+pub(super) fn maybe_generate_build_interop_artifacts(
     path: &Path,
     profile: BuildProfile,
     backend_override: Option<&str>,
@@ -93,7 +95,7 @@ fn maybe_generate_build_interop_artifacts(
     )?))
 }
 
-fn finalize_build_interop_artifacts(
+pub(super) fn finalize_build_interop_artifacts(
     path: &Path,
     library: &LibraryArtifact,
     headers: HeaderArtifact,
@@ -109,7 +111,7 @@ fn finalize_build_interop_artifacts(
     })
 }
 
-fn read_abi_export_symbols(abi_manifest: &Path) -> Result<Vec<String>> {
+pub(super) fn read_abi_export_symbols(abi_manifest: &Path) -> Result<Vec<String>> {
     let value: serde_json::Value = serde_json::from_slice(
         &std::fs::read(abi_manifest)
             .with_context(|| format!("failed reading {}", abi_manifest.display()))?,
@@ -125,7 +127,7 @@ fn read_abi_export_symbols(abi_manifest: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-fn write_interop_artifact_manifest(
+pub(super) fn write_interop_artifact_manifest(
     path: &Path,
     library: &LibraryArtifact,
     headers: &HeaderArtifact,
@@ -168,11 +170,11 @@ fn write_interop_artifact_manifest(
     Ok(manifest_path)
 }
 
-fn manifest_relative_path(base: &Path, path: &Path) -> String {
+pub(super) fn manifest_relative_path(base: &Path, path: &Path) -> String {
     relative_path_from(base, path).unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
-fn relative_path_from(base: &Path, path: &Path) -> Option<String> {
+pub(super) fn relative_path_from(base: &Path, path: &Path) -> Option<String> {
     let base_components = normalized_path_components(base)?;
     let path_components = normalized_path_components(path)?;
     if base_components.first()? != path_components.first()? {
@@ -200,7 +202,7 @@ fn relative_path_from(base: &Path, path: &Path) -> Option<String> {
     Some(relative.to_string_lossy().into_owned())
 }
 
-fn normalized_path_components(path: &Path) -> Option<Vec<String>> {
+pub(super) fn normalized_path_components(path: &Path) -> Option<Vec<String>> {
     use std::path::Component;
 
     let mut out = Vec::new();
@@ -224,7 +226,7 @@ fn normalized_path_components(path: &Path) -> Option<Vec<String>> {
     Some(out)
 }
 
-fn project_has_c_exports(path: &Path) -> Result<bool> {
+pub(super) fn project_has_c_exports(path: &Path) -> Result<bool> {
     let resolved = resolve_source(path)?;
     let parsed = parse_program(&resolved.source_path)?;
     Ok(parsed.module.items.iter().any(|item| match item {
@@ -240,7 +242,7 @@ fn project_has_c_exports(path: &Path) -> Result<bool> {
     }))
 }
 
-fn maybe_generate_unsafe_docs(path: &Path) -> Option<PathBuf> {
+pub(super) fn maybe_generate_unsafe_docs(path: &Path) -> Option<PathBuf> {
     let resolved = resolve_source(path).ok()?;
     let parsed = parse_program(&resolved.source_path).ok()?;
     if parsed.module.unsafe_sites == 0 {
@@ -259,11 +261,11 @@ fn maybe_generate_unsafe_docs(path: &Path) -> Option<PathBuf> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct UnsafeDocsCacheStamp {
+pub(super) struct UnsafeDocsCacheStamp {
     fingerprint: String,
 }
 
-fn unsafe_docs_cache_hit(path: &Path, docs_path: &Path) -> Result<bool> {
+pub(super) fn unsafe_docs_cache_hit(path: &Path, docs_path: &Path) -> Result<bool> {
     let stamp_path = unsafe_docs_cache_path(docs_path);
     let json_path = docs_path.with_extension("json");
     let html_path = docs_path.with_extension("html");
@@ -278,7 +280,7 @@ fn unsafe_docs_cache_hit(path: &Path, docs_path: &Path) -> Result<bool> {
     Ok(stamp.fingerprint == unsafe_docs_fingerprint(path)?)
 }
 
-fn write_unsafe_docs_cache_stamp(path: &Path, docs_path: &Path) -> Result<()> {
+pub(super) fn write_unsafe_docs_cache_stamp(path: &Path, docs_path: &Path) -> Result<()> {
     let stamp_path = unsafe_docs_cache_path(docs_path);
     let payload = UnsafeDocsCacheStamp {
         fingerprint: unsafe_docs_fingerprint(path)?,
@@ -290,11 +292,11 @@ fn write_unsafe_docs_cache_stamp(path: &Path, docs_path: &Path) -> Result<()> {
         .with_context(|| format!("failed writing {}", stamp_path.display()))
 }
 
-fn unsafe_docs_cache_path(docs_path: &Path) -> PathBuf {
+pub(super) fn unsafe_docs_cache_path(docs_path: &Path) -> PathBuf {
     docs_path.with_extension("stamp.json")
 }
 
-fn unsafe_docs_fingerprint(path: &Path) -> Result<String> {
+pub(super) fn unsafe_docs_fingerprint(path: &Path) -> Result<String> {
     let module_set = load_resolved_module_set(path)?;
     let mut hasher = Sha256::new();
     hasher.update(
@@ -319,7 +321,7 @@ fn unsafe_docs_fingerprint(path: &Path) -> Result<String> {
 pub(crate) const DIAGNOSTIC_EXPLAIN_SCHEMA_VERSION: &str = "fozzylang.diagnostic_explain.v1";
 pub(crate) const LSP_DIAGNOSTIC_DATA_SCHEMA_VERSION: &str = "fozzylang.lsp_diagnostic_data.v1";
 
-fn explain_command(diag_code: &str, format: Format) -> Result<String> {
+pub(super) fn explain_command(diag_code: &str, format: Format) -> Result<String> {
     let raw = diag_code.trim();
     let normalized = raw.to_ascii_uppercase();
     if normalized.is_empty() {
@@ -398,16 +400,16 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DiagnosticCatalogEntry {
-    key: String,
-    code_prefix: String,
-    family: String,
-    summary: String,
-    example: String,
-    likely_fix: String,
-    common_triggers: Vec<String>,
-    production_action: String,
-    production_risk: String,
-    next_command: String,
+    pub(crate) key: String,
+    pub(crate) code_prefix: String,
+    pub(crate) family: String,
+    pub(crate) summary: String,
+    pub(crate) example: String,
+    pub(crate) likely_fix: String,
+    pub(crate) common_triggers: Vec<String>,
+    pub(crate) production_action: String,
+    pub(crate) production_risk: String,
+    pub(crate) next_command: String,
 }
 
 #[derive(Debug, Clone)]

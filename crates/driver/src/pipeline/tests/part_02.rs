@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn strict_compile_rejects_allocation_after_mem_freeze() {
     let root = std::env::temp_dir().join(format!(

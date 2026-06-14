@@ -1,4 +1,6 @@
-fn analyze_ownership(
+use crate::*;
+
+pub(crate) fn analyze_ownership(
     functions: &[TypedFunction],
     call_graph: &[(String, String)],
     struct_defs: &HashMap<String, ast::Struct>,
@@ -101,7 +103,7 @@ fn analyze_ownership(
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct OwnershipState {
+pub(crate) struct OwnershipState {
     owners: BTreeMap<String, usize>,
     moved: BTreeSet<String>,
     maybe_moved: BTreeSet<String>,
@@ -110,12 +112,12 @@ struct OwnershipState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct LoopExitStates {
+pub(crate) struct LoopExitStates {
     breaks: Vec<OwnershipState>,
     continues: Vec<OwnershipState>,
 }
 
-fn record_live_owner_leaks(
+pub(crate) fn record_live_owner_leaks(
     state: &OwnershipState,
     violations: &mut Vec<String>,
     function_name: &str,
@@ -131,7 +133,7 @@ fn record_live_owner_leaks(
     }
 }
 
-fn build_function_ownership_summaries(
+pub(crate) fn build_function_ownership_summaries(
     functions: &[TypedFunction],
 ) -> BTreeMap<String, BTreeSet<usize>> {
     let mut summaries = functions
@@ -153,7 +155,7 @@ fn build_function_ownership_summaries(
     summaries
 }
 
-fn infer_consumed_param_indices(
+pub(crate) fn infer_consumed_param_indices(
     function: &TypedFunction,
     summaries: &BTreeMap<String, BTreeSet<usize>>,
 ) -> BTreeSet<usize> {
@@ -179,7 +181,7 @@ fn infer_consumed_param_indices(
     consumed
 }
 
-fn collect_consumed_params_from_stmts(
+pub(crate) fn collect_consumed_params_from_stmts(
     body: &[Stmt],
     param_indexes: &BTreeMap<&str, usize>,
     summaries: &BTreeMap<String, BTreeSet<usize>>,
@@ -261,7 +263,7 @@ fn collect_consumed_params_from_stmts(
     }
 }
 
-fn collect_consumed_params_from_expr(
+pub(crate) fn collect_consumed_params_from_expr(
     expr: &Expr,
     param_indexes: &BTreeMap<&str, usize>,
     summaries: &BTreeMap<String, BTreeSet<usize>>,
@@ -349,7 +351,7 @@ fn collect_consumed_params_from_expr(
     }
 }
 
-fn expr_identity_name(expr: &Expr) -> Option<&str> {
+pub(crate) fn expr_identity_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Ident(name) => Some(name.as_str()),
         Expr::Group(inner) => expr_identity_name(inner),
@@ -357,7 +359,7 @@ fn expr_identity_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn expr_consumed_binding_name(expr: &Expr) -> Option<&str> {
+pub(crate) fn expr_consumed_binding_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Ident(name) => Some(name.as_str()),
         Expr::Group(inner)
@@ -367,7 +369,7 @@ fn expr_consumed_binding_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
+pub(crate) fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
     match callee {
         "join"
         | "detach"
@@ -397,7 +399,7 @@ fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
     }
 }
 
-fn consumed_arg_identity_names<'a>(
+pub(crate) fn consumed_arg_identity_names<'a>(
     callee: &str,
     args: &'a [Expr],
     summaries: &BTreeMap<String, BTreeSet<usize>>,
@@ -423,22 +425,22 @@ fn consumed_arg_identity_names<'a>(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReturnProvenanceSummary {
+pub(crate) enum ReturnProvenanceSummary {
     Param(usize),
     Fresh,
     Unknown,
 }
 
 #[derive(Debug, Clone)]
-struct CallShape {
-    params: Vec<ast::Param>,
-    return_type: Type,
-    is_extern: bool,
-    is_unsafe: bool,
-    return_provenance: ReturnProvenanceSummary,
+pub(crate) struct CallShape {
+    pub(crate) params: Vec<ast::Param>,
+    pub(crate) return_type: Type,
+    pub(crate) is_extern: bool,
+    pub(crate) is_unsafe: bool,
+    pub(crate) return_provenance: ReturnProvenanceSummary,
 }
 
-fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String> {
+pub(crate) fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String> {
     fn analyze_stmt(
         function_name: &str,
         stmt: &Stmt,
@@ -977,7 +979,7 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
     violations
 }
 
-fn resolve_unsafe_callee(unsafe_functions: &BTreeSet<String>, callee: &str) -> Option<String> {
+pub(crate) fn resolve_unsafe_callee(unsafe_functions: &BTreeSet<String>, callee: &str) -> Option<String> {
     if unsafe_functions.contains(callee) {
         return Some(callee.to_string());
     }
@@ -994,7 +996,7 @@ fn resolve_unsafe_callee(unsafe_functions: &BTreeSet<String>, callee: &str) -> O
     matched
 }
 
-fn analyze_ownership_block(
+pub(crate) fn analyze_ownership_block(
     function: &TypedFunction,
     body: &[Stmt],
     state: &mut OwnershipState,
@@ -1493,7 +1495,7 @@ fn analyze_ownership_block(
     true
 }
 
-fn analyze_expr_value_ownership(
+pub(crate) fn analyze_expr_value_ownership(
     function: &TypedFunction,
     expr: &Expr,
     state: &mut OwnershipState,
@@ -1822,7 +1824,7 @@ fn analyze_expr_value_ownership(
     }
 }
 
-fn analyze_terminal_return_expr(
+pub(crate) fn analyze_terminal_return_expr(
     function: &TypedFunction,
     expr: &Expr,
     state: &mut OwnershipState,
@@ -1968,7 +1970,7 @@ fn analyze_terminal_return_expr(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn analyze_loop_ownership(
+pub(crate) fn analyze_loop_ownership(
     function: &TypedFunction,
     body: &[Stmt],
     state: &mut OwnershipState,
@@ -2038,7 +2040,7 @@ fn analyze_loop_ownership(
     true
 }
 
-fn apply_call_consumed_params(
+pub(crate) fn apply_call_consumed_params(
     callee: &str,
     args: &[Expr],
     state: &mut OwnershipState,
@@ -2053,7 +2055,7 @@ fn apply_call_consumed_params(
     }
 }
 
-fn consume_value_result_owner(expr: &Expr, state: &mut OwnershipState) {
+pub(crate) fn consume_value_result_owner(expr: &Expr, state: &mut OwnershipState) {
     if let Some(name) = expr_identity_name(expr) {
         if let Some(owner) = state.owners.remove(name) {
             state.moved.insert(name.to_string());
@@ -2063,7 +2065,7 @@ fn consume_value_result_owner(expr: &Expr, state: &mut OwnershipState) {
     }
 }
 
-fn merge_ownership_states(
+pub(crate) fn merge_ownership_states(
     function_name: &str,
     control_kind: &str,
     entry_state: &OwnershipState,
@@ -2138,7 +2140,7 @@ fn merge_ownership_states(
     merged
 }
 
-fn register_deferred_cleanup(
+pub(crate) fn register_deferred_cleanup(
     expr: &Expr,
     state: &mut OwnershipState,
     violations: &mut Vec<String>,
@@ -2164,7 +2166,7 @@ fn register_deferred_cleanup(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct FunctionMemorySummary {
+pub(crate) struct FunctionMemorySummary {
     alloc_sites: usize,
     free_sites: usize,
     close_sites: usize,
@@ -2181,11 +2183,11 @@ struct FunctionMemorySummary {
     is_async: bool,
 }
 
-fn unsafe_contract_counts_as_call_edge_covered(site: &UnsafeContractSite) -> bool {
+pub(crate) fn unsafe_contract_counts_as_call_edge_covered(site: &UnsafeContractSite) -> bool {
     unsafe_contract_metadata_complete(site) && unsafe_contract_invariant_is_specific(site)
 }
 
-fn build_function_memory_summaries(
+pub(crate) fn build_function_memory_summaries(
     functions: &[TypedFunction],
 ) -> BTreeMap<String, FunctionMemorySummary> {
     let mut out = BTreeMap::new();
@@ -2316,7 +2318,7 @@ pub fn count_module_owned_return_transfers(functions: &[TypedFunction]) -> usize
         .sum()
 }
 
-fn count_owned_return_transfers(
+pub(crate) fn count_owned_return_transfers(
     function: &TypedFunction,
     signatures: &BTreeMap<String, CallShape>,
 ) -> usize {
@@ -2396,15 +2398,15 @@ fn count_owned_return_transfers(
         .sum()
 }
 
-fn is_owned_return_transfer_expr(expr: &Expr) -> bool {
+pub(crate) fn is_owned_return_transfer_expr(expr: &Expr) -> bool {
     expr_identity_name(expr).is_some() || is_alloc_expr(expr)
 }
 
-fn intersect_identity_sets(left: BTreeSet<String>, right: BTreeSet<String>) -> BTreeSet<String> {
+pub(crate) fn intersect_identity_sets(left: BTreeSet<String>, right: BTreeSet<String>) -> BTreeSet<String> {
     left.intersection(&right).cloned().collect()
 }
 
-fn terminal_return_identity_names_on_all_paths(expr: &Expr) -> BTreeSet<String> {
+pub(crate) fn terminal_return_identity_names_on_all_paths(expr: &Expr) -> BTreeSet<String> {
     match expr {
         Expr::Ident(name) => BTreeSet::from([name.clone()]),
         Expr::Group(inner) | Expr::Discard(inner) => {
@@ -2447,17 +2449,17 @@ fn terminal_return_identity_names_on_all_paths(expr: &Expr) -> BTreeSet<String> 
     }
 }
 
-fn is_owned_transfer_return_type(ty: &Type) -> bool {
+pub(crate) fn is_owned_transfer_return_type(ty: &Type) -> bool {
     matches!(ty, Type::Ptr { .. }) || is_linear_type(ty)
 }
 
-fn unsafe_contract_counts_as_reasoned(site: &UnsafeContractSite) -> bool {
+pub(crate) fn unsafe_contract_counts_as_reasoned(site: &UnsafeContractSite) -> bool {
     unsafe_contract_metadata_complete(site)
         && unsafe_contract_invariant_is_specific(site)
         && unsafe_contract_has_independent_proof(site)
 }
 
-fn unsafe_contract_metadata_complete(site: &UnsafeContractSite) -> bool {
+pub(crate) fn unsafe_contract_metadata_complete(site: &UnsafeContractSite) -> bool {
     site.reason.as_deref().is_some_and(|v| !v.is_empty())
         && site.invariant.as_deref().is_some_and(|v| !v.is_empty())
         && site.owner.as_deref().is_some_and(|v| !v.is_empty())
@@ -2466,20 +2468,20 @@ fn unsafe_contract_metadata_complete(site: &UnsafeContractSite) -> bool {
         && site.proof_ref.as_deref().is_some_and(|v| !v.is_empty())
 }
 
-fn unsafe_contract_invariant_is_specific(site: &UnsafeContractSite) -> bool {
+pub(crate) fn unsafe_contract_invariant_is_specific(site: &UnsafeContractSite) -> bool {
     site.owner
         .as_deref()
         .is_some_and(|owner| owner != "scope_root")
 }
 
-fn unsafe_contract_has_independent_proof(site: &UnsafeContractSite) -> bool {
+pub(crate) fn unsafe_contract_has_independent_proof(site: &UnsafeContractSite) -> bool {
     let Some(proof_ref) = site.proof_ref.as_deref() else {
         return false;
     };
     !proof_ref.starts_with("gate://compiler-generated/")
 }
 
-fn is_zero_arg_extern_unsafe_c_import(function: &TypedFunction) -> bool {
+pub(crate) fn is_zero_arg_extern_unsafe_c_import(function: &TypedFunction) -> bool {
     function.is_extern
         && function.is_unsafe
         && function
@@ -2489,7 +2491,7 @@ fn is_zero_arg_extern_unsafe_c_import(function: &TypedFunction) -> bool {
         && function.params.is_empty()
 }
 
-fn is_documented_ffi_import_wrapper(
+pub(crate) fn is_documented_ffi_import_wrapper(
     function: &TypedFunction,
     extern_unsafe_c_imports: &BTreeSet<String>,
 ) -> bool {
@@ -2545,7 +2547,7 @@ fn is_documented_ffi_import_wrapper(
     saw_unsafe_block && only_import_calls
 }
 
-fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
+pub(crate) fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::LetPattern { value, .. }
@@ -2608,7 +2610,7 @@ fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
     }
 }
 
-fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
+pub(crate) fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
     match expr {
         Expr::Ident(name) => name == target,
         Expr::Call { args, .. } => args.iter().any(|arg| expr_uses_ident(arg, target)),
@@ -2703,7 +2705,7 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
     }
 }
 
-fn is_partial_move_expr(
+pub(crate) fn is_partial_move_expr(
     function: &TypedFunction,
     expr: &Expr,
     owners: &BTreeMap<String, usize>,
@@ -2742,7 +2744,7 @@ fn is_partial_move_expr(
     }
 }
 
-fn expr_root_binding_name(expr: &Expr) -> Option<&str> {
+pub(crate) fn expr_root_binding_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Ident(name) => Some(name.as_str()),
         Expr::Group(inner)
@@ -2752,7 +2754,7 @@ fn expr_root_binding_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn supports_index_base_type(ty: &Type) -> bool {
+pub(crate) fn supports_index_base_type(ty: &Type) -> bool {
     match ty {
         Type::Array { .. } | Type::Slice(_) | Type::Vec(_) | Type::Ptr { .. } => true,
         Type::Named { name, args } => name == "GpuSlice" && args.len() == 1,
@@ -2760,7 +2762,7 @@ fn supports_index_base_type(ty: &Type) -> bool {
     }
 }
 
-fn binding_partial_move_root_type<'a>(function: &'a TypedFunction, name: &str) -> Option<&'a Type> {
+pub(crate) fn binding_partial_move_root_type<'a>(function: &'a TypedFunction, name: &str) -> Option<&'a Type> {
     function.local_types.get(name).or_else(|| {
         function
             .params
@@ -2770,7 +2772,7 @@ fn binding_partial_move_root_type<'a>(function: &'a TypedFunction, name: &str) -
     })
 }
 
-fn type_contains_linear_members(
+pub(crate) fn type_contains_linear_members(
     ty: &Type,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
@@ -2832,7 +2834,7 @@ fn type_contains_linear_members(
     walk(ty, struct_defs, enum_defs, &mut BTreeSet::new())
 }
 
-fn pattern_performs_partial_move(
+pub(crate) fn pattern_performs_partial_move(
     pattern: &ast::Pattern,
     function: &TypedFunction,
     value: &Expr,
@@ -2851,7 +2853,7 @@ fn pattern_performs_partial_move(
     pattern_is_partial_move(pattern, root_ty, struct_defs, enum_defs)
 }
 
-fn pattern_is_partial_move(
+pub(crate) fn pattern_is_partial_move(
     pattern: &ast::Pattern,
     scrutinee_ty: &Type,
     struct_defs: &HashMap<String, ast::Struct>,
@@ -2911,19 +2913,18 @@ fn pattern_is_partial_move(
     }
 }
 
-fn is_alloc_callee(callee: &str) -> bool {
+pub(crate) fn is_alloc_callee(callee: &str) -> bool {
     callee == "alloc" || callee.ends_with(".alloc") || callee.starts_with("gpu.alloc_")
 }
 
-fn is_free_callee(callee: &str) -> bool {
+pub(crate) fn is_free_callee(callee: &str) -> bool {
     callee == "free" || callee.ends_with(".free")
 }
 
-fn is_close_callee(callee: &str) -> bool {
+pub(crate) fn is_close_callee(callee: &str) -> bool {
     callee == "close" || callee.ends_with(".close") || callee.ends_with("_close")
 }
 
-fn is_alloc_expr(expr: &Expr) -> bool {
+pub(crate) fn is_alloc_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Call { callee, .. } if is_alloc_callee(callee))
 }
-

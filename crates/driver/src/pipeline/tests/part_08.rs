@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn verify_same_lifetime_reference_relay_stays_clean() {
     let file_name = format!(
@@ -761,4 +763,3 @@ fn portable_simd_text_block_workloads_execute_on_llvm_backend() {
 
     let _ = std::fs::remove_dir_all(root);
 }
-

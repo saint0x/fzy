@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn verify_tuple_partial_move_memory_diagnostic_is_snapshot_stable() {
     let file_name = format!(
@@ -748,4 +750,3 @@ fn verify_process_close_wrapper_consumes_handle() {
 
     let _ = std::fs::remove_file(path);
 }
-

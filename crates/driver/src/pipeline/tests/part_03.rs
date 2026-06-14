@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn compile_file_emits_async_runtime_wait_policy_evidence() {
     let root = std::env::temp_dir().join(format!(
@@ -752,4 +754,3 @@ fn verify_match_expression_conditional_move_diagnostic_is_snapshot_stable() {
 
     let _ = std::fs::remove_file(path);
 }
-

@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn native_runtime_shim_bootstraps_dotenv_for_env_and_http() {
     let shim = render_native_runtime_shim(&[], &[], &[], &[]);
@@ -764,4 +766,3 @@ fn cross_backend_non_finite_float_results_trap() {
 
     let _ = std::fs::remove_dir_all(root);
 }
-

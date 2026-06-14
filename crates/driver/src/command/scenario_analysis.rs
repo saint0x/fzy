@@ -1,3 +1,5 @@
+use super::*;
+
 impl GpuTraceAnalyzer {
     fn new(kernel_layouts: HashMap<String, String>) -> Self {
         Self {
@@ -650,7 +652,7 @@ impl GpuTraceAnalyzer {
     }
 }
 
-fn derive_gpu_runtime_semantic_evidence(
+pub(super) fn derive_gpu_runtime_semantic_evidence(
     module: &ast::Module,
     typed: &hir::TypedModule,
 ) -> (Vec<RuntimeSemanticEvent>, Vec<CausalLink>) {
@@ -665,7 +667,7 @@ fn derive_gpu_runtime_semantic_evidence(
     (analyzer.runtime_events, analyzer.causal_links)
 }
 
-fn gpu_kernel_param_layouts(typed: &hir::TypedModule) -> HashMap<String, String> {
+pub(super) fn gpu_kernel_param_layouts(typed: &hir::TypedModule) -> HashMap<String, String> {
     let Ok(module) = kernel_ir::lower(typed) else {
         return HashMap::new();
     };
@@ -686,7 +688,7 @@ fn gpu_kernel_param_layouts(typed: &hir::TypedModule) -> HashMap<String, String>
         .collect()
 }
 
-fn render_gpu_shared_param_layout(function: &kernel_ir::KernelFunction) -> Result<String> {
+pub(super) fn render_gpu_shared_param_layout(function: &kernel_ir::KernelFunction) -> Result<String> {
     let mut parts = Vec::with_capacity(function.params.len());
     for param in &function.params {
         let part = match &param.ty {
@@ -727,14 +729,14 @@ fn render_gpu_shared_param_layout(function: &kernel_ir::KernelFunction) -> Resul
     Ok(parts.join(","))
 }
 
-fn expr_const_i64(expr: &ast::Expr) -> Option<i64> {
+pub(super) fn expr_const_i64(expr: &ast::Expr) -> Option<i64> {
     match expr {
         ast::Expr::Int(value) => i64::try_from(*value).ok(),
         _ => None,
     }
 }
 
-fn render_expr_brief(expr: &ast::Expr) -> String {
+pub(super) fn render_expr_brief(expr: &ast::Expr) -> String {
     match expr {
         ast::Expr::Ident(name) => name.clone(),
         ast::Expr::Int(value) => value.to_string(),
@@ -746,7 +748,7 @@ fn render_expr_brief(expr: &ast::Expr) -> String {
     }
 }
 
-fn build_rpc_frame_events(
+pub(super) fn build_rpc_frame_events(
     _source: &str,
     call_sequence: &[String],
     execution_order: &[u64],
@@ -822,7 +824,7 @@ fn build_rpc_frame_events(
     events
 }
 
-fn collect_call_sequence(module: &ast::Module) -> Vec<String> {
+pub(super) fn collect_call_sequence(module: &ast::Module) -> Vec<String> {
     let mut call_sequence = Vec::new();
     for item in &module.items {
         if let ast::Item::Function(function) = item {
@@ -834,7 +836,7 @@ fn collect_call_sequence(module: &ast::Module) -> Vec<String> {
     call_sequence
 }
 
-fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
+pub(super) fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
     match statement {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::LetPattern { value, .. }
@@ -911,7 +913,7 @@ fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
     }
 }
 
-fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
+pub(super) fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
     match expr {
         ast::Expr::Call { callee, args } => {
             out.push(callee.clone());
@@ -979,7 +981,7 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
     }
 }
 
-fn rpc_frames_json(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
+pub(super) fn rpc_frames_json(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
     frames
         .iter()
         .map(|frame| {
@@ -992,7 +994,7 @@ fn rpc_frames_json(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn rpc_validation_json(finding: &RpcValidationFinding) -> serde_json::Value {
+pub(super) fn rpc_validation_json(finding: &RpcValidationFinding) -> serde_json::Value {
     serde_json::json!({
         "kind": finding.kind,
         "severity": match finding.severity {
@@ -1004,7 +1006,7 @@ fn rpc_validation_json(finding: &RpcValidationFinding) -> serde_json::Value {
     })
 }
 
-fn validate_rpc_frames(frames: &[RpcFrameEvent]) -> Vec<RpcValidationFinding> {
+pub(super) fn validate_rpc_frames(frames: &[RpcFrameEvent]) -> Vec<RpcValidationFinding> {
     let mut findings = Vec::new();
     let mut pending = BTreeMap::<String, usize>::new();
     for frame in frames {
@@ -1066,7 +1068,7 @@ fn validate_rpc_frames(frames: &[RpcFrameEvent]) -> Vec<RpcValidationFinding> {
     findings
 }
 
-fn thread_health_findings(
+pub(super) fn thread_health_findings(
     events: &[TaskEvent],
     execution_order: &[u64],
     expected_tasks: usize,
@@ -1169,7 +1171,7 @@ fn thread_health_findings(
     findings
 }
 
-fn unsafe_trace_findings(fir: &fir::FirModule) -> Vec<serde_json::Value> {
+pub(super) fn unsafe_trace_findings(fir: &fir::FirModule) -> Vec<serde_json::Value> {
     let sites = fir
         .unsafe_contract_sites
         .iter()
@@ -1231,7 +1233,7 @@ fn unsafe_trace_findings(fir: &fir::FirModule) -> Vec<serde_json::Value> {
     })]
 }
 
-fn rpc_failure_findings(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
+pub(super) fn rpc_failure_findings(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
     let has_deadline = frames.iter().any(|frame| frame.kind == "rpc_deadline");
     let has_cancel = frames.iter().any(|frame| frame.kind == "rpc_cancel");
     let recv_by_method = frames
@@ -1266,7 +1268,7 @@ fn rpc_failure_findings(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
     findings
 }
 
-fn build_schedule_candidates(execution_order: &[u64]) -> serde_json::Value {
+pub(super) fn build_schedule_candidates(execution_order: &[u64]) -> serde_json::Value {
     if execution_order.is_empty() {
         return serde_json::json!([]);
     }
@@ -1286,7 +1288,7 @@ fn build_schedule_candidates(execution_order: &[u64]) -> serde_json::Value {
     ])
 }
 
-fn build_rpc_frame_permutations(
+pub(super) fn build_rpc_frame_permutations(
     execution_order: &[u64],
     frames: &[RpcFrameEvent],
 ) -> serde_json::Value {
@@ -1313,7 +1315,7 @@ fn build_rpc_frame_permutations(
     ])
 }
 
-fn build_shrink_hints(
+pub(super) fn build_shrink_hints(
     discovered_test_names: &[String],
     execution_order: &[u64],
     rpc_frames: &[RpcFrameEvent],
@@ -1359,7 +1361,7 @@ fn build_shrink_hints(
     serde_json::json!(hints)
 }
 
-fn minimize_rpc_failure_frames(frames: &[RpcFrameEvent]) -> serde_json::Value {
+pub(super) fn minimize_rpc_failure_frames(frames: &[RpcFrameEvent]) -> serde_json::Value {
     if frames.is_empty() {
         return serde_json::json!([]);
     }
@@ -1384,7 +1386,7 @@ fn minimize_rpc_failure_frames(frames: &[RpcFrameEvent]) -> serde_json::Value {
     serde_json::json!(minimal)
 }
 
-fn classify_failure_classes(
+pub(super) fn classify_failure_classes(
     rpc_frames: &[RpcFrameEvent],
     async_execution: &[u64],
     execution_order: &[u64],
@@ -1428,7 +1430,7 @@ fn classify_failure_classes(
     classes
 }
 
-fn build_scenario_priorities(
+pub(super) fn build_scenario_priorities(
     generated_scenarios: &[PathBuf],
     rpc_frames: &[RpcFrameEvent],
     async_execution: &[u64],
@@ -1459,7 +1461,7 @@ fn build_scenario_priorities(
     serde_json::json!(items)
 }
 
-fn generate_language_test_scenarios(
+pub(super) fn generate_language_test_scenarios(
     base_dir: &Path,
     stem: &str,
     deterministic_test_names: &[String],
@@ -1546,7 +1548,7 @@ fn generate_language_test_scenarios(
     Ok((primary, generated))
 }
 
-fn sanitize_file_component(raw: &str) -> String {
+pub(super) fn sanitize_file_component(raw: &str) -> String {
     let mut out = String::new();
     for ch in raw.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
@@ -1562,7 +1564,7 @@ fn sanitize_file_component(raw: &str) -> String {
     }
 }
 
-fn sanitize_c_identifier(raw: &str) -> String {
+pub(super) fn sanitize_c_identifier(raw: &str) -> String {
     raw.chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -1574,7 +1576,7 @@ fn sanitize_c_identifier(raw: &str) -> String {
         .collect()
 }
 
-fn parse_scheduler(input: &str) -> Result<Scheduler> {
+pub(super) fn parse_scheduler(input: &str) -> Result<Scheduler> {
     match input {
         "fifo" | "default" | "host" => Ok(Scheduler::Fifo),
         "random" => Ok(Scheduler::Random),
@@ -1586,7 +1588,7 @@ fn parse_scheduler(input: &str) -> Result<Scheduler> {
     }
 }
 
-fn scheduler_name(scheduler: Scheduler) -> &'static str {
+pub(super) fn scheduler_name(scheduler: Scheduler) -> &'static str {
     match scheduler {
         Scheduler::Fifo => "fifo",
         Scheduler::Random => "random",
@@ -1594,7 +1596,7 @@ fn scheduler_name(scheduler: Scheduler) -> &'static str {
     }
 }
 
-fn persist_runtime_threads_config(path: &Path, threads: Option<u16>) -> Result<Option<PathBuf>> {
+pub(super) fn persist_runtime_threads_config(path: &Path, threads: Option<u16>) -> Result<Option<PathBuf>> {
     let Some(threads) = threads else {
         return Ok(None);
     };
@@ -1626,33 +1628,32 @@ fn persist_runtime_threads_config(path: &Path, threads: Option<u16>) -> Result<O
     Ok(Some(config_path))
 }
 
-fn replay_like(command: &str, target: &Path, strict: bool, format: Format) -> Result<String> {
+pub(super) fn replay_like(command: &str, target: &Path, strict: bool, format: Format) -> Result<String> {
     scenario_replay_like(command, target, strict, format)
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct NativeTracePayloadOwned {
+pub(super) struct NativeTracePayloadOwned {
     #[serde(rename = "executionOrder")]
-    execution_order: Vec<u64>,
+    pub(super) execution_order: Vec<u64>,
     #[serde(rename = "asyncSchedule")]
-    async_schedule: Vec<u64>,
+    pub(super) async_schedule: Vec<u64>,
     #[serde(rename = "rpcFrames")]
-    rpc_frames: Vec<RpcFrameEventOwned>,
+    pub(super) rpc_frames: Vec<RpcFrameEventOwned>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RpcFrameEventOwned {
+pub(super) struct RpcFrameEventOwned {
     #[serde(rename = "event")]
-    kind: String,
-    method: String,
+    pub(super) kind: String,
+    pub(super) method: String,
     #[serde(rename = "taskId")]
-    task_id: u64,
+    pub(super) task_id: u64,
 }
 
-fn is_native_trace_or_manifest(path: &Path) -> bool {
+pub(super) fn is_native_trace_or_manifest(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(|name| name.ends_with(".trace.json") || name.ends_with(".manifest.json"))
         .unwrap_or(false)
 }
-

@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn cross_backend_direct_memory_string_slice_executes_consistently() {
     let project_name = format!(
@@ -756,4 +758,3 @@ fn verify_thread_boundary_shared_param_reports_send_sync_wrapper_guidance() {
 
     let _ = std::fs::remove_file(path);
 }
-

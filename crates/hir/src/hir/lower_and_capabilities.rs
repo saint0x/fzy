@@ -1,3 +1,5 @@
+use crate::*;
+
 pub fn lower(module: &Module) -> TypedModule {
     let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
     let mut fn_async = HashMap::<String, bool>::new();
@@ -536,7 +538,7 @@ pub fn lower(module: &Module) -> TypedModule {
     }
 }
 
-fn sanitize_test_name(name: &str) -> String {
+pub(crate) fn sanitize_test_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for ch in name.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -552,7 +554,7 @@ fn sanitize_test_name(name: &str) -> String {
     }
 }
 
-fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait>) -> Vec<String> {
+pub(crate) fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait>) -> Vec<String> {
     let mut violations = Vec::new();
     let mut trait_impl_targets = HashMap::<String, Vec<Type>>::new();
     for item in &module.items {
@@ -719,7 +721,7 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
     violations
 }
 
-fn validate_generic_bounds_exist(
+pub(crate) fn validate_generic_bounds_exist(
     owner: &str,
     generics: &[ast::GenericParam],
     trait_defs: &HashMap<String, ast::Trait>,
@@ -738,7 +740,7 @@ fn validate_generic_bounds_exist(
     violations
 }
 
-fn analyze_capability_token_contracts(
+pub(crate) fn analyze_capability_token_contracts(
     functions: &[TypedFunction],
     requirements: &[FunctionCapabilityRequirement],
 ) -> Vec<String> {
@@ -789,7 +791,7 @@ fn analyze_capability_token_contracts(
     violations
 }
 
-fn capability_token_mode_enabled(functions: &[TypedFunction]) -> bool {
+pub(crate) fn capability_token_mode_enabled(functions: &[TypedFunction]) -> bool {
     for function in functions {
         for param in &function.params {
             if capability_set_from_type(&param.ty).is_some() {
@@ -805,7 +807,7 @@ fn capability_token_mode_enabled(functions: &[TypedFunction]) -> bool {
     false
 }
 
-fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
+pub(crate) fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
     fn expr_has_cap_intrinsic(expr: &Expr) -> bool {
         match expr {
             Expr::Call { callee, args } => {
@@ -954,7 +956,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
     }
 }
 
-fn analyze_call_token_propagation(
+pub(crate) fn analyze_call_token_propagation(
     function_name: &str,
     body: &[Stmt],
     local_types: &BTreeMap<String, Type>,
@@ -1119,7 +1121,7 @@ fn analyze_call_token_propagation(
     }
 }
 
-fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
+pub(crate) fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::LetPattern { value, .. }
@@ -1142,7 +1144,7 @@ fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
     }
 }
 
-fn analyze_expr_call_tokens(
+pub(crate) fn analyze_expr_call_tokens(
     function_name: &str,
     expr: Option<&Expr>,
     local_types: &BTreeMap<String, Type>,
@@ -1520,7 +1522,7 @@ fn analyze_expr_call_tokens(
     }
 }
 
-fn capability_set_from_type(ty: &Type) -> Option<BTreeSet<String>> {
+pub(crate) fn capability_set_from_type(ty: &Type) -> Option<BTreeSet<String>> {
     match ty {
         Type::Named { name, args } if name == "Cap" && args.len() == 1 => {
             let mut set = BTreeSet::new();
@@ -1547,7 +1549,7 @@ fn capability_set_from_type(ty: &Type) -> Option<BTreeSet<String>> {
     }
 }
 
-fn capability_name_from_type(ty: &Type) -> Option<String> {
+pub(crate) fn capability_name_from_type(ty: &Type) -> Option<String> {
     match ty {
         Type::Named { name, args } if args.is_empty() => {
             core::Capability::parse(name).map(|cap| cap.as_str().to_string())
@@ -1557,7 +1559,7 @@ fn capability_name_from_type(ty: &Type) -> Option<String> {
     }
 }
 
-fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
+pub(crate) fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let signatures = functions
         .iter()
@@ -1672,24 +1674,24 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn function_param_handle_is_not_async_stable(param: &ast::Param) -> bool {
+pub(crate) fn function_param_handle_is_not_async_stable(param: &ast::Param) -> bool {
     runtime_handle_contract_is_not_async_stable(&param.ty)
 }
 
-fn runtime_handle_contract_is_not_async_stable(ty: &Type) -> bool {
+pub(crate) fn runtime_handle_contract_is_not_async_stable(ty: &Type) -> bool {
     matches!(ty, Type::Named { name, .. } if runtime_handle_contract(name).is_some_and(|contract| !contract.async_stable))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BorrowBinding {
-    owner: String,
-    mutable: bool,
+pub(crate) struct BorrowBinding {
+    pub(crate) owner: String,
+    pub(crate) mutable: bool,
 }
 
-type FunctionSignatures<'a> = BTreeMap<&'a str, &'a TypedFunction>;
+pub(crate) type FunctionSignatures<'a> = BTreeMap<&'a str, &'a TypedFunction>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum GpuSliceAccessMode {
+pub(crate) enum GpuSliceAccessMode {
     Observe,
     ReadOnly,
     WriteOnly,
@@ -1697,7 +1699,7 @@ enum GpuSliceAccessMode {
 }
 
 impl GpuSliceAccessMode {
-    fn with_read(self) -> Self {
+    pub(crate) fn with_read(self) -> Self {
         match self {
             Self::Observe => Self::ReadOnly,
             Self::ReadOnly => Self::ReadOnly,
@@ -1706,7 +1708,7 @@ impl GpuSliceAccessMode {
         }
     }
 
-    fn with_write(self) -> Self {
+    pub(crate) fn with_write(self) -> Self {
         match self {
             Self::Observe => Self::WriteOnly,
             Self::ReadOnly => Self::ReadWrite,
@@ -1715,8 +1717,7 @@ impl GpuSliceAccessMode {
         }
     }
 
-    fn is_read_only_like(self) -> bool {
+    pub(crate) fn is_read_only_like(self) -> bool {
         matches!(self, Self::Observe | Self::ReadOnly)
     }
 }
-

@@ -1,9 +1,11 @@
+use super::*;
+
 #[derive(Debug, Clone)]
-struct RpcMethod {
-    name: String,
+pub(super) struct RpcMethod {
+    pub(super) name: String,
 }
 
-fn parse_rpc_declarations(source: &str) -> Result<Vec<RpcMethod>> {
+pub(super) fn parse_rpc_declarations(source: &str) -> Result<Vec<RpcMethod>> {
     let mut methods = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
         let trimmed = line.trim();
@@ -69,17 +71,17 @@ fn parse_rpc_declarations(source: &str) -> Result<Vec<RpcMethod>> {
     Ok(methods)
 }
 
-fn scenario_error(err: impl fmt::Display) -> anyhow::Error {
+pub(super) fn scenario_error(err: impl fmt::Display) -> anyhow::Error {
     anyhow!(err.to_string())
 }
 
-fn scenario_config() -> Result<fzscenario::Config> {
+pub(super) fn scenario_config() -> Result<fzscenario::Config> {
     let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
     let config_path = cwd.join("fozzy.toml");
     fzscenario::Config::load_optional_checked(&config_path).map_err(scenario_error)
 }
 
-fn scenario_config_with_backends(host_backends: bool) -> Result<fzscenario::Config> {
+pub(super) fn scenario_config_with_backends(host_backends: bool) -> Result<fzscenario::Config> {
     let mut config = scenario_config()?;
     if host_backends {
         config.proc_backend = fzscenario::ProcBackend::Host;
@@ -89,7 +91,7 @@ fn scenario_config_with_backends(host_backends: bool) -> Result<fzscenario::Conf
     Ok(config)
 }
 
-fn scenario_memory_options(config: &fzscenario::Config) -> fzscenario::MemoryOptions {
+pub(super) fn scenario_memory_options(config: &fzscenario::Config) -> fzscenario::MemoryOptions {
     fzscenario::MemoryOptions {
         track: config.mem_track,
         limit_mb: config.mem_limit_mb,
@@ -102,14 +104,14 @@ fn scenario_memory_options(config: &fzscenario::Config) -> fzscenario::MemoryOpt
     }
 }
 
-fn scenario_reporter(format: Format) -> fzscenario::Reporter {
+pub(super) fn scenario_reporter(format: Format) -> fzscenario::Reporter {
     match format {
         Format::Text => fzscenario::Reporter::Pretty,
         Format::Json => fzscenario::Reporter::Json,
     }
 }
 
-fn parse_scenario_reporter(raw: &str) -> Result<fzscenario::Reporter> {
+pub(super) fn parse_scenario_reporter(raw: &str) -> Result<fzscenario::Reporter> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "pretty" => Ok(fzscenario::Reporter::Pretty),
         "json" => Ok(fzscenario::Reporter::Json),
@@ -119,7 +121,7 @@ fn parse_scenario_reporter(raw: &str) -> Result<fzscenario::Reporter> {
     }
 }
 
-fn parse_topology_profile(raw: &str) -> Result<fzscenario::TopologyProfile> {
+pub(super) fn parse_topology_profile(raw: &str) -> Result<fzscenario::TopologyProfile> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "balanced" => Ok(fzscenario::TopologyProfile::Balanced),
         "pedantic" => Ok(fzscenario::TopologyProfile::Pedantic),
@@ -128,7 +130,7 @@ fn parse_topology_profile(raw: &str) -> Result<fzscenario::TopologyProfile> {
     }
 }
 
-fn scenario_exit_code(status: fzscenario::ExitStatus) -> i32 {
+pub(super) fn scenario_exit_code(status: fzscenario::ExitStatus) -> i32 {
     match status {
         fzscenario::ExitStatus::Pass => 0,
         fzscenario::ExitStatus::Fail => 1,
@@ -138,7 +140,7 @@ fn scenario_exit_code(status: fzscenario::ExitStatus) -> i32 {
     }
 }
 
-fn strict_checker_failure(summary: &fzscenario::RunSummary) -> bool {
+pub(super) fn strict_checker_failure(summary: &fzscenario::RunSummary) -> bool {
     summary.status == fzscenario::ExitStatus::Pass
         && summary
             .findings
@@ -146,14 +148,14 @@ fn strict_checker_failure(summary: &fzscenario::RunSummary) -> bool {
             .any(|finding| finding.kind == fzscenario::FindingKind::Checker)
 }
 
-fn render_value_output(value_format: Format, value: &impl Serialize) -> Result<String> {
+pub(super) fn render_value_output(value_format: Format, value: &impl Serialize) -> Result<String> {
     match value_format {
         Format::Text => Ok(serde_json::to_string_pretty(value)?),
         Format::Json => Ok(serde_json::to_string(value)?),
     }
 }
 
-fn render_report_show_output(
+pub(super) fn render_report_show_output(
     format: Format,
     reporter: fzscenario::Reporter,
     value: serde_json::Value,
@@ -170,7 +172,7 @@ fn render_report_show_output(
     }
 }
 
-fn native_usage_doc() -> serde_json::Value {
+pub(super) fn native_usage_doc() -> serde_json::Value {
     serde_json::json!({
         "title": "FZ CLI usage",
         "items": [
@@ -233,7 +235,7 @@ fn native_usage_doc() -> serde_json::Value {
     })
 }
 
-fn native_usage_text() -> String {
+pub(super) fn native_usage_text() -> String {
     let items = native_usage_doc()
         .get("items")
         .and_then(|items| items.as_array())
@@ -258,7 +260,7 @@ fn native_usage_text() -> String {
     out.trim_end().to_string()
 }
 
-fn render_scenario_run_result(
+pub(super) fn render_scenario_run_result(
     format: Format,
     run: fzscenario::RunResult,
     strict: bool,
@@ -283,7 +285,7 @@ fn render_scenario_run_result(
     Ok(rendered)
 }
 
-fn render_host_bridge_test_result(
+pub(super) fn render_host_bridge_test_result(
     format: Format,
     source: &Path,
     scenario: &Path,
@@ -334,7 +336,7 @@ fn render_host_bridge_test_result(
     Ok(rendered)
 }
 
-fn render_host_bridge_run_result(
+pub(super) fn render_host_bridge_run_result(
     format: Format,
     source: &Path,
     scenario: &Path,
@@ -389,7 +391,7 @@ fn render_host_bridge_run_result(
     Ok(rendered)
 }
 
-fn materialize_requested_bridge_record(
+pub(super) fn materialize_requested_bridge_record(
     requested_record: Option<&Path>,
     bridge_trace_path: &Path,
 ) -> Result<()> {
@@ -416,7 +418,7 @@ fn materialize_requested_bridge_record(
     Ok(())
 }
 
-fn render_doctor_report(
+pub(super) fn render_doctor_report(
     format: Format,
     report: fzscenario::DoctorReport,
     strict: bool,
@@ -432,7 +434,7 @@ fn render_doctor_report(
     Ok(rendered)
 }
 
-fn render_trace_verify_report(
+pub(super) fn render_trace_verify_report(
     format: Format,
     report: fzscenario::TraceVerifyReport,
     strict: bool,
@@ -448,7 +450,7 @@ fn render_trace_verify_report(
     Ok(rendered)
 }
 
-fn validate_scenario_file(path: &Path) -> Result<()> {
+pub(super) fn validate_scenario_file(path: &Path) -> Result<()> {
     let scenario_path = fzscenario::ScenarioPath::new(path.to_path_buf());
     let file = fzscenario::Scenario::load_file(&scenario_path).map_err(scenario_error)?;
     match file {
@@ -464,7 +466,7 @@ fn validate_scenario_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn scenario_fuzz(target: &Path, format: Format) -> Result<String> {
+pub(super) fn scenario_fuzz(target: &Path, format: Format) -> Result<String> {
     ensure_exists(target)?;
     let config = scenario_config()?;
     let target_spec = format!("scenario:{}", target.display());
@@ -506,7 +508,7 @@ fn scenario_fuzz(target: &Path, format: Format) -> Result<String> {
     render_scenario_run_result(format, run, true)
 }
 
-fn scenario_explore(target: &Path, format: Format) -> Result<String> {
+pub(super) fn scenario_explore(target: &Path, format: Format) -> Result<String> {
     ensure_exists(target)?;
     let config = scenario_config()?;
     let run = fzscenario::explore(
@@ -533,7 +535,7 @@ fn scenario_explore(target: &Path, format: Format) -> Result<String> {
     render_scenario_run_result(format, run, true)
 }
 
-fn scenario_replay_like(
+pub(super) fn scenario_replay_like(
     command: &str,
     target: &Path,
     strict: bool,
@@ -654,14 +656,14 @@ pub(super) fn record_goal_trace_from_scenario(
     Ok(())
 }
 
-fn is_fozzy_scenario(path: &Path) -> bool {
+pub(super) fn is_fozzy_scenario(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(|name| name.ends_with(".fozzy.json"))
         .unwrap_or(false)
 }
 
-fn fmt_command(targets: &[PathBuf], check: bool, format: Format) -> Result<String> {
+pub(super) fn fmt_command(targets: &[PathBuf], check: bool, format: Format) -> Result<String> {
     let effective_targets = if targets.is_empty() {
         vec![std::env::current_dir().context("failed to resolve current working directory")?]
     } else {
@@ -709,30 +711,30 @@ fn fmt_command(targets: &[PathBuf], check: bool, format: Format) -> Result<Strin
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DocItem {
-    kind: String,
-    name: String,
-    signature: String,
-    module: String,
-    path: String,
-    line: usize,
-    docs: String,
+pub(super) struct DocItem {
+    pub(super) kind: String,
+    pub(super) name: String,
+    pub(super) signature: String,
+    pub(super) module: String,
+    pub(super) path: String,
+    pub(super) line: usize,
+    pub(super) docs: String,
 }
 
 #[derive(Debug, Clone)]
-struct DocArtifacts {
-    mode: String,
-    output_format: String,
-    item_count: usize,
-    output_path: Option<PathBuf>,
-    reference_path: Option<PathBuf>,
-    rendered: String,
+pub(super) struct DocArtifacts {
+    pub(super) mode: String,
+    pub(super) output_format: String,
+    pub(super) item_count: usize,
+    pub(super) output_path: Option<PathBuf>,
+    pub(super) reference_path: Option<PathBuf>,
+    pub(super) rendered: String,
 }
 
-const DOC_REF_START: &str = "<!-- fozzydoc:api:start -->";
-const DOC_REF_END: &str = "<!-- fozzydoc:api:end -->";
+pub(super) const DOC_REF_START: &str = "<!-- fozzydoc:api:start -->";
+pub(super) const DOC_REF_END: &str = "<!-- fozzydoc:api:end -->";
 
-fn generate_doc_artifacts(
+pub(super) fn generate_doc_artifacts(
     path: &Path,
     output_format: &str,
     out: Option<&Path>,
@@ -777,4 +779,3 @@ fn generate_doc_artifacts(
         rendered,
     })
 }
-

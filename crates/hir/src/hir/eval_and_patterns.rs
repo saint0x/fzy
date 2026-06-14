@@ -1,9 +1,11 @@
-fn record_type_error(errors: &mut usize, type_error_details: &mut Vec<String>, detail: String) {
+use crate::*;
+
+pub(crate) fn record_type_error(errors: &mut usize, type_error_details: &mut Vec<String>, detail: String) {
     *errors += 1;
     type_error_details.push(detail);
 }
 
-fn eval_const_i32(expr: &Expr, known: &HashMap<String, i32>) -> Option<i32> {
+pub(crate) fn eval_const_i32(expr: &Expr, known: &HashMap<String, i32>) -> Option<i32> {
     match expr {
         Expr::Int(v) => i32::try_from(*v).ok(),
         Expr::Bool(v) => Some(if *v { 1 } else { 0 }),
@@ -88,7 +90,7 @@ fn eval_const_i32(expr: &Expr, known: &HashMap<String, i32>) -> Option<i32> {
     }
 }
 
-fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
+pub(crate) fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
     let map = functions
         .iter()
         .map(|f| (f.name.as_str(), f))
@@ -113,11 +115,11 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
     result
 }
 
-fn function_has_explicit_return(body: &[Stmt]) -> bool {
+pub(crate) fn function_has_explicit_return(body: &[Stmt]) -> bool {
     body.iter().any(stmt_has_explicit_return)
 }
 
-fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
+pub(crate) fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Return(_) => true,
         Stmt::If {
@@ -155,11 +157,11 @@ fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
     }
 }
 
-fn expr_has_nested_return(_expr: &Expr) -> bool {
+pub(crate) fn expr_has_nested_return(_expr: &Expr) -> bool {
     false
 }
 
-enum EvalOutcome {
+pub(crate) enum EvalOutcome {
     Continue,
     Break,
     ContinueLoop,
@@ -172,7 +174,7 @@ thread_local! {
 
 const CONST_EVAL_STEP_LIMIT: usize = 20_000;
 
-fn const_eval_allow_step() -> bool {
+pub(crate) fn const_eval_allow_step() -> bool {
     CONST_EVAL_BUDGET.with(|budget| {
         let remaining = budget.get();
         if remaining == 0 {
@@ -184,7 +186,7 @@ fn const_eval_allow_step() -> bool {
     })
 }
 
-fn eval_block<'a>(
+pub(crate) fn eval_block<'a>(
     body: &[Stmt],
     env: &mut BTreeMap<String, Value>,
     functions: &HashMap<&'a str, &'a TypedFunction>,
@@ -195,7 +197,7 @@ fn eval_block<'a>(
     }
 }
 
-fn eval_block_control<'a>(
+pub(crate) fn eval_block_control<'a>(
     body: &[Stmt],
     env: &mut BTreeMap<String, Value>,
     functions: &HashMap<&'a str, &'a TypedFunction>,
@@ -532,7 +534,7 @@ fn eval_block_control<'a>(
     EvalOutcome::Continue
 }
 
-fn eval_expr<'a>(
+pub(crate) fn eval_expr<'a>(
     expr: &Expr,
     env: &BTreeMap<String, Value>,
     functions: &HashMap<&'a str, &'a TypedFunction>,
@@ -981,7 +983,7 @@ fn eval_expr<'a>(
     }
 }
 
-fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Option<Value> {
+pub(crate) fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Option<Value> {
     match (op, left, right) {
         (BinaryOp::Add, Value::I32(a), Value::I32(b)) => Some(Value::I32(a + b)),
         (BinaryOp::Add, Value::F64(a), Value::F64(b)) => Some(Value::F64(a + b)),
@@ -1021,7 +1023,7 @@ fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Option<Value> {
     }
 }
 
-fn truthy(v: &Value) -> bool {
+pub(crate) fn truthy(v: &Value) -> bool {
     match v {
         Value::Bool(v) => *v,
         Value::I32(v) => *v != 0,
@@ -1034,7 +1036,7 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
-fn bind_pattern_values(
+pub(crate) fn bind_pattern_values(
     pattern: &ast::Pattern,
     value: &Value,
     bindings: &mut BTreeMap<String, Value>,
@@ -1139,7 +1141,7 @@ fn bind_pattern_values(
     }
 }
 
-fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
+pub(crate) fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
     match pattern {
         ast::Pattern::Wildcard | ast::Pattern::Ident(_) => true,
         ast::Pattern::Or(patterns) => patterns.iter().any(pattern_is_catchall),
@@ -1151,7 +1153,7 @@ fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
     }
 }
 
-fn collect_pattern_bindings(pattern: &ast::Pattern, out: &mut BTreeSet<String>) {
+pub(crate) fn collect_pattern_bindings(pattern: &ast::Pattern, out: &mut BTreeSet<String>) {
     match pattern {
         ast::Pattern::Ident(name) => {
             out.insert(name.clone());
@@ -1189,7 +1191,7 @@ fn collect_pattern_bindings(pattern: &ast::Pattern, out: &mut BTreeSet<String>) 
     }
 }
 
-fn eval_bool_expr(
+pub(crate) fn eval_bool_expr(
     expr: &Expr,
     env: &BTreeMap<String, Value>,
     functions: &[TypedFunction],

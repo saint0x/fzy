@@ -1,4 +1,6 @@
-fn collect_and_rewrite_explicit_generic_calls(
+use crate::*;
+
+pub(crate) fn collect_and_rewrite_explicit_generic_calls(
     templates: &HashMap<String, TypedFunction>,
     function: &mut TypedFunction,
     depth: usize,
@@ -230,7 +232,7 @@ fn collect_and_rewrite_explicit_generic_calls(
     rewrite_stmts(&mut function.body, templates, depth, queue, rewrite);
 }
 
-fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, String>) {
+pub(crate) fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, String>) {
     fn rewrite_expr(expr: &mut Expr, rewrite: &HashMap<String, String>) {
         match expr {
             Expr::Call { callee, args } => {
@@ -405,7 +407,7 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
     }
 }
 
-fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, Type>) {
+pub(crate) fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, Type>) {
     fn substitute_expr(expr: &mut Expr, bindings: &BTreeMap<String, Type>) {
         match expr {
             Expr::Call { callee, args } => {
@@ -602,7 +604,7 @@ fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, 
     }
 }
 
-fn resolve_call_signature(
+pub(crate) fn resolve_call_signature(
     params: &[Type],
     ret: &Type,
     generics: &[ast::GenericParam],
@@ -641,13 +643,13 @@ fn resolve_call_signature(
     ))
 }
 
-fn type_contains_typevars(ty: &Type) -> bool {
+pub(crate) fn type_contains_typevars(ty: &Type) -> bool {
     let mut names = BTreeSet::new();
     collect_typevars_from_type(ty, &mut names);
     !names.is_empty()
 }
 
-fn collect_typevars_from_type(ty: &Type, out: &mut BTreeSet<String>) {
+pub(crate) fn collect_typevars_from_type(ty: &Type, out: &mut BTreeSet<String>) {
     match ty {
         Type::TypeVar(name) => {
             out.insert(name.clone());
@@ -689,7 +691,7 @@ fn collect_typevars_from_type(ty: &Type, out: &mut BTreeSet<String>) {
     }
 }
 
-fn runtime_signature_generics(params: &[Type], ret: &Type) -> Vec<ast::GenericParam> {
+pub(crate) fn runtime_signature_generics(params: &[Type], ret: &Type) -> Vec<ast::GenericParam> {
     let mut names = BTreeSet::new();
     for param in params {
         collect_typevars_from_type(param, &mut names);
@@ -704,7 +706,7 @@ fn runtime_signature_generics(params: &[Type], ret: &Type) -> Vec<ast::GenericPa
         .collect()
 }
 
-fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<String, Type>) -> bool {
+pub(crate) fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<String, Type>) -> bool {
     match template {
         Type::TypeVar(name) => {
             if let Some(existing) = bindings.get(name) {
@@ -787,7 +789,7 @@ fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<Strin
     }
 }
 
-fn substitute_typevars(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
+pub(crate) fn substitute_typevars(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
     match ty {
         Type::TypeVar(name) => bindings
             .get(name)
@@ -843,7 +845,7 @@ fn substitute_typevars(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
     }
 }
 
-fn trait_impl_match_count(
+pub(crate) fn trait_impl_match_count(
     ty: &Type,
     trait_name: &str,
     trait_impls: &HashMap<String, Vec<Type>>,
@@ -1283,7 +1285,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
     ]
 }
 
-fn nearest_intrinsic_name(name: &str) -> Option<String> {
+pub(crate) fn nearest_intrinsic_name(name: &str) -> Option<String> {
     runtime_intrinsic_names()
         .iter()
         .map(|candidate| (*candidate, edit_distance(name, candidate)))
@@ -1291,7 +1293,7 @@ fn nearest_intrinsic_name(name: &str) -> Option<String> {
         .and_then(|(candidate, distance)| (distance <= 6).then_some(candidate.to_string()))
 }
 
-fn builtin_namespace_hint(name: &str) -> Option<String> {
+pub(crate) fn builtin_namespace_hint(name: &str) -> Option<String> {
     let namespace = name.split('.').next()?;
     match namespace {
         "env" | "str" | "json" | "list" | "map" | "route" | "gpu" | "mem" => Some(format!(
@@ -1308,7 +1310,7 @@ fn builtin_namespace_hint(name: &str) -> Option<String> {
     }
 }
 
-fn edit_distance(left: &str, right: &str) -> usize {
+pub(crate) fn edit_distance(left: &str, right: &str) -> usize {
     let left_chars = left.chars().collect::<Vec<_>>();
     let right_chars = right.chars().collect::<Vec<_>>();
     let mut prev = (0..=right_chars.len()).collect::<Vec<_>>();
@@ -1324,14 +1326,14 @@ fn edit_distance(left: &str, right: &str) -> usize {
     prev[right_chars.len()]
 }
 
-fn i32_type() -> Type {
+pub(crate) fn i32_type() -> Type {
     Type::Int {
         signed: true,
         bits: 32,
     }
 }
 
-fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
+pub(crate) fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let i32 = i32_type();
     let i64 = Type::Int {
         signed: true,
@@ -2116,7 +2118,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     })
 }
 
-fn runtime_default_value(ty: &Type) -> Option<Value> {
+pub(crate) fn runtime_default_value(ty: &Type) -> Option<Value> {
     fn is_runtime_handle(name: &str) -> bool {
         runtime_handle_contract(name).is_some()
     }
@@ -2152,7 +2154,7 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
     }
 }
 
-fn check_pattern_compatibility(
+pub(crate) fn check_pattern_compatibility(
     pattern: &ast::Pattern,
     scrutinee_ty: Option<&Type>,
     struct_defs: &HashMap<String, ast::Struct>,
@@ -2366,7 +2368,7 @@ fn check_pattern_compatibility(
     }
 }
 
-fn bind_pattern_types(
+pub(crate) fn bind_pattern_types(
     pattern: &ast::Pattern,
     scrutinee_ty: &Type,
     mutable: bool,
@@ -2571,7 +2573,7 @@ fn bind_pattern_types(
     }
 }
 
-fn pattern_binding_type_map(
+pub(crate) fn pattern_binding_type_map(
     pattern: &ast::Pattern,
     scrutinee_ty: &Type,
     struct_defs: &HashMap<String, ast::Struct>,
@@ -2716,7 +2718,7 @@ fn pattern_binding_type_map(
     }
 }
 
-fn type_compatible(expected: &Type, actual: &Type) -> bool {
+pub(crate) fn type_compatible(expected: &Type, actual: &Type) -> bool {
     match (expected, actual) {
         (Type::Never, _) | (_, Type::Never) => true,
         (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
@@ -2741,7 +2743,7 @@ fn type_compatible(expected: &Type, actual: &Type) -> bool {
     }
 }
 
-fn coercible_integer_literal_value(expr: &Expr) -> Option<i128> {
+pub(crate) fn coercible_integer_literal_value(expr: &Expr) -> Option<i128> {
     match expr {
         Expr::Int(v) => Some(*v as i128),
         Expr::Group(inner) | Expr::Discard(inner) => coercible_integer_literal_value(inner),
@@ -2757,7 +2759,7 @@ fn coercible_integer_literal_value(expr: &Expr) -> Option<i128> {
     }
 }
 
-fn coercible_float_literal_value(expr: &Expr) -> Option<f64> {
+pub(crate) fn coercible_float_literal_value(expr: &Expr) -> Option<f64> {
     match expr {
         Expr::Float { value, .. } => Some(*value),
         Expr::Group(inner) | Expr::Discard(inner) => coercible_float_literal_value(inner),
@@ -2773,7 +2775,7 @@ fn coercible_float_literal_value(expr: &Expr) -> Option<f64> {
     }
 }
 
-fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
+pub(crate) fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
     if type_compatible(expected, actual) {
         return true;
     }
@@ -2852,7 +2854,7 @@ fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
     }
 }
 
-fn expr_supports_implicit_borrow(expr: &Expr) -> bool {
+pub(crate) fn expr_supports_implicit_borrow(expr: &Expr) -> bool {
     match expr {
         Expr::Ident(_) => true,
         Expr::Group(inner)
@@ -2863,14 +2865,14 @@ fn expr_supports_implicit_borrow(expr: &Expr) -> bool {
     }
 }
 
-fn is_integer_type(ty: &Type) -> bool {
+pub(crate) fn is_integer_type(ty: &Type) -> bool {
     matches!(ty, Type::ISize | Type::USize | Type::Int { .. })
 }
 
-fn is_float_type(ty: &Type) -> bool {
+pub(crate) fn is_float_type(ty: &Type) -> bool {
     matches!(ty, Type::Float { .. })
 }
 
-fn is_bool_or_integer(ty: Option<&Type>) -> bool {
+pub(crate) fn is_bool_or_integer(ty: Option<&Type>) -> bool {
     matches!(ty, Some(Type::Bool | Type::Never)) || ty.is_some_and(is_integer_type)
 }

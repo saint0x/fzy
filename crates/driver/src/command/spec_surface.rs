@@ -1,4 +1,6 @@
-fn spec_check(format: Format) -> Result<String> {
+use super::*;
+
+pub(super) fn spec_check(format: Format) -> Result<String> {
     let path = spec_doc_path();
     ensure_exists(&path)?;
     let text = std::fs::read_to_string(&path)
@@ -43,13 +45,13 @@ fn spec_check(format: Format) -> Result<String> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PlanClaimGate {
-    completed: usize,
-    checked: usize,
-    missing_evidence: Vec<String>,
+pub(super) struct PlanClaimGate {
+    pub(super) completed: usize,
+    pub(super) checked: usize,
+    pub(super) missing_evidence: Vec<String>,
 }
 
-fn validate_plan_claim_accuracy() -> Result<PlanClaimGate> {
+pub(super) fn validate_plan_claim_accuracy() -> Result<PlanClaimGate> {
     let plan_path = PathBuf::from("PLAN.md");
     if !plan_path.exists() {
         return Ok(PlanClaimGate {
@@ -73,7 +75,7 @@ fn validate_plan_claim_accuracy() -> Result<PlanClaimGate> {
     Ok(analyze_plan_claim_accuracy(&plan_text, &corpus))
 }
 
-fn analyze_plan_claim_accuracy(plan_text: &str, corpus: &[(String, String)]) -> PlanClaimGate {
+pub(super) fn analyze_plan_claim_accuracy(plan_text: &str, corpus: &[(String, String)]) -> PlanClaimGate {
     let mut completed = 0usize;
     let mut checked = 0usize;
     let mut claims = Vec::<(String, Vec<String>)>::new();
@@ -134,7 +136,7 @@ fn analyze_plan_claim_accuracy(plan_text: &str, corpus: &[(String, String)]) -> 
     }
 }
 
-fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
+pub(super) fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
     ensure_exists(path)?;
     let resolved = resolve_source(path)?;
     let verifier = verify_file(&resolved.source_path)?;
@@ -374,13 +376,13 @@ fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ExecutableRuntimeResult {
+pub(super) struct ExecutableRuntimeResult {
     exit_code: i32,
     stdout: String,
     stderr: String,
 }
 
-fn executable_runtime_result(artifact: &BuildArtifact) -> Result<ExecutableRuntimeResult> {
+pub(super) fn executable_runtime_result(artifact: &BuildArtifact) -> Result<ExecutableRuntimeResult> {
     let output = artifact
         .output
         .as_deref()
@@ -398,7 +400,7 @@ fn executable_runtime_result(artifact: &BuildArtifact) -> Result<ExecutableRunti
     })
 }
 
-fn diagnostic_signature(items: &[diagnostics::Diagnostic]) -> Result<String> {
+pub(super) fn diagnostic_signature(items: &[diagnostics::Diagnostic]) -> Result<String> {
     let payload = serde_json::Value::Array(
         items
             .iter()
@@ -417,7 +419,7 @@ fn diagnostic_signature(items: &[diagnostics::Diagnostic]) -> Result<String> {
     semantic_signature(&payload)
 }
 
-fn library_exports(path: &Path) -> Result<Vec<String>> {
+pub(super) fn library_exports(path: &Path) -> Result<Vec<String>> {
     let output = ProcessCommand::new("nm")
         .arg(path)
         .output()
@@ -445,7 +447,7 @@ fn library_exports(path: &Path) -> Result<Vec<String>> {
     Ok(exports)
 }
 
-fn backend_capability_report() -> serde_json::Value {
+pub(super) fn backend_capability_report() -> serde_json::Value {
     serde_json::json!({
         "llvm": {
             "status": "parity_supported",
@@ -467,4 +469,3 @@ fn backend_capability_report() -> serde_json::Value {
         "gpuAdapters": gpu_backend_report_json()
     })
 }
-

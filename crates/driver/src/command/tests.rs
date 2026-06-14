@@ -6,7 +6,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
-    use super::*;
+    use super::super::*;
 
     fn run_check_text(source: &str, suffix: &str) -> String {
         let unique = std::time::SystemTime::now()
@@ -7292,7 +7292,7 @@ fn main() -> i32 {
         let path = std::env::temp_dir().join(format!("fozzylang-proof-ref-{suffix}.fozzy"));
         std::fs::write(&path, "{}").expect("trace file should be written");
         let proof_ref = format!("trace://{}#site=usite_demo", path.display());
-        assert!(super::proof_ref_valid(&proof_ref));
+        assert!(proof_ref_valid(&proof_ref));
         let _ = std::fs::remove_file(path);
     }
 
@@ -7304,7 +7304,7 @@ fn main() -> i32 {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("fozzylang-proof-ref-missing-{suffix}.fozzy"));
         let proof_ref = format!("trace://{}#site=usite_demo", path.display());
-        assert!(!super::proof_ref_valid(&proof_ref));
+        assert!(!proof_ref_valid(&proof_ref));
     }
 
     #[test]

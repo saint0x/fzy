@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 
-use super::super::native_runtime_tables::native_runtime_contract_for_callee;
+use super::super::native_runtime_tables::{
+    native_runtime_contract_for_callee, native_runtime_imports,
+};
 use super::super::*;
 
 pub(crate) fn native_runtime_import_contract_errors() -> Vec<String> {
     let mut errors = Vec::new();
     let mut seen = HashSet::<&'static str>::new();
-    for import in NATIVE_RUNTIME_IMPORTS {
+    for import in native_runtime_imports() {
         if !seen.insert(import.callee) {
             errors.push(format!(
                 "duplicate native runtime import callee `{}` in boundary import table",
@@ -27,8 +29,7 @@ pub(crate) fn native_runtime_import_contract_errors() -> Vec<String> {
         .iter()
         .copied()
         .collect::<HashSet<_>>();
-    let imported_runtime = NATIVE_RUNTIME_IMPORTS
-        .iter()
+    let imported_runtime = native_runtime_imports()
         .chain(NATIVE_DATA_PLANE_IMPORTS.iter())
         .map(|import| import.callee)
         .collect::<HashSet<_>>();

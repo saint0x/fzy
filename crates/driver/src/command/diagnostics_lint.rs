@@ -1,4 +1,6 @@
-fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
+use super::*;
+
+pub(super) fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
     vec![
         DiagnosticCatalogEntry {
             key: "parser.expected_parameter_name".to_string(),
@@ -364,7 +366,7 @@ fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
     ]
 }
 
-fn lint_command(path: &Path, tier: &str, format: Format) -> Result<String> {
+pub(super) fn lint_command(path: &Path, tier: &str, format: Format) -> Result<String> {
     let tier = normalize_lint_tier(tier)?;
     let verify = verify_file_with_root_guidance(path)?;
     let mut items = verify.diagnostic_details;
@@ -429,7 +431,7 @@ fn lint_command(path: &Path, tier: &str, format: Format) -> Result<String> {
     }
 }
 
-fn normalize_lint_tier(tier: &str) -> Result<&'static str> {
+pub(super) fn normalize_lint_tier(tier: &str) -> Result<&'static str> {
     match tier.trim().to_ascii_lowercase().as_str() {
         "" | "production" => Ok("production"),
         "pedantic" => Ok("pedantic"),
@@ -438,7 +440,7 @@ fn normalize_lint_tier(tier: &str) -> Result<&'static str> {
     }
 }
 
-fn collect_lint_sources(path: &Path) -> Result<Vec<(PathBuf, String)>> {
+pub(super) fn collect_lint_sources(path: &Path) -> Result<Vec<(PathBuf, String)>> {
     let mut out = Vec::new();
     if path.is_file() {
         let text = std::fs::read_to_string(path)
@@ -470,7 +472,7 @@ fn collect_lint_sources(path: &Path) -> Result<Vec<(PathBuf, String)>> {
     Ok(out)
 }
 
-fn walk_fzy_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub(super) fn walk_fzy_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -489,7 +491,7 @@ fn walk_fzy_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn pedantic_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
+pub(super) fn pedantic_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
     let sources = collect_lint_sources(path)?;
     let mut out = Vec::new();
     for (file, text) in sources {
@@ -521,7 +523,7 @@ fn pedantic_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
     Ok(out)
 }
 
-fn compat_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
+pub(super) fn compat_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
     let sources = collect_lint_sources(path)?;
     let mut out = Vec::new();
     for (file, text) in sources {
@@ -550,7 +552,7 @@ fn compat_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
     Ok(out)
 }
 
-fn production_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
+pub(super) fn production_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
     let mut out = Vec::new();
     if path.is_dir() {
         let roots = discover_project_roots(path)?;

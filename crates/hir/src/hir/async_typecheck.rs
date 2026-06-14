@@ -1,4 +1,6 @@
-fn validate_async_semantics(
+use crate::*;
+
+pub(crate) fn validate_async_semantics(
     functions: &[TypedFunction],
     fn_async: &HashMap<String, bool>,
     errors: &mut usize,
@@ -72,28 +74,28 @@ fn validate_async_semantics(
     }
 }
 
-struct TypeCheckEnv<'a> {
-    current_namespace: &'a str,
-    fn_sigs: &'a HashMap<String, (Vec<Type>, Type)>,
-    fn_async: &'a HashMap<String, bool>,
-    fn_generics: &'a HashMap<String, Vec<ast::GenericParam>>,
-    fn_param_names: &'a HashMap<String, Vec<String>>,
-    fn_is_extern_unsafe_c: &'a BTreeSet<String>,
-    struct_defs: &'a HashMap<String, ast::Struct>,
-    enum_defs: &'a HashMap<String, ast::Enum>,
-    trait_impls: &'a HashMap<String, Vec<Type>>,
-    global_types: &'a HashMap<String, Type>,
-    global_mutability: &'a HashMap<String, bool>,
+pub(crate) struct TypeCheckEnv<'a> {
+    pub(crate) current_namespace: &'a str,
+    pub(crate) fn_sigs: &'a HashMap<String, (Vec<Type>, Type)>,
+    pub(crate) fn_async: &'a HashMap<String, bool>,
+    pub(crate) fn_generics: &'a HashMap<String, Vec<ast::GenericParam>>,
+    pub(crate) fn_param_names: &'a HashMap<String, Vec<String>>,
+    pub(crate) fn_is_extern_unsafe_c: &'a BTreeSet<String>,
+    pub(crate) struct_defs: &'a HashMap<String, ast::Struct>,
+    pub(crate) enum_defs: &'a HashMap<String, ast::Enum>,
+    pub(crate) trait_impls: &'a HashMap<String, Vec<Type>>,
+    pub(crate) global_types: &'a HashMap<String, Type>,
+    pub(crate) global_mutability: &'a HashMap<String, bool>,
 }
 
-struct TypeCheckState<'a> {
-    errors: &'a mut usize,
-    type_error_details: &'a mut Vec<String>,
-    generic_specializations: &'a mut BTreeSet<String>,
-    trait_violations: &'a mut Vec<String>,
+pub(crate) struct TypeCheckState<'a> {
+    pub(crate) errors: &'a mut usize,
+    pub(crate) type_error_details: &'a mut Vec<String>,
+    pub(crate) generic_specializations: &'a mut BTreeSet<String>,
+    pub(crate) trait_violations: &'a mut Vec<String>,
 }
 
-fn type_check_stmt(
+pub(crate) fn type_check_stmt(
     stmt: &Stmt,
     scopes: &mut SymbolScopes,
     local_types: &mut BTreeMap<String, Type>,
@@ -644,7 +646,7 @@ fn type_check_stmt(
     }
 }
 
-fn pattern_covers_variant(
+pub(crate) fn pattern_covers_variant(
     pattern: &ast::Pattern,
     enum_name: &str,
     covered: &mut BTreeSet<String>,
@@ -671,7 +673,7 @@ fn pattern_covers_variant(
     }
 }
 
-fn check_match_exhaustiveness(
+pub(crate) fn check_match_exhaustiveness(
     scrutinee_ty: Option<&Type>,
     arms: &[ast::MatchArm],
     enum_defs: &HashMap<String, ast::Enum>,
@@ -708,7 +710,7 @@ fn check_match_exhaustiveness(
     }
 }
 
-fn infer_unsafe_block_type(
+pub(crate) fn infer_unsafe_block_type(
     body: &[Stmt],
     scopes: &SymbolScopes,
     env: &TypeCheckEnv<'_>,
@@ -757,7 +759,7 @@ fn infer_unsafe_block_type(
     tail_ty
 }
 
-fn ffi_borrowed_str_arg_compatible(
+pub(crate) fn ffi_borrowed_str_arg_compatible(
     env: &TypeCheckEnv<'_>,
     callee: &str,
     index: usize,
@@ -815,7 +817,7 @@ fn ffi_borrowed_str_arg_compatible(
     }
 }
 
-fn sibling_len_binding_name(name: &str) -> Option<String> {
+pub(crate) fn sibling_len_binding_name(name: &str) -> Option<String> {
     for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
         if let Some(stem) = name.strip_suffix(suffix) {
             return Some(format!("{stem}_len"));
@@ -827,7 +829,7 @@ fn sibling_len_binding_name(name: &str) -> Option<String> {
     Some(format!("{name}_len"))
 }
 
-fn gpu_upload_ptr_arg_compatible(
+pub(crate) fn gpu_upload_ptr_arg_compatible(
     scopes: &SymbolScopes,
     callee: &str,
     index: usize,
@@ -860,7 +862,7 @@ fn gpu_upload_ptr_arg_compatible(
     scopes.get(&len_name).is_some_and(|ty| is_integer_type(&ty))
 }
 
-fn coerce_gpu_upload_arg_types(
+pub(crate) fn coerce_gpu_upload_arg_types(
     scopes: &SymbolScopes,
     callee: &str,
     params: &[Type],
@@ -889,7 +891,7 @@ fn coerce_gpu_upload_arg_types(
         .collect()
 }
 
-fn coerce_ffi_borrowed_str_arg_types(
+pub(crate) fn coerce_ffi_borrowed_str_arg_types(
     env: &TypeCheckEnv<'_>,
     callee: &str,
     params: &[Type],
@@ -960,7 +962,7 @@ fn coerce_ffi_borrowed_str_arg_types(
         .collect()
 }
 
-fn infer_expr_type(
+pub(crate) fn infer_expr_type(
     expr: &Expr,
     scopes: &SymbolScopes,
     env: &TypeCheckEnv<'_>,
@@ -2506,7 +2508,7 @@ fn infer_expr_type(
     }
 }
 
-fn split_generic_callee(callee: &str) -> (&str, Option<Vec<Type>>) {
+pub(crate) fn split_generic_callee(callee: &str) -> (&str, Option<Vec<Type>>) {
     let Some(start) = callee.find('<') else {
         return (callee, None);
     };
@@ -2546,7 +2548,7 @@ fn split_generic_callee(callee: &str) -> (&str, Option<Vec<Type>>) {
     (base, parsed)
 }
 
-fn split_top_level_type_args(input: &str) -> Option<Vec<&str>> {
+pub(crate) fn split_top_level_type_args(input: &str) -> Option<Vec<&str>> {
     let mut out = Vec::new();
     let mut depth_angle = 0usize;
     let mut depth_bracket = 0usize;
@@ -2592,7 +2594,7 @@ fn split_top_level_type_args(input: &str) -> Option<Vec<&str>> {
     Some(out)
 }
 
-fn parse_simple_type(token: &str) -> Option<Type> {
+pub(crate) fn parse_simple_type(token: &str) -> Option<Type> {
     let token = token.trim();
     if token.is_empty() {
         return None;
@@ -2771,11 +2773,11 @@ fn parse_simple_type(token: &str) -> Option<Type> {
     })
 }
 
-type CallSignature = (Vec<Type>, Type, Vec<(String, Type)>);
+pub(crate) type CallSignature = (Vec<Type>, Type, Vec<(String, Type)>);
 const MAX_MONOMORPHIZATION_DEPTH: usize = 32;
 const MAX_MONOMORPHIZED_SPECIALIZATIONS: usize = 2048;
 
-fn monomorphized_symbol(base: &str, args: &[Type]) -> String {
+pub(crate) fn monomorphized_symbol(base: &str, args: &[Type]) -> String {
     let rendered = args
         .iter()
         .map(ToString::to_string)
@@ -2784,7 +2786,7 @@ fn monomorphized_symbol(base: &str, args: &[Type]) -> String {
     format!("{base}<{rendered}>")
 }
 
-fn monomorphize_typed_functions(
+pub(crate) fn monomorphize_typed_functions(
     typed_functions: &mut Vec<TypedFunction>,
     generic_specializations: &mut BTreeSet<String>,
     type_errors: &mut usize,
@@ -2894,4 +2896,3 @@ fn monomorphize_typed_functions(
     generic_specializations.clear();
     generic_specializations.extend(seen);
 }
-

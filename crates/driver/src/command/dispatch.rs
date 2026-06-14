@@ -1,3 +1,5 @@
+use super::*;
+
 pub fn run(command: Command, format: Format) -> Result<String> {
     match command {
         Command::Init {
@@ -938,7 +940,7 @@ pub fn run_with_metadata(command: Command, format: Format) -> Result<CommandResu
     })
 }
 
-fn infer_success_exit_code(command: &Command, output: &str, format: Format) -> Option<i32> {
+pub(super) fn infer_success_exit_code(command: &Command, output: &str, format: Format) -> Option<i32> {
     match command {
         Command::Build { .. } => output_contains_status_error(output, format).then_some(1),
         Command::DoctorProject { .. }
@@ -965,18 +967,18 @@ fn infer_success_exit_code(command: &Command, output: &str, format: Format) -> O
     }
 }
 
-fn output_contains_status_error(output: &str, format: Format) -> bool {
+pub(super) fn output_contains_status_error(output: &str, format: Format) -> bool {
     match format {
         Format::Json => output.contains("\"status\":\"error\""),
         Format::Text => output.contains("status: error") || output.contains("status:error"),
     }
 }
 
-fn output_contains_ok_false(output: &str) -> bool {
+pub(super) fn output_contains_ok_false(output: &str) -> bool {
     output.contains("\"ok\":false") || output.contains("ok=false")
 }
 
-fn extract_json_i32(output: &str, key: &str) -> Option<i32> {
+pub(super) fn extract_json_i32(output: &str, key: &str) -> Option<i32> {
     let rest = output.split(key).nth(1)?;
     let digits = rest
         .trim_start()
@@ -986,7 +988,7 @@ fn extract_json_i32(output: &str, key: &str) -> Option<i32> {
     digits.parse::<i32>().ok()
 }
 
-fn extract_json_usize(output: &str, key: &str) -> Option<usize> {
+pub(super) fn extract_json_usize(output: &str, key: &str) -> Option<usize> {
     let rest = output.split(key).nth(1)?;
     let digits = rest
         .trim_start()
@@ -996,22 +998,22 @@ fn extract_json_usize(output: &str, key: &str) -> Option<usize> {
     digits.parse::<usize>().ok()
 }
 
-fn extract_text_i32(output: &str, key: &str) -> Option<i32> {
+pub(super) fn extract_text_i32(output: &str, key: &str) -> Option<i32> {
     let rest = output.split(&format!("{key}:")).nth(1)?;
     rest.lines().next()?.trim().parse::<i32>().ok()
 }
 
-fn extract_text_usize(output: &str, key: &str) -> Option<usize> {
+pub(super) fn extract_text_usize(output: &str, key: &str) -> Option<usize> {
     let rest = output.split(&format!("{key}:")).nth(1)?;
     rest.lines().next()?.trim().parse::<usize>().ok()
 }
 
-struct BuildLinkArgsScope {
+pub(super) struct BuildLinkArgsScope {
     previous: Option<String>,
     active: bool,
 }
 
-struct BuildCompileEnvScope {
+pub(super) struct BuildCompileEnvScope {
     previous_codegen_jobs: Option<String>,
     previous_pgo_generate: Option<String>,
     previous_pgo_use: Option<String>,
@@ -1086,7 +1088,7 @@ impl Drop for BuildCompileEnvScope {
     }
 }
 
-fn resolve_pgo_dir(path: &Path) -> PathBuf {
+pub(super) fn resolve_pgo_dir(path: &Path) -> PathBuf {
     let root = if path.is_dir() {
         path.to_path_buf()
     } else {
@@ -1097,7 +1099,7 @@ fn resolve_pgo_dir(path: &Path) -> PathBuf {
     root.join(".fz").join("pgo").join("default")
 }
 
-fn collect_pgo_profile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
+pub(super) fn collect_pgo_profile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
     }
@@ -1139,7 +1141,7 @@ fn collect_pgo_profile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(inputs)
 }
 
-fn pgo_merge_command(path: &Path, output: Option<&Path>, format: Format) -> Result<String> {
+pub(super) fn pgo_merge_command(path: &Path, output: Option<&Path>, format: Format) -> Result<String> {
     let inputs = collect_pgo_profile_inputs(path)?;
     if inputs.is_empty() {
         bail!(
@@ -1263,22 +1265,22 @@ impl Drop for BuildLinkArgsScope {
 
 #[derive(Debug, Clone, Copy)]
 #[cfg(test)]
-struct ScenarioRunRouting {
-    deterministic_applied: bool,
-    mode: &'static str,
-    reason: &'static str,
+pub(super) struct ScenarioRunRouting {
+    pub(super) deterministic_applied: bool,
+    pub(super) mode: &'static str,
+    pub(super) reason: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RunBounds<'a> {
-    max_seconds: Option<u64>,
-    exit_on_healthcheck: Option<&'a str>,
-    smoke_http: Option<&'a str>,
+pub(super) struct RunBounds<'a> {
+    pub(super) max_seconds: Option<u64>,
+    pub(super) exit_on_healthcheck: Option<&'a str>,
+    pub(super) smoke_http: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
-struct NativeRunOutcome {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
+pub(super) struct NativeRunOutcome {
+    pub(super) exit_code: i32,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
 }

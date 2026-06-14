@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn verify_grouped_binding_move_diagnostic_is_snapshot_stable() {
     let file_name = format!(
@@ -779,4 +781,3 @@ fn verify_partial_move_memory_diagnostic_is_snapshot_stable() {
 
     let _ = std::fs::remove_file(path);
 }
-

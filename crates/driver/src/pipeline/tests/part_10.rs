@@ -1,3 +1,6 @@
+use super::*;
+use super::super::llvm::lower_llvm_ir;
+
 #[test]
 fn llvm_backend_executes_handle_backed_local_destructuring() {
     let project_name = format!(
@@ -790,4 +793,3 @@ fn namespaced_module_consts_resolve_consistently_across_native_backends() {
 
     let _ = std::fs::remove_dir_all(root);
 }
-

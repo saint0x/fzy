@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn verify_spawn_closure_shared_borrow_reports_thread_boundary_help() {
     let file_name = format!(

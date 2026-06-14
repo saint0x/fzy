@@ -1,4 +1,6 @@
-fn render_doc_artifacts(format: Format, artifacts: DocArtifacts) -> String {
+use super::*;
+
+pub(super) fn render_doc_artifacts(format: Format, artifacts: DocArtifacts) -> String {
     match format {
         Format::Text => render_text_fields(&[
             ("status", "ok".to_string()),
@@ -35,7 +37,7 @@ fn render_doc_artifacts(format: Format, artifacts: DocArtifacts) -> String {
     }
 }
 
-fn surface_always_available_groups() -> Vec<(&'static str, Vec<&'static str>)> {
+pub(super) fn surface_always_available_groups() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
         (
             "controlFlow",
@@ -93,7 +95,7 @@ fn surface_always_available_groups() -> Vec<(&'static str, Vec<&'static str>)> {
     ]
 }
 
-fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
+pub(super) fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
         ("text", "stdlib facade", "no explicit capability"),
         ("io", "stdlib facade", "no explicit capability"),
@@ -128,13 +130,13 @@ fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
     ]
 }
 
-fn surface_capabilities() -> Vec<&'static str> {
+pub(super) fn surface_capabilities() -> Vec<&'static str> {
     vec![
         "time", "rng", "fs", "http", "proc", "mem", "thread", "log", "error", "gpu",
     ]
 }
 
-fn render_surface_inspection(format: Format) -> String {
+pub(super) fn render_surface_inspection(format: Format) -> String {
     let groups = surface_always_available_groups();
     let modules = surface_core_modules();
     let capabilities = surface_capabilities();
@@ -187,7 +189,7 @@ fn render_surface_inspection(format: Format) -> String {
     }
 }
 
-fn inspect_stdlib_command(module: &str, format: Format) -> Result<String> {
+pub(super) fn inspect_stdlib_command(module: &str, format: Format) -> Result<String> {
     let Some(source) = embedded_core_stdlib_module_source(module) else {
         let available = surface_core_modules()
             .into_iter()
@@ -230,7 +232,7 @@ fn inspect_stdlib_command(module: &str, format: Format) -> Result<String> {
     }
 }
 
-fn inspect_artifacts_command(
+pub(super) fn inspect_artifacts_command(
     path: &Path,
     release: bool,
     backend_override: Option<&str>,
@@ -322,7 +324,7 @@ fn inspect_artifacts_command(
     }
 }
 
-fn inspect_embedding_command(path: &Path, format: Format) -> Result<String> {
+pub(super) fn inspect_embedding_command(path: &Path, format: Format) -> Result<String> {
     if !project_has_c_exports(path)? {
         bail!(
             "no exported `pubext c fn` surface found at `{}`; embedding inspection requires a C-exporting target",
@@ -385,7 +387,7 @@ fn inspect_embedding_command(path: &Path, format: Format) -> Result<String> {
     }
 }
 
-fn extract_doc_items_from_module(module: &ResolvedModuleSource) -> Vec<DocItem> {
+pub(super) fn extract_doc_items_from_module(module: &ResolvedModuleSource) -> Vec<DocItem> {
     let mut items = Vec::new();
     let lines = module.source.lines().collect::<Vec<_>>();
     for item in &module.ast.items {
@@ -396,7 +398,7 @@ fn extract_doc_items_from_module(module: &ResolvedModuleSource) -> Vec<DocItem> 
     items
 }
 
-fn doc_item_from_ast(
+pub(super) fn doc_item_from_ast(
     module: &ResolvedModuleSource,
     lines: &[&str],
     item: &ast::Item,
@@ -489,7 +491,7 @@ fn doc_item_from_ast(
     }
 }
 
-fn doc_named_item(
+pub(super) fn doc_named_item(
     module: &ResolvedModuleSource,
     lines: &[&str],
     kind: &str,
@@ -509,7 +511,7 @@ fn doc_named_item(
     }
 }
 
-fn doc_function_kind(function: &ast::Function) -> &'static str {
+pub(super) fn doc_function_kind(function: &ast::Function) -> &'static str {
     if function.is_extern && function.abi.as_deref() == Some("rpc") {
         "rpc"
     } else if function.is_pubext && function.abi.as_deref() == Some("c") {
@@ -523,7 +525,7 @@ fn doc_function_kind(function: &ast::Function) -> &'static str {
     }
 }
 
-fn render_doc_function_signature(function: &ast::Function) -> String {
+pub(super) fn render_doc_function_signature(function: &ast::Function) -> String {
     let params = function
         .params
         .iter()
@@ -570,18 +572,18 @@ fn render_doc_function_signature(function: &ast::Function) -> String {
     signature
 }
 
-fn render_named_signature(kind: &str, name: &str) -> String {
+pub(super) fn render_named_signature(kind: &str, name: &str) -> String {
     format!("{kind} {name}")
 }
 
-fn render_impl_signature(item: &ast::Impl) -> String {
+pub(super) fn render_impl_signature(item: &ast::Impl) -> String {
     match &item.trait_name {
         Some(trait_name) => format!("impl {} for {}", trait_name, item.for_type),
         None => format!("impl {}", item.for_type),
     }
 }
 
-fn line_starts_with(lines: &[&str], keyword: &str, name: &str) -> Option<usize> {
+pub(super) fn line_starts_with(lines: &[&str], keyword: &str, name: &str) -> Option<usize> {
     lines
         .iter()
         .position(|line| {
@@ -593,14 +595,14 @@ fn line_starts_with(lines: &[&str], keyword: &str, name: &str) -> Option<usize> 
         .map(|idx| idx + 1)
 }
 
-fn find_test_line(lines: &[&str], name: &str) -> Option<usize> {
+pub(super) fn find_test_line(lines: &[&str], name: &str) -> Option<usize> {
     lines
         .iter()
         .position(|line| line.trim_start().starts_with(&format!("test \"{name}\"")))
         .map(|idx| idx + 1)
 }
 
-fn docs_before_line(lines: &[&str], line: usize) -> String {
+pub(super) fn docs_before_line(lines: &[&str], line: usize) -> String {
     if line <= 1 || line > lines.len() {
         return String::new();
     }
@@ -653,7 +655,7 @@ fn docs_before_line(lines: &[&str], line: usize) -> String {
     String::new()
 }
 
-fn render_docs_markdown(items: &[DocItem]) -> String {
+pub(super) fn render_docs_markdown(items: &[DocItem]) -> String {
     if items.is_empty() {
         return "# API Documentation\n\n_No documented items found._\n".to_string();
     }
@@ -672,7 +674,7 @@ fn render_docs_markdown(items: &[DocItem]) -> String {
     out
 }
 
-fn render_docs_html(items: &[DocItem]) -> String {
+pub(super) fn render_docs_html(items: &[DocItem]) -> String {
     let mut out = String::from(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>fz doc</title></head><body>",
     );
@@ -697,14 +699,14 @@ fn render_docs_html(items: &[DocItem]) -> String {
     out
 }
 
-fn html_escape(input: &str) -> String {
+pub(super) fn html_escape(input: &str) -> String {
     input
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
 
-fn integrate_doc_reference(reference_path: &Path, items: &[DocItem]) -> Result<()> {
+pub(super) fn integrate_doc_reference(reference_path: &Path, items: &[DocItem]) -> Result<()> {
     let source = std::fs::read_to_string(reference_path)
         .with_context(|| format!("failed reading {}", reference_path.display()))?;
     let start = source
@@ -732,7 +734,7 @@ fn integrate_doc_reference(reference_path: &Path, items: &[DocItem]) -> Result<(
     Ok(())
 }
 
-fn format_source_file(path: &Path) -> Result<bool> {
+pub(super) fn format_source_file(path: &Path) -> Result<bool> {
     let original = std::fs::read_to_string(path)
         .with_context(|| format!("failed reading file for formatting: {}", path.display()))?;
     let formatted = format_source(&original);
@@ -746,7 +748,7 @@ fn format_source_file(path: &Path) -> Result<bool> {
     }
 }
 
-fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathBuf>> {
+pub(super) fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathBuf>> {
     let mut changed = Vec::<PathBuf>::new();
     if path.is_dir() {
         for entry in std::fs::read_dir(path).with_context(|| {

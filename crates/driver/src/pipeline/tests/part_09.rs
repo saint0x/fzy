@@ -1,3 +1,6 @@
+use super::*;
+use super::super::llvm::lower_llvm_ir;
+
 #[test]
 fn llvm_array_literal_return_values_round_trip_through_named_locals() {
     let project_name = format!(
@@ -751,4 +754,3 @@ fn llvm_lowering_uses_native_aggregate_handles_for_aggregate_literals() {
     assert!(ir.contains("call i64 @fz_native_agg_new("));
     assert!(ir.contains("call i32 @fz_native_agg_set_i64("));
 }
-

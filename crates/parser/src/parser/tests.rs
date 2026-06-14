@@ -2,7 +2,7 @@
 mod tests {
     use std::path::Path;
 
-    use super::parse;
+    use crate::parse;
 
     #[test]
     fn parses_if_while_and_calls() {

@@ -2,19 +2,11 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use diagnostics::Severity;
-
-use super::native_runtime_support::{render_native_runtime_shim, NativeAsyncExport};
-use super::native_runtime_tables::native_runtime_contract_for_callee;
 use super::{
-    collect_async_c_exports, compile_file, compile_file_with_backend, compile_library_with_backend,
-    derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir, native_mangle_symbol,
-    native_runtime_import_contract_errors, native_runtime_import_for_callee, parse_program,
-    refresh_lockfile, verify_file, verify_file_with_root_source, BackendKind, BuildProfile,
+    compile_file, verify_file, BuildProfile,
 };
 
-fn run_native_exit(exe: &Path) -> i32 {
+pub(super) fn run_native_exit(exe: &Path) -> i32 {
     Command::new(exe)
         .status()
         .expect("native artifact should execute")
@@ -22,19 +14,19 @@ fn run_native_exit(exe: &Path) -> i32 {
         .expect("native artifact should exit with code")
 }
 
-fn run_native_status(exe: &Path) -> std::process::ExitStatus {
+pub(super) fn run_native_status(exe: &Path) -> std::process::ExitStatus {
     Command::new(exe)
         .status()
         .expect("native artifact should execute")
 }
 
-fn run_native_output(exe: &Path) -> std::process::Output {
+pub(super) fn run_native_output(exe: &Path) -> std::process::Output {
     Command::new(exe)
         .output()
         .expect("native artifact should execute")
 }
 
-fn nm_symbols(path: &Path) -> Vec<String> {
+pub(super) fn nm_symbols(path: &Path) -> Vec<String> {
     let nm = Command::new("nm")
         .arg(path)
         .output()
@@ -52,7 +44,7 @@ fn nm_symbols(path: &Path) -> Vec<String> {
         .collect()
 }
 
-fn compile_and_run_c_host(source: &str, static_lib: &Path, work_dir: &Path) {
+pub(super) fn compile_and_run_c_host(source: &str, static_lib: &Path, work_dir: &Path) {
     let host_c = work_dir.join("host.c");
     let host_bin = work_dir.join("host");
     std::fs::write(&host_c, source).expect("host source should be written");
@@ -76,7 +68,7 @@ fn compile_and_run_c_host(source: &str, static_lib: &Path, work_dir: &Path) {
 }
 
 #[cfg(target_vendor = "apple")]
-fn compile_and_run_c_host_with_metal(source: &str, static_lib: &Path, work_dir: &Path) {
+pub(super) fn compile_and_run_c_host_with_metal(source: &str, static_lib: &Path, work_dir: &Path) {
     let host_c = work_dir.join("host.c");
     let host_bin = work_dir.join("host");
     std::fs::write(&host_c, source).expect("host source should be written");
@@ -770,4 +762,3 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
     assert!(runtime_contracts.contains("\"callee\": \"thread.spawn_ctx\""));
     assert!(runtime_contracts.contains("\"returnOwnership\": \"owned_task_handle\""));
 }
-

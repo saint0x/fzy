@@ -1,3 +1,6 @@
+use super::*;
+use super::super::llvm::lower_llvm_ir;
+
 #[test]
 fn backend_override_rejects_removed_c_shim() {
     let file_name = format!(

@@ -1,4 +1,6 @@
-fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String> {
+use super::*;
+
+pub(super) fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String> {
     ensure_exists(path)?;
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -147,7 +149,7 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
     }
 }
 
-fn plan_semantics_outcome(mode: &str, plan: &NonScenarioTestPlan) -> SemanticsOutcome {
+pub(super) fn plan_semantics_outcome(mode: &str, plan: &NonScenarioTestPlan) -> SemanticsOutcome {
     let mut event_kinds = Vec::new();
     if plan.selected_tests > 0 {
         event_kinds.push("test.event".to_string());
@@ -183,7 +185,7 @@ fn plan_semantics_outcome(mode: &str, plan: &NonScenarioTestPlan) -> SemanticsOu
     }
 }
 
-fn parse_scenario_step_kinds(path: &Path) -> Result<(Vec<String>, usize)> {
+pub(super) fn parse_scenario_step_kinds(path: &Path) -> Result<(Vec<String>, usize)> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed reading scenario file: {}", path.display()))?;
     let value: serde_json::Value = serde_json::from_str(&text)
@@ -214,7 +216,7 @@ fn parse_scenario_step_kinds(path: &Path) -> Result<(Vec<String>, usize)> {
     Ok((kinds, trace_event_count))
 }
 
-fn normalize_equivalence_event_kinds(kinds: &[String]) -> Vec<String> {
+pub(super) fn normalize_equivalence_event_kinds(kinds: &[String]) -> Vec<String> {
     let mut out = kinds
         .iter()
         .map(|kind| match kind.as_str() {
@@ -227,7 +229,7 @@ fn normalize_equivalence_event_kinds(kinds: &[String]) -> Vec<String> {
     out
 }
 
-fn event_kinds_equivalent(left: &[String], right: &[String]) -> bool {
+pub(super) fn event_kinds_equivalent(left: &[String], right: &[String]) -> bool {
     fn canonical(kind: &str) -> String {
         match kind {
             "thread.schedule" | "async.checkpoint" | "rpc.frame" | "test.event" => {
@@ -247,7 +249,7 @@ fn event_kinds_equivalent(left: &[String], right: &[String]) -> bool {
     left == right
 }
 
-fn fozzy_test_summary(
+pub(super) fn fozzy_test_summary(
     scenario: &Path,
     host_backends: bool,
     deterministic: bool,
@@ -295,7 +297,7 @@ fn fozzy_test_summary(
     })
 }
 
-fn semantic_signature(value: &serde_json::Value) -> Result<String> {
+pub(super) fn semantic_signature(value: &serde_json::Value) -> Result<String> {
     let payload = serde_json::to_vec(value)?;
     let mut hasher = Sha256::new();
     hasher.update(payload);
@@ -307,7 +309,7 @@ fn semantic_signature(value: &serde_json::Value) -> Result<String> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct UnsafeEntry {
+pub(super) struct UnsafeEntry {
     site_id: String,
     kind: String,
     project: String,
@@ -324,7 +326,7 @@ struct UnsafeEntry {
     proof_ref: Option<String>,
 }
 
-fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<String> {
+pub(super) fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<String> {
     let mut project_roots = if workspace {
         discover_project_roots(path)?
     } else {
@@ -607,7 +609,7 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     }
 }
 
-fn audit_memory_command(path: &Path, format: Format) -> Result<String> {
+pub(super) fn audit_memory_command(path: &Path, format: Format) -> Result<String> {
     let root = compile_strict_safety_artifacts(path)?;
     let json_path = root.join(".fz/memory-report.json");
     let md_path = root.join(".fz/memory-report.md");
@@ -648,7 +650,7 @@ fn audit_memory_command(path: &Path, format: Format) -> Result<String> {
     }
 }
 
-fn audit_ffi_command(path: &Path, format: Format) -> Result<String> {
+pub(super) fn audit_ffi_command(path: &Path, format: Format) -> Result<String> {
     let root = compile_strict_safety_artifacts(path)?;
     let json_path = root.join(".fz/ffi-report.json");
     let md_path = root.join(".fz/ffi-report.md");
@@ -724,7 +726,7 @@ fn audit_ffi_command(path: &Path, format: Format) -> Result<String> {
     }
 }
 
-fn compile_strict_safety_artifacts(path: &Path) -> Result<PathBuf> {
+pub(super) fn compile_strict_safety_artifacts(path: &Path) -> Result<PathBuf> {
     match compile_file_with_backend_with_root_guidance(path, BuildProfile::Strict, None) {
         Ok(artifact) if artifact.status != "error" => {}
         Ok(_) | Err(_) if project_has_c_exports(path).unwrap_or(false) => {
@@ -748,7 +750,7 @@ fn compile_strict_safety_artifacts(path: &Path) -> Result<PathBuf> {
     Ok(resolve_source(path)?.project_root)
 }
 
-fn proof_ref_machine_linkable(value: &str) -> bool {
+pub(super) fn proof_ref_machine_linkable(value: &str) -> bool {
     let value = value.trim();
     let schemes = [
         "trace://", "test://", "rfc://", "gate://", "run://", "ci://",
@@ -756,7 +758,7 @@ fn proof_ref_machine_linkable(value: &str) -> bool {
     schemes.iter().any(|scheme| value.starts_with(scheme))
 }
 
-fn unsafe_owner_id_valid(function_name: &str, owner: &str, owner_id: &str) -> bool {
+pub(super) fn unsafe_owner_id_valid(function_name: &str, owner: &str, owner_id: &str) -> bool {
     let function_name = function_name.trim();
     let owner = owner.trim();
     let owner_id = owner_id.trim();
@@ -766,7 +768,7 @@ fn unsafe_owner_id_valid(function_name: &str, owner: &str, owner_id: &str) -> bo
     owner_id == format!("owner::{function_name}::{owner}")
 }
 
-fn proof_ref_valid(value: &str) -> bool {
+pub(super) fn proof_ref_valid(value: &str) -> bool {
     let value = value.trim();
     if !proof_ref_machine_linkable(value) {
         return false;
@@ -787,7 +789,7 @@ fn proof_ref_valid(value: &str) -> bool {
     std::path::Path::new(path_part).exists()
 }
 
-fn strict_unsafe_audit_for_projects(project_roots: &[PathBuf]) -> bool {
+pub(super) fn strict_unsafe_audit_for_projects(project_roots: &[PathBuf]) -> bool {
     project_roots.iter().any(|root| {
         let manifest_path = root.join("fozzy.toml");
         let Ok(text) = std::fs::read_to_string(&manifest_path) else {
@@ -801,7 +803,7 @@ fn strict_unsafe_audit_for_projects(project_roots: &[PathBuf]) -> bool {
     })
 }
 
-fn generated_unsafe_owner(function: &ast::Function) -> String {
+pub(super) fn generated_unsafe_owner(function: &ast::Function) -> String {
     function
         .params
         .first()
@@ -809,7 +811,7 @@ fn generated_unsafe_owner(function: &ast::Function) -> String {
         .unwrap_or_else(|| "scope_root".to_string())
 }
 
-fn generated_unsafe_contract(
+pub(super) fn generated_unsafe_contract(
     kind: &str,
     function_name: &str,
     owner: &str,
@@ -834,11 +836,11 @@ fn generated_unsafe_contract(
     (reason, invariant, owner.to_string(), scope, risk_class)
 }
 
-fn generated_unsafe_owner_id(function_name: &str, owner: &str) -> String {
+pub(super) fn generated_unsafe_owner_id(function_name: &str, owner: &str) -> String {
     format!("owner::{function_name}::{owner}")
 }
 
-fn unsafe_site_id(
+pub(super) fn unsafe_site_id(
     kind: &str,
     project_root: &Path,
     module_path: &Path,
@@ -863,7 +865,7 @@ fn unsafe_site_id(
     id
 }
 
-fn bind_proof_ref(project_root: &Path, site_id: &str, fallback: &str) -> String {
+pub(super) fn bind_proof_ref(project_root: &Path, site_id: &str, fallback: &str) -> String {
     let artifact_dir = project_root.join("artifacts");
     if let Ok(entries) = std::fs::read_dir(&artifact_dir) {
         let mut candidates = entries
@@ -886,7 +888,7 @@ fn bind_proof_ref(project_root: &Path, site_id: &str, fallback: &str) -> String 
     format!("{fallback}#site={site_id}")
 }
 
-fn collect_semantic_unsafe_entries(
+pub(super) fn collect_semantic_unsafe_entries(
     module: &ResolvedModuleSource,
     project_root: &Path,
 ) -> Vec<UnsafeEntry> {
@@ -991,7 +993,7 @@ fn collect_semantic_unsafe_entries(
     entries
 }
 
-fn find_function_decl_line(lines: &[&str], function: &ast::Function) -> Option<usize> {
+pub(super) fn find_function_decl_line(lines: &[&str], function: &ast::Function) -> Option<usize> {
     let name = function.name.as_str();
     lines
         .iter()
@@ -999,7 +1001,7 @@ fn find_function_decl_line(lines: &[&str], function: &ast::Function) -> Option<u
         .map(|idx| idx + 1)
 }
 
-fn function_decl_line_matches(line: &str, function: &ast::Function, name: &str) -> bool {
+pub(super) fn function_decl_line_matches(line: &str, function: &ast::Function, name: &str) -> bool {
     let line = strip_leading_attributes_inline(line);
     if function.is_extern && function.abi.as_deref() == Some("rpc") {
         return line.starts_with(&format!("rpc {name}("));
@@ -1027,7 +1029,7 @@ fn function_decl_line_matches(line: &str, function: &ast::Function, name: &str) 
     line.contains(&format!("fn {name}("))
 }
 
-fn strip_leading_attributes_inline(line: &str) -> &str {
+pub(super) fn strip_leading_attributes_inline(line: &str) -> &str {
     let mut cursor = line.trim_start();
     while let Some(rest) = cursor.strip_prefix("#[") {
         let Some(close) = rest.find(']') else {
@@ -1038,7 +1040,7 @@ fn strip_leading_attributes_inline(line: &str) -> &str {
     cursor
 }
 
-fn find_function_body_end_line(lines: &[&str], start_line: usize) -> usize {
+pub(super) fn find_function_body_end_line(lines: &[&str], start_line: usize) -> usize {
     if start_line == 0 || start_line > lines.len() {
         return start_line;
     }
@@ -1067,7 +1069,7 @@ fn find_function_body_end_line(lines: &[&str], start_line: usize) -> usize {
     lines.len()
 }
 
-fn find_line_in_function(
+pub(super) fn find_line_in_function(
     lines: &[&str],
     function_name: &str,
     matcher: impl Fn(&str) -> bool,
@@ -1097,7 +1099,7 @@ fn find_line_in_function(
         .map(|idx| start_line + idx)
 }
 
-fn collect_semantic_unsafe_entries_from_stmt(
+pub(super) fn collect_semantic_unsafe_entries_from_stmt(
     stmt: &ast::Stmt,
     module_path: &Path,
     project_root: &Path,
@@ -1354,7 +1356,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
     }
 }
 
-fn collect_semantic_unsafe_entries_from_expr(
+pub(super) fn collect_semantic_unsafe_entries_from_expr(
     expr: &ast::Expr,
     module_path: &Path,
     project_root: &Path,

@@ -1,4 +1,6 @@
-fn analyze_send_sync_contracts(functions: &[TypedFunction]) -> Vec<String> {
+use crate::*;
+
+pub(crate) fn analyze_send_sync_contracts(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     for function in functions {
         let requires_thread = function.is_async
@@ -28,7 +30,7 @@ fn analyze_send_sync_contracts(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn analyze_spawn_borrow_escapes(function: &TypedFunction) -> Vec<String> {
+pub(crate) fn analyze_spawn_borrow_escapes(function: &TypedFunction) -> Vec<String> {
     let mut violations = Vec::new();
     let mut closure_bindings = BTreeMap::<String, Expr>::new();
     let binding_types = function.local_types.clone();
@@ -45,7 +47,7 @@ fn analyze_spawn_borrow_escapes(function: &TypedFunction) -> Vec<String> {
     violations
 }
 
-fn analyze_spawn_borrow_escapes_stmt(
+pub(crate) fn analyze_spawn_borrow_escapes_stmt(
     stmt: &Stmt,
     function: &TypedFunction,
     binding_types: &BTreeMap<String, Type>,
@@ -220,7 +222,7 @@ fn analyze_spawn_borrow_escapes_stmt(
     }
 }
 
-fn analyze_spawn_borrow_escapes_expr(
+pub(crate) fn analyze_spawn_borrow_escapes_expr(
     expr: &Expr,
     function: &TypedFunction,
     binding_types: &BTreeMap<String, Type>,
@@ -523,7 +525,7 @@ fn analyze_spawn_borrow_escapes_expr(
     }
 }
 
-fn spawn_callable_arg_index(callee: &str) -> Option<usize> {
+pub(crate) fn spawn_callable_arg_index(callee: &str) -> Option<usize> {
     match callee {
         "spawn" | "thread.spawn" | "spawn_ctx" | "thread.spawn_ctx" => Some(0),
         "task.group_spawn" | "task.group_spawn_n" | "task.parallel_map" => Some(1),
@@ -531,7 +533,7 @@ fn spawn_callable_arg_index(callee: &str) -> Option<usize> {
     }
 }
 
-fn resolve_spawn_closure_expr<'a>(
+pub(crate) fn resolve_spawn_closure_expr<'a>(
     expr: &'a Expr,
     closure_bindings: &'a BTreeMap<String, Expr>,
 ) -> Option<&'a Expr> {
@@ -542,7 +544,7 @@ fn resolve_spawn_closure_expr<'a>(
     }
 }
 
-fn record_closure_binding_stmt(stmt: &Stmt, closure_bindings: &mut BTreeMap<String, Expr>) {
+pub(crate) fn record_closure_binding_stmt(stmt: &Stmt, closure_bindings: &mut BTreeMap<String, Expr>) {
     match stmt {
         Stmt::Let { name, value, .. } => record_closure_binding(name, value, closure_bindings),
         Stmt::Assign { target, value } => record_closure_binding(target, value, closure_bindings),
@@ -589,13 +591,13 @@ fn record_closure_binding_stmt(stmt: &Stmt, closure_bindings: &mut BTreeMap<Stri
     }
 }
 
-fn record_closure_binding(name: &str, value: &Expr, closure_bindings: &mut BTreeMap<String, Expr>) {
+pub(crate) fn record_closure_binding(name: &str, value: &Expr, closure_bindings: &mut BTreeMap<String, Expr>) {
     if let Expr::Closure { .. } = value {
         closure_bindings.insert(name.to_string(), value.clone());
     }
 }
 
-fn collect_spawn_closure_captures(
+pub(crate) fn collect_spawn_closure_captures(
     closure_expr: &Expr,
     binding_types: &BTreeMap<String, Type>,
 ) -> BTreeSet<String> {
@@ -611,7 +613,7 @@ fn collect_spawn_closure_captures(
     captures
 }
 
-fn collect_stmt_free_idents(
+pub(crate) fn collect_stmt_free_idents(
     stmt: &Stmt,
     scopes: &mut Vec<BTreeSet<String>>,
     binding_types: &BTreeMap<String, Type>,
@@ -731,7 +733,7 @@ fn collect_stmt_free_idents(
     }
 }
 
-fn collect_expr_free_idents(
+pub(crate) fn collect_expr_free_idents(
     expr: &Expr,
     scopes: &mut Vec<BTreeSet<String>>,
     binding_types: &BTreeMap<String, Type>,
@@ -884,11 +886,11 @@ fn collect_expr_free_idents(
     }
 }
 
-fn function_body_has_await(body: &[Stmt]) -> bool {
+pub(crate) fn function_body_has_await(body: &[Stmt]) -> bool {
     body.iter().any(stmt_has_await)
 }
 
-fn stmt_has_await(stmt: &Stmt) -> bool {
+pub(crate) fn stmt_has_await(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::LetPattern { value, .. }
@@ -937,7 +939,7 @@ fn stmt_has_await(stmt: &Stmt) -> bool {
     }
 }
 
-fn expr_has_await(expr: &Expr) -> bool {
+pub(crate) fn expr_has_await(expr: &Expr) -> bool {
     match expr {
         Expr::Await(_) => true,
         Expr::Discard(inner) => expr_has_await(inner),
@@ -1001,7 +1003,7 @@ fn expr_has_await(expr: &Expr) -> bool {
     }
 }
 
-fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
+pub(crate) fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
     let ownership_summaries = build_function_ownership_summaries(functions);
     let mut violations = Vec::new();
     for function in functions {
@@ -1083,7 +1085,7 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn is_linear_type(ty: &Type) -> bool {
+pub(crate) fn is_linear_type(ty: &Type) -> bool {
     match ty {
         Type::Ptr { .. } => true,
         Type::Named { name, .. } if is_linear_runtime_handle(name) => true,
@@ -1498,12 +1500,12 @@ pub fn runtime_handle_contract(name: &str) -> Option<&'static RuntimeHandleContr
         .find(|contract| contract.name == name)
 }
 
-fn is_linear_runtime_handle(name: &str) -> bool {
+pub(crate) fn is_linear_runtime_handle(name: &str) -> bool {
     matches!(name, "Linear" | "Resource" | "Ptr")
         || runtime_handle_contract(name).is_some_and(|contract| contract.linear)
 }
 
-fn binding_resource_type<'a>(
+pub(crate) fn binding_resource_type<'a>(
     function: &'a TypedFunction,
     name: &str,
     explicit_ty: Option<&'a Type>,
@@ -1518,7 +1520,7 @@ fn binding_resource_type<'a>(
         })
 }
 
-fn binding_creates_owned_resource(
+pub(crate) fn binding_creates_owned_resource(
     function: &TypedFunction,
     name: &str,
     ty: Option<&Type>,
@@ -1528,7 +1530,7 @@ fn binding_creates_owned_resource(
         || is_alloc_expr(value)
 }
 
-fn compute_function_capabilities(
+pub(crate) fn compute_function_capabilities(
     functions: &[TypedFunction],
 ) -> Vec<FunctionCapabilityRequirement> {
     let mut local = BTreeMap::<String, BTreeSet<String>>::new();
@@ -1586,7 +1588,7 @@ fn compute_function_capabilities(
         .collect()
 }
 
-fn collect_function_caps_and_calls(
+pub(crate) fn collect_function_caps_and_calls(
     function: &TypedFunction,
     caps: &mut BTreeSet<String>,
     calls: &mut BTreeSet<String>,
@@ -1660,7 +1662,7 @@ fn collect_function_caps_and_calls(
     }
 }
 
-fn infer_default_pure_functions(
+pub(crate) fn infer_default_pure_functions(
     functions: &mut [TypedFunction],
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
@@ -1708,7 +1710,7 @@ fn infer_default_pure_functions(
     }
 }
 
-fn stmt_is_default_pure_candidate(
+pub(crate) fn stmt_is_default_pure_candidate(
     stmt: &Stmt,
     function_name: &str,
     function_map: &BTreeMap<&str, &TypedFunction>,
@@ -1779,7 +1781,7 @@ fn stmt_is_default_pure_candidate(
     }
 }
 
-fn expr_is_default_pure_candidate(
+pub(crate) fn expr_is_default_pure_candidate(
     expr: &Expr,
     function_name: &str,
     function_map: &BTreeMap<&str, &TypedFunction>,
@@ -1896,7 +1898,7 @@ fn expr_is_default_pure_candidate(
     }
 }
 
-fn analyze_execution_spaces(functions: &[TypedFunction]) -> Vec<String> {
+pub(crate) fn analyze_execution_spaces(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let function_map = functions
         .iter()
@@ -1913,7 +1915,7 @@ fn analyze_execution_spaces(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
-fn validate_execution_space_function_shape(function: &TypedFunction, violations: &mut Vec<String>) {
+pub(crate) fn validate_execution_space_function_shape(function: &TypedFunction, violations: &mut Vec<String>) {
     let execution = function.execution_space;
     if execution != ast::ExecutionSpace::Host && function.is_async {
         violations.push(format!(
@@ -1937,7 +1939,7 @@ fn validate_execution_space_function_shape(function: &TypedFunction, violations:
     }
 }
 
-fn analyze_execution_space_stmt(
+pub(crate) fn analyze_execution_space_stmt(
     function: &TypedFunction,
     stmt: &Stmt,
     function_map: &BTreeMap<&str, &TypedFunction>,
@@ -2017,7 +2019,7 @@ fn analyze_execution_space_stmt(
     }
 }
 
-fn analyze_execution_space_expr(
+pub(crate) fn analyze_execution_space_expr(
     function: &TypedFunction,
     expr: &Expr,
     function_map: &BTreeMap<&str, &TypedFunction>,
@@ -2150,7 +2152,7 @@ fn analyze_execution_space_expr(
     }
 }
 
-fn validate_execution_space_call(
+pub(crate) fn validate_execution_space_call(
     function: &TypedFunction,
     callee: &str,
     function_map: &BTreeMap<&str, &TypedFunction>,
@@ -2233,7 +2235,7 @@ fn validate_execution_space_call(
     }
 }
 
-fn execution_space_allows_intrinsic_call(
+pub(crate) fn execution_space_allows_intrinsic_call(
     execution_space: ast::ExecutionSpace,
     callee: &str,
 ) -> bool {
@@ -2246,7 +2248,7 @@ fn execution_space_allows_intrinsic_call(
     }
 }
 
-fn is_gpu_device_intrinsic(callee: &str) -> bool {
+pub(crate) fn is_gpu_device_intrinsic(callee: &str) -> bool {
     matches!(
         callee,
         "gpu.global_id_x"
@@ -2275,7 +2277,7 @@ fn is_gpu_device_intrinsic(callee: &str) -> bool {
     )
 }
 
-fn callee_looks_host_only(callee: &str) -> bool {
+pub(crate) fn callee_looks_host_only(callee: &str) -> bool {
     callee.starts_with("fs.")
         || callee.starts_with("http.")
         || callee.starts_with("proc.")
@@ -2292,7 +2294,7 @@ fn callee_looks_host_only(callee: &str) -> bool {
         || (callee.starts_with("gpu.") && !is_gpu_device_intrinsic(callee))
 }
 
-fn analyze_device_safe_types(
+pub(crate) fn analyze_device_safe_types(
     functions: &[TypedFunction],
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
@@ -2362,7 +2364,7 @@ fn analyze_device_safe_types(
     violations
 }
 
-fn is_pure_safe_type(
+pub(crate) fn is_pure_safe_type(
     ty: &Type,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
@@ -2373,7 +2375,7 @@ fn is_pure_safe_type(
         || matches!(ty, Type::Named { name, .. } if is_named_device_aggregate(name, struct_defs, enum_defs, true))
 }
 
-fn is_device_safe_type(
+pub(crate) fn is_device_safe_type(
     ty: &Type,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
@@ -2392,7 +2394,7 @@ fn is_device_safe_type(
     }
 }
 
-fn is_named_device_aggregate(
+pub(crate) fn is_named_device_aggregate(
     name: &str,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
@@ -2427,7 +2429,7 @@ fn is_named_device_aggregate(
     false
 }
 
-fn is_device_scalar_type(ty: &Type) -> bool {
+pub(crate) fn is_device_scalar_type(ty: &Type) -> bool {
     matches!(
         ty,
         Type::Void

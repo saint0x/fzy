@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn non_entry_infinite_loop_function_fixture_stays_non_regressing() {
     let project_name = format!(
@@ -775,4 +777,3 @@ fn verify_accepts_native_control_flow_pattern_binding_sources() {
 
     let _ = std::fs::remove_file(path);
 }
-

@@ -1,16 +1,18 @@
-fn render(format: Format, message: &str) -> String {
+use super::*;
+
+pub(super) fn render(format: Format, message: &str) -> String {
     cli_output::format_message(format, message)
 }
 
-fn render_text_fields(fields: &[(&str, String)]) -> String {
+pub(super) fn render_text_fields(fields: &[(&str, String)]) -> String {
     cli_output::format_fields(fields)
 }
 
-fn render_json(value: serde_json::Value) -> String {
+pub(super) fn render_json(value: serde_json::Value) -> String {
     cli_output::format_json_value(&value)
 }
 
-fn policy_summary_text(
+pub(super) fn policy_summary_text(
     profile: &str,
     unsafe_enforcement: Option<&str>,
     backend: Option<&str>,
@@ -24,7 +26,7 @@ fn policy_summary_text(
     )
 }
 
-fn doctor_checks_summary_text(checks: &[DoctorCheck]) -> String {
+pub(super) fn doctor_checks_summary_text(checks: &[DoctorCheck]) -> String {
     checks
         .iter()
         .map(|check| format!("- {}:{}:{}", check.name, check.status, check.detail))
@@ -32,7 +34,7 @@ fn doctor_checks_summary_text(checks: &[DoctorCheck]) -> String {
         .join("\n")
 }
 
-fn append_unsafe_docs_field(
+pub(super) fn append_unsafe_docs_field(
     rendered: String,
     format: Format,
     unsafe_docs: Option<PathBuf>,
@@ -57,7 +59,7 @@ fn append_unsafe_docs_field(
     }
 }
 
-fn render_artifact(
+pub(super) fn render_artifact(
     format: Format,
     artifact: BuildArtifact,
     threads: Option<u16>,
@@ -214,7 +216,7 @@ fn render_artifact(
     }
 }
 
-fn render_library_artifact(
+pub(super) fn render_library_artifact(
     format: Format,
     artifact: LibraryArtifact,
     threads: Option<u16>,
@@ -343,7 +345,7 @@ fn render_library_artifact(
     }
 }
 
-fn render_output(format: Format, output: Output) -> String {
+pub(super) fn render_output(format: Format, output: Output) -> String {
     let errors = output
         .diagnostic_details
         .iter()
@@ -434,7 +436,7 @@ fn render_output(format: Format, output: Output) -> String {
     }
 }
 
-fn render_run_compile_abort(format: Format, artifact: &BuildArtifact) -> String {
+pub(super) fn render_run_compile_abort(format: Format, artifact: &BuildArtifact) -> String {
     match format {
         Format::Text => {
             let mut rendered =
@@ -463,7 +465,7 @@ fn render_run_compile_abort(format: Format, artifact: &BuildArtifact) -> String 
     }
 }
 
-fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
+pub(super) fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
     if items.is_empty() {
         return String::new();
     }
@@ -557,13 +559,13 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
     out.trim_end().to_string()
 }
 
-fn diagnostic_repro_token(diagnostic: &diagnostics::Diagnostic) -> String {
+pub(super) fn diagnostic_repro_token(diagnostic: &diagnostics::Diagnostic) -> String {
     let code = diagnostic.code.as_deref().unwrap_or("NO-CODE");
     let path = diagnostic.path.as_deref().unwrap_or("<path>");
     format!("schema=v1;code={code};profile=verify;backend=compiler;seed=1;path={path}")
 }
 
-fn diagnostic_repro_command(diagnostic: &diagnostics::Diagnostic) -> String {
+pub(super) fn diagnostic_repro_command(diagnostic: &diagnostics::Diagnostic) -> String {
     if let Some(path) = &diagnostic.path {
         format!(
             "fz check {} --json && fz verify {} --json",
@@ -575,7 +577,7 @@ fn diagnostic_repro_command(diagnostic: &diagnostics::Diagnostic) -> String {
     }
 }
 
-fn shell_escape(input: &str) -> String {
+pub(super) fn shell_escape(input: &str) -> String {
     if input
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
@@ -585,7 +587,7 @@ fn shell_escape(input: &str) -> String {
     format!("'{}'", input.replace('\'', "'\"'\"'"))
 }
 
-fn render_code_frame(
+pub(super) fn render_code_frame(
     path: &str,
     span: &diagnostics::Span,
     cache: &mut BTreeMap<String, Vec<String>>,
