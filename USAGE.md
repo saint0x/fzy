@@ -524,6 +524,7 @@ Project layout:
 
 - all tests under `src/tests/*`
 - `src/tests/mod.fzy` is the entry for test modules
+- direct `fz check src/tests/mod.fzy` and `fz check src/tests/<leaf>.fzy` resolve through the owning package, so sibling modules and declared dependencies load with normal package semantics
 
 ## 8.4 Convention gate
 
@@ -540,9 +541,10 @@ fz dx-check [project] --strict
 1. Edit source.
 2. `fz fmt <paths>`
 3. `fz check [project] --json`
-4. `fz dx-check [project] --strict --json`
-5. `fz test [project] --det --seed <seed> --json`
-6. For high confidence: record + replay a trace with `fz`.
+4. for focused compiler validation, `fz check src/<module>.fzy --json` uses the owning package root instead of isolated-file semantics
+5. `fz dx-check [project] --strict --json`
+6. `fz test [project] --det --seed <seed> --json`
+7. For high confidence: record + replay a trace with `fz`.
 
 ## 9.2 Investigate flaky or nondeterministic failures
 

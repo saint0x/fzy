@@ -55,10 +55,6 @@ fn framework_report_json() -> str {
     return json.object(payload)
 }
 
-fn sample_framework_json() -> str {
-    return "{\"framework\":\"fzbounds\",\"runtime\":{\"mode\":\"strict\",\"max_memory_bytes\":67108864,\"budget\":{\"max_queue_entries\":100000}},\"fzweb\":{\"framework\":\"fzweb\",\"mode\":\"strict\",\"request_budget_bytes\":65536,\"header_capacity\":64,\"body_capacity_bytes\":65536},\"auth_profile\":{\"framework\":\"fzauth\",\"session_capacity\":100000}}"
-}
-
 fn alignment_json_from(local_json: str, framework_json: str) -> str {
     let local = json.parse(local_json)
     let framework = json.parse(framework_json)
@@ -119,7 +115,13 @@ fn framework_json() -> str {
 
 fn gate_json() -> str {
     let local = model.local_contract_json(model.config())
-    let alignment = alignment_json_from(local, sample_framework_json())
+    let framework = framework_report_json()
+    let framework_payload = json.parse(framework)
+    let alignment = if json.get_str(framework_payload, "status") == "ok" {
+        alignment_json_from(local, json.get_str(framework_payload, "inspect_raw"))
+    } else {
+        "{\"status\":\"framework_unavailable\"}"
+    }
     let payload = map.new()
     discard map.set(payload, "status", json.str(json.get_str(json.parse(alignment), "status")))
     discard map.set(payload, "local_contract", local)

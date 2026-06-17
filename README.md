@@ -107,6 +107,8 @@ fn main() -> i32 {
 
 For broader language coverage, use `CODE.md`, `examples/`, and the browser-friendly [FZL showcase](./fzl-showcase.html).
 
+Framework packages follow normal package rules: declare them in `fozzy.toml` under `[deps]`, then import them in source with `use fzbounds;`, `use fzweb;`, and similar package names. Direct source checks such as `fz check src/services/mod.fzy --json` now validate through the owning package context, so dependency imports and sibling modules behave the same way they do in full-project checks.
+
 ## What fzy Contains
 
 - `fz`: compiler CLI for build, run, test, verify, docs, IR, RPC, headers, ABI checks, and more

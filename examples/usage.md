@@ -6,12 +6,14 @@ This file describes how to run first-party examples under production policy.
 
 - Use deterministic checks first.
 - Use host-backed runs for runtime boundary confidence.
+- Direct `fz check path/to/src/module.fzy --json` now resolves through the owning package root, so submodule checks keep normal dependency and sibling-module behavior.
 
 ## Canonical Commands
 
 ```bash
 # check/build/test one example project
 fz check examples/fullstack --json
+fz check examples/bounds_service/src/services/mod.fzy --json
 fz build examples/fullstack --release --json
 fz test examples/fullstack --strict-verify --seed 4242 --json
 fz run examples/fullstack --strict-verify --seed 4242 --json

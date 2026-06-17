@@ -2,6 +2,16 @@
 
 `fzbounds` is the core-team bounded runtime framework package for FozzyLang.
 
+Consume it like a normal package dependency:
+
+- declare `fzbounds = { path = "../../frameworklib/fzbounds" }` under `[deps]`
+- import it in source with `use fzbounds;`
+- call the public surface such as `fzbounds.inspect_json()` or `fzbounds.doctor_json()`
+
+Compiler DX note:
+
+- direct checks such as `fz check examples/bounds_service/src/services/mod.fzy --json` and `fz check frameworklib/fzbounds/src/tests/mod.fzy --json` resolve through the owning package root, so framework imports, sibling modules, and test modules validate with the same package semantics as full-project checks
+
 ## Design
 
 - Explicit service budgets for memory, regions, queues, maps, lists, channels, strings, sockets, and tasks.

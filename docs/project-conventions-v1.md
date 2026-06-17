@@ -32,6 +32,7 @@
 
 - All project tests belong under `src/tests/*`.
 - `src/tests/mod.fzy` serves as the test module entry.
+- Direct `fz check src/tests/mod.fzy` or `fz check src/tests/<leaf>.fzy` still validates through the owning package root, so test modules keep normal dependency/module resolution.
 
 ## Module Story
 

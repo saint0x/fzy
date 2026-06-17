@@ -22,7 +22,7 @@ House style across the suite:
 - `gpu_ascii_ripple`: custom Fzy-authored Metal ripple kernel with CPU SIMD aggregation and a TTY-aware ASCII renderer that loops live in terminal until interrupted, while still falling back to deterministic frame dumps for logs/CI.
 - `agent_runtime`: distilled from `/Users/deepsaint/Desktop/fzyagent` and focused on signed sessions, tool catalogs, audit trails, and parallel task planning.
 - `context_runtime`: distilled from `/Users/deepsaint/Desktop/superctx` and focused on scoped memory scoring, protocol assembly, context framing, and deterministic compaction.
-- `bounds_service`: production-shaped bounded service example that consumes `frameworklib/fzbounds` as a direct package dependency through compiler-backed library imports and dependency lock/vendor flow.
+- `bounds_service`: production-shaped bounded service example that consumes `frameworklib/fzbounds` as a direct package dependency through compiler-backed library imports, package-aware direct-file validation, and dependency lock/vendor flow.
 
 Recommended validation:
 
@@ -43,6 +43,7 @@ fz run examples/gpu_ascii_ripple --det --record artifacts/gpu_ascii_ripple.trace
 fz check examples/context_runtime --json
 fz test examples/context_runtime --det --strict-verify --json
 fz check examples/bounds_service --json
+fz check examples/bounds_service/src/services/mod.fzy --json
 fz test examples/bounds_service --det --strict-verify --json
 python3 scripts/verify_bounds_service_example.py
 ```
