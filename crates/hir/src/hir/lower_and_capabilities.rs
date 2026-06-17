@@ -199,6 +199,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     execution_space: function.execution_space,
                     abi: function.abi.clone(),
                     ffi_panic: function.ffi_panic.clone(),
+                    is_test: false,
                 });
             }
             ast::Item::Test(test) => {
@@ -219,6 +220,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     execution_space: ast::ExecutionSpace::Host,
                     abi: None,
                     ffi_panic: None,
+                    is_test: true,
                 });
             }
             ast::Item::Impl(item) => {
@@ -293,6 +295,7 @@ pub fn lower(module: &Module) -> TypedModule {
                         execution_space: method.execution_space,
                         abi: method.abi.clone(),
                         ffi_panic: method.ffi_panic.clone(),
+                        is_test: false,
                     });
                 }
             }
@@ -325,6 +328,7 @@ pub fn lower(module: &Module) -> TypedModule {
                 execution_space: pending.execution_space,
                 abi: pending.abi,
                 ffi_panic: pending.ffi_panic,
+                is_test: pending.is_test,
                 required_capabilities: Vec::new(),
             });
             continue;
@@ -384,6 +388,7 @@ pub fn lower(module: &Module) -> TypedModule {
             execution_space: pending.execution_space,
             abi: pending.abi,
             ffi_panic: pending.ffi_panic,
+            is_test: pending.is_test,
             required_capabilities: Vec::new(),
         });
     }
@@ -554,7 +559,10 @@ pub(crate) fn sanitize_test_name(name: &str) -> String {
     }
 }
 
-pub(crate) fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait>) -> Vec<String> {
+pub(crate) fn validate_trait_impls(
+    module: &Module,
+    trait_defs: &HashMap<String, ast::Trait>,
+) -> Vec<String> {
     let mut violations = Vec::new();
     let mut trait_impl_targets = HashMap::<String, Vec<Type>>::new();
     for item in &module.items {

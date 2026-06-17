@@ -141,6 +141,7 @@ fn extern_c_function(
         execution_space: ast::ExecutionSpace::Host,
         abi: Some("c".to_string()),
         ffi_panic: None,
+        is_test: false,
         required_capabilities: Vec::new(),
     }
 }
@@ -160,6 +161,7 @@ fn rpc_function(name: &str, params: Vec<ast::Param>, return_type: ast::Type) -> 
         execution_space: ast::ExecutionSpace::Host,
         abi: Some("rpc".to_string()),
         ffi_panic: None,
+        is_test: false,
         required_capabilities: Vec::new(),
     }
 }

@@ -18,6 +18,12 @@ pub(crate) fn qualify_expr(
             );
             if let Some(qualified) = module_aliases.get(base_callee) {
                 *callee = format!("{qualified}{qualified_suffix}");
+            } else if let Some((head, tail)) = base_callee.split_once('.') {
+                if let Some(qualified_head) = module_aliases.get(head) {
+                    *callee = format!("{qualified_head}.{tail}{qualified_suffix}");
+                } else if qualified_suffix != generic_suffix {
+                    *callee = format!("{base_callee}{qualified_suffix}");
+                }
             } else if local_functions.contains(base_callee) {
                 *callee = format!(
                     "{}{}",
@@ -43,13 +49,25 @@ pub(crate) fn qualify_expr(
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
-            qualify_expr(base, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                base,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::StructInit { name, fields } => {
             *name =
                 super::super::text::qualify_type_name(name, namespace, local_types, module_aliases);
             for (_, value) in fields {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::EnumInit {
@@ -65,21 +83,51 @@ pub(crate) fn qualify_expr(
                 module_aliases,
             );
             for value in payload {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             for (_, value) in named_payload {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Closure { body, .. } => {
-            qualify_expr(body, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                body,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Group(inner) | ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
-            qualify_expr(inner, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                inner,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Tuple(items) | ast::Expr::ArrayLiteral(items) => {
             for item in items {
-                qualify_expr(item, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    item,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::TryCatch {
@@ -181,7 +229,13 @@ pub(crate) fn qualify_expr(
             body,
         } => {
             if let Some(init) = init {
-                qualify_stmt(init, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    init,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             if let Some(condition) = condition {
                 qualify_expr(
@@ -193,7 +247,13 @@ pub(crate) fn qualify_expr(
                 );
             }
             if let Some(step) = step {
-                qualify_stmt(step, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    step,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             for stmt in body {
                 qualify_stmt(
@@ -236,28 +296,76 @@ pub(crate) fn qualify_expr(
         }
         ast::Expr::Break(value) | ast::Expr::Return(value) => {
             if let Some(value) = value {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Range { start, end, .. } => {
-            qualify_expr(start, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                start,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             qualify_expr(end, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::ObjectLiteral(fields) => {
             for (_, value) in fields {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Index { base, index } => {
-            qualify_expr(base, namespace, local_functions, local_types, module_aliases);
-            qualify_expr(index, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                base,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
+            qualify_expr(
+                index,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Unary { expr, .. } => {
-            qualify_expr(expr, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                expr,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Binary { left, right, .. } => {
-            qualify_expr(left, namespace, local_functions, local_types, module_aliases);
-            qualify_expr(right, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                left,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
+            qualify_expr(
+                right,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Ident(_)
         | ast::Expr::Int(_)

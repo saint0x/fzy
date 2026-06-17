@@ -1368,6 +1368,9 @@ pub(crate) fn build_call_graph(module: &Module) -> Vec<(String, String)> {
 pub(crate) fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
     let mut caps = BTreeSet::new();
     for function in functions {
+        if function.is_test {
+            continue;
+        }
         if function.is_async {
             caps.insert("thread".to_string());
         }
@@ -1785,7 +1788,9 @@ pub(crate) fn collect_effect_markers(
     )
 }
 
-pub(crate) fn collect_unsafe_contract_sites(functions: &[TypedFunction]) -> Vec<UnsafeContractSite> {
+pub(crate) fn collect_unsafe_contract_sites(
+    functions: &[TypedFunction],
+) -> Vec<UnsafeContractSite> {
     let unsafe_functions = functions
         .iter()
         .filter(|function| function.is_unsafe)
@@ -2725,4 +2730,3 @@ pub(crate) fn collect_entry_contracts(
     }
     (requires, ensures)
 }
-

@@ -25,7 +25,7 @@ pub(crate) fn validate_file_with_root_source(
     tier: ValidationTier,
 ) -> Result<Output> {
     let started = Instant::now();
-    let resolved = resolve_validation_source_path(path)?;
+    let resolved = resolve_validation_source_path(path, root_source_override.is_some())?;
     let module_name = resolved
         .source_path
         .file_stem()
@@ -195,8 +195,16 @@ pub(crate) fn source_file_contains_unsafe_marker(source_path: &Path) -> bool {
         .unwrap_or(true)
 }
 
-pub(crate) fn resolve_validation_source_path(input: &Path) -> Result<ResolvedSource> {
-    match resolve_source_path(input) {
+pub(crate) fn resolve_validation_source_path(
+    input: &Path,
+    preserve_direct_file_root: bool,
+) -> Result<ResolvedSource> {
+    let resolved = if preserve_direct_file_root {
+        resolve_source_path(input)
+    } else {
+        resolve_project_validation_source_path(input, false)
+    };
+    match resolved {
         Ok(resolved) => Ok(resolved),
         Err(err) if input.is_dir() => {
             let rendered = err.to_string();
@@ -210,7 +218,10 @@ pub(crate) fn resolve_validation_source_path(input: &Path) -> Result<ResolvedSou
     }
 }
 
-pub(crate) fn normalize_diagnostics_for_path(path: &Path, diagnostics: &mut [diagnostics::Diagnostic]) {
+pub(crate) fn normalize_diagnostics_for_path(
+    path: &Path,
+    diagnostics: &mut [diagnostics::Diagnostic],
+) {
     for diagnostic in diagnostics.iter_mut() {
         if diagnostic.path.is_none() {
             diagnostic.path = Some(path.display().to_string());
@@ -322,4 +333,3 @@ pub(crate) fn selected_emit_ir_backends(backend: Option<&str>) -> Result<Vec<Bac
         Some(other) => bail!("invalid emit-ir backend `{other}`; expected `llvm` or `cranelift`"),
     }
 }
-

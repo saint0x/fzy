@@ -544,7 +544,10 @@ pub(crate) fn resolve_spawn_closure_expr<'a>(
     }
 }
 
-pub(crate) fn record_closure_binding_stmt(stmt: &Stmt, closure_bindings: &mut BTreeMap<String, Expr>) {
+pub(crate) fn record_closure_binding_stmt(
+    stmt: &Stmt,
+    closure_bindings: &mut BTreeMap<String, Expr>,
+) {
     match stmt {
         Stmt::Let { name, value, .. } => record_closure_binding(name, value, closure_bindings),
         Stmt::Assign { target, value } => record_closure_binding(target, value, closure_bindings),
@@ -591,7 +594,11 @@ pub(crate) fn record_closure_binding_stmt(stmt: &Stmt, closure_bindings: &mut BT
     }
 }
 
-pub(crate) fn record_closure_binding(name: &str, value: &Expr, closure_bindings: &mut BTreeMap<String, Expr>) {
+pub(crate) fn record_closure_binding(
+    name: &str,
+    value: &Expr,
+    closure_bindings: &mut BTreeMap<String, Expr>,
+) {
     if let Expr::Closure { .. } = value {
         closure_bindings.insert(name.to_string(), value.clone());
     }
@@ -1537,6 +1544,11 @@ pub(crate) fn compute_function_capabilities(
     let mut calls = BTreeMap::<String, BTreeSet<String>>::new();
 
     for function in functions {
+        if function.is_test {
+            local.insert(function.name.clone(), BTreeSet::new());
+            calls.insert(function.name.clone(), BTreeSet::new());
+            continue;
+        }
         let mut local_caps = BTreeSet::<String>::new();
         let mut local_calls = BTreeSet::<String>::new();
         collect_function_caps_and_calls(function, &mut local_caps, &mut local_calls);
@@ -1915,7 +1927,10 @@ pub(crate) fn analyze_execution_spaces(functions: &[TypedFunction]) -> Vec<Strin
     violations
 }
 
-pub(crate) fn validate_execution_space_function_shape(function: &TypedFunction, violations: &mut Vec<String>) {
+pub(crate) fn validate_execution_space_function_shape(
+    function: &TypedFunction,
+    violations: &mut Vec<String>,
+) {
     let execution = function.execution_space;
     if execution != ast::ExecutionSpace::Host && function.is_async {
         violations.push(format!(
@@ -2448,4 +2463,3 @@ pub(crate) fn is_device_scalar_type(ty: &Type) -> bool {
             | Type::Float { bits: 32 }
     )
 }
-

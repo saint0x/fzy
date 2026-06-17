@@ -1,5 +1,5 @@
-use super::*;
 use super::super::llvm::lower_llvm_ir;
+use super::*;
 
 #[test]
 fn llvm_backend_executes_handle_backed_local_destructuring() {
@@ -250,6 +250,58 @@ fn compile_project_resolves_pub_use_reexport_calls_across_module_boundary() {
     assert_eq!(exit, 11);
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn direct_file_check_uses_owning_project_root_for_dependency_alias_calls() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let dep_root = std::env::temp_dir().join(format!("fozzylang-direct-file-dep-{suffix}"));
+    let app_root = std::env::temp_dir().join(format!("fozzylang-direct-file-app-{suffix}"));
+    std::fs::create_dir_all(dep_root.join("src")).expect("dep src should be created");
+    std::fs::create_dir_all(app_root.join("src/feature")).expect("app src should be created");
+    std::fs::write(
+        dep_root.join("fozzy.toml"),
+        "[package]\nname=\"dep\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"dep\"\npath=\"src/lib.fzy\"\n",
+    )
+    .expect("dep manifest should be written");
+    std::fs::write(dep_root.join("src/lib.fzy"), "mod api;\n").expect("dep lib should be written");
+    std::fs::write(
+        dep_root.join("src/api.fzy"),
+        "pub fn answer() -> i32 {\n    return 7\n}\n",
+    )
+    .expect("dep api should be written");
+    std::fs::write(
+        app_root.join("fozzy.toml"),
+        format!(
+            "[package]\nname=\"app\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"app\"\npath=\"src/main.fzy\"\n\n[deps]\ndep={{path=\"{}\"}}\n",
+            dep_root.display()
+        ),
+    )
+    .expect("app manifest should be written");
+    std::fs::write(
+        app_root.join("src/main.fzy"),
+        "mod feature;\nfn main() -> i32 {\n    return feature.run()\n}\n",
+    )
+    .expect("app main should be written");
+    std::fs::write(
+        app_root.join("src/feature/mod.fzy"),
+        "use dep;\npub fn run() -> i32 {\n    return dep.api.answer()\n}\n",
+    )
+    .expect("feature module should be written");
+
+    let output =
+        check_file(&app_root.join("src/feature/mod.fzy")).expect("direct file check should run");
+    assert_eq!(
+        output.diagnostics, 0,
+        "unexpected diagnostics: {:?}",
+        output.diagnostic_details
+    );
+
+    let _ = std::fs::remove_dir_all(dep_root);
+    let _ = std::fs::remove_dir_all(app_root);
 }
 
 #[test]

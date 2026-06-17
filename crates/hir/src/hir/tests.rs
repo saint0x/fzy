@@ -3694,12 +3694,8 @@ mod tests {
         let module = parser::parse(source, "gpu_rules").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(
-            typed
-                .type_error_details
-                .iter()
-                .any(|detail| detail.contains("host function `main` cannot call kernel function `launch` directly"))
-        );
+        assert!(typed.type_error_details.iter().any(|detail| detail
+            .contains("host function `main` cannot call kernel function `launch` directly")));
     }
 
     #[test]
@@ -4512,5 +4508,23 @@ mod tests {
         let module = parser::parse(source, "ptrwrite").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
+    }
+
+    #[test]
+    fn test_blocks_do_not_infer_production_thread_capabilities() {
+        let module =
+            parser::parse("test \"det\" {\n    checkpoint()\n}\n", "tests_only").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            typed.inferred_capabilities.is_empty(),
+            "unexpected inferred capabilities: {:?}",
+            typed.inferred_capabilities
+        );
+        assert!(typed
+            .function_capability_requirements
+            .iter()
+            .all(|requirement| {
+                requirement.function.starts_with("test::") && requirement.required.is_empty()
+            }));
     }
 }

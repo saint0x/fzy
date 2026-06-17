@@ -20,6 +20,7 @@ pub struct TypedFunction {
     pub execution_space: ast::ExecutionSpace,
     pub abi: Option<String>,
     pub ffi_panic: Option<String>,
+    pub is_test: bool,
     pub required_capabilities: Vec<String>,
 }
 
@@ -37,6 +38,7 @@ struct PendingTypedFunction {
     execution_space: ast::ExecutionSpace,
     abi: Option<String>,
     ffi_panic: Option<String>,
+    is_test: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -439,4 +441,3 @@ fn index_module_declarations(module: &Module) -> ModuleDeclIndex {
         });
     index
 }
-

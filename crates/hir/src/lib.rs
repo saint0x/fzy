@@ -20,6 +20,7 @@ pub struct TypedFunction {
     pub execution_space: ast::ExecutionSpace,
     pub abi: Option<String>,
     pub ffi_panic: Option<String>,
+    pub is_test: bool,
     pub required_capabilities: Vec<String>,
 }
 
@@ -37,6 +38,7 @@ struct PendingTypedFunction {
     execution_space: ast::ExecutionSpace,
     abi: Option<String>,
     ffi_panic: Option<String>,
+    is_test: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -440,29 +442,29 @@ fn index_module_declarations(module: &Module) -> ModuleDeclIndex {
     index
 }
 
-#[path = "hir/lower_and_capabilities.rs"]
-mod lower_and_capabilities;
+#[path = "hir/async_typecheck.rs"]
+mod async_typecheck;
 #[path = "hir/borrow_gpu_refs.rs"]
 mod borrow_gpu_refs;
+#[path = "hir/eval_and_patterns.rs"]
+mod eval_and_patterns;
+#[path = "hir/generics_intrinsics.rs"]
+mod generics_intrinsics;
 #[path = "hir/linearity_execution.rs"]
 mod linearity_execution;
+#[path = "hir/lower_and_capabilities.rs"]
+mod lower_and_capabilities;
 #[path = "hir/ownership.rs"]
 mod ownership;
 #[path = "hir/provenance_and_contracts.rs"]
 mod provenance_and_contracts;
-#[path = "hir/async_typecheck.rs"]
-mod async_typecheck;
-#[path = "hir/generics_intrinsics.rs"]
-mod generics_intrinsics;
-#[path = "hir/eval_and_patterns.rs"]
-mod eval_and_patterns;
 
-pub(crate) use self::lower_and_capabilities::*;
 pub(crate) use self::async_typecheck::*;
 pub(crate) use self::borrow_gpu_refs::*;
 pub(crate) use self::eval_and_patterns::*;
 pub(crate) use self::generics_intrinsics::*;
 pub(crate) use self::linearity_execution::*;
+pub(crate) use self::lower_and_capabilities::*;
 pub(crate) use self::ownership::*;
 pub(crate) use self::provenance_and_contracts::*;
 

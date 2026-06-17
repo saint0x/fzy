@@ -35,6 +35,45 @@ pub(super) fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
     resolve_source_path_with_target(input, false)
 }
 
+pub(super) fn resolve_project_validation_source_path(
+    input: &Path,
+    prefer_lib_target: bool,
+) -> Result<ResolvedSource> {
+    if !input.is_file() {
+        return resolve_source_path_with_target(input, prefer_lib_target);
+    }
+    if !is_supported_source_file(input) {
+        bail!(
+            "expected a `.fzy` source file or a project directory, got file: {}",
+            input.display()
+        );
+    }
+    let Some(project_root) = find_project_root_for_source(input) else {
+        return resolve_source_path_with_target(input, prefer_lib_target);
+    };
+    let canonical_input = input
+        .canonicalize()
+        .with_context(|| format!("failed resolving source file: {}", input.display()))?;
+    let (manifest, _, dependency_graph_hash) =
+        load_manifest(&project_root, LockfileMode::ValidateOrCreate)?;
+    if let Some(resolved) = resolve_project_target_for_source(
+        &project_root,
+        &manifest,
+        &canonical_input,
+        prefer_lib_target,
+    )? {
+        return Ok(ResolvedSource {
+            source_path: resolved.source_path,
+            project_root,
+            manifest_fingerprint: Some(manifest_fingerprint(&manifest)?),
+            manifest: Some(manifest),
+            dependency_graph_hash: Some(dependency_graph_hash),
+            artifact_stem: resolved.artifact_stem,
+        });
+    }
+    resolve_source_path_with_target(input, prefer_lib_target)
+}
+
 pub(super) fn resolve_source_path_with_target(
     input: &Path,
     prefer_lib_target: bool,
@@ -111,6 +150,86 @@ pub(super) fn resolve_source_path_with_target(
         dependency_graph_hash: Some(dependency_graph_hash),
         artifact_stem,
     })
+}
+
+struct ValidationTarget {
+    source_path: PathBuf,
+    artifact_stem: String,
+    root_dir: PathBuf,
+    rank: usize,
+}
+
+fn resolve_project_target_for_source(
+    project_root: &Path,
+    manifest: &manifest::Manifest,
+    source_path: &Path,
+    prefer_lib_target: bool,
+) -> Result<Option<ValidationTarget>> {
+    let mut candidates = Vec::<ValidationTarget>::new();
+    if let Some(lib) = manifest.target.lib.as_ref() {
+        let target_path = project_root
+            .join(&lib.path)
+            .canonicalize()
+            .with_context(|| {
+                format!(
+                    "failed resolving library target `{}` from {}",
+                    lib.path,
+                    project_root.display()
+                )
+            })?;
+        let root_dir = target_path
+            .parent()
+            .ok_or_else(|| {
+                anyhow!(
+                    "library target has no parent directory: {}",
+                    target_path.display()
+                )
+            })?
+            .to_path_buf();
+        candidates.push(ValidationTarget {
+            source_path: target_path,
+            artifact_stem: lib.name.clone(),
+            root_dir,
+            rank: usize::from(prefer_lib_target),
+        });
+    }
+    for (index, bin) in manifest.target.bin.iter().enumerate() {
+        let target_path = project_root
+            .join(&bin.path)
+            .canonicalize()
+            .with_context(|| {
+                format!(
+                    "failed resolving binary target `{}` from {}",
+                    bin.path,
+                    project_root.display()
+                )
+            })?;
+        let root_dir = target_path
+            .parent()
+            .ok_or_else(|| {
+                anyhow!(
+                    "binary target has no parent directory: {}",
+                    target_path.display()
+                )
+            })?
+            .to_path_buf();
+        candidates.push(ValidationTarget {
+            source_path: target_path,
+            artifact_stem: bin.name.clone(),
+            root_dir,
+            rank: manifest.target.bin.len().saturating_sub(index),
+        });
+    }
+    Ok(candidates
+        .into_iter()
+        .filter(|candidate| source_path.starts_with(&candidate.root_dir))
+        .max_by_key(|candidate| {
+            (
+                candidate.root_dir.components().count(),
+                candidate.rank,
+                usize::from(source_path == candidate.source_path),
+            )
+        }))
 }
 
 pub(super) fn load_manifest(
@@ -365,7 +484,11 @@ pub(super) fn collect_file_stamps(root: &Path) -> Result<Vec<ModuleStamp>> {
     Ok(files)
 }
 
-pub(super) fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<ModuleStamp>) -> Result<()> {
+pub(super) fn collect_files_recursive(
+    root: &Path,
+    current: &Path,
+    out: &mut Vec<ModuleStamp>,
+) -> Result<()> {
     let mut entries = std::fs::read_dir(current)
         .with_context(|| format!("failed reading dependency directory: {}", current.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()
