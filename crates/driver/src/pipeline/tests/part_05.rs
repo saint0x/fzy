@@ -336,7 +336,7 @@ fn verify_http_handle_return_does_not_report_resource_escape() {
     let path = std::env::temp_dir().join(file_name);
     std::fs::write(
         &path,
-        "use core.http;\nfn open_listener() -> HttpHandle {\n    return http.bind()\n}\nfn main() -> i32 {\n    let listener = open_listener()\n    close(listener)\n    return 0\n}\n",
+        "use core.http;\nfn open_listener() -> HttpHandle {\n    return http.bind(\"127.0.0.1:8787\")\n}\nfn main() -> i32 {\n    let listener = open_listener()\n    close(listener)\n    return 0\n}\n",
     )
     .expect("source should be written");
 
@@ -691,7 +691,7 @@ fn verify_websocket_close_wrapper_consumes_handle() {
     let path = std::env::temp_dir().join(file_name);
     std::fs::write(
         &path,
-        "use core.http;\nfn close_ws(ws: WebSocketHandle) -> i32 {\n    return http.websocket_close(ws, 1000, \"ok\")\n}\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard close_ws(ws)\n    return 0\n}\n",
+        "use core.http;\nfn close_ws(ws: WebSocketHandle) -> i32 {\n    return http.websocket_close(ws, 1000, \"ok\")\n}\nfn main() -> i32 {\n    let listener = http.bind(\"127.0.0.1:8787\")\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard close_ws(ws)\n    return 0\n}\n",
     )
     .expect("source should be written");
 

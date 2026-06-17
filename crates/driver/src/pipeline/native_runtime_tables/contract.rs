@@ -370,7 +370,11 @@ pub(crate) fn native_runtime_contract_for_callee(
             contract.arg_ownership = "borrow_handle";
             contract.return_ownership = "status";
         }
-        "http.bind" | "http.accept" | "http.connect" | "http.poll_next" => {
+        "http.bind" => {
+            contract.arg_ownership = "borrow_text";
+            contract.return_ownership = "owned_http_handle";
+        }
+        "http.accept" | "http.connect" | "http.poll_next" => {
             contract.arg_ownership = "none";
             contract.return_ownership = "owned_http_handle";
         }

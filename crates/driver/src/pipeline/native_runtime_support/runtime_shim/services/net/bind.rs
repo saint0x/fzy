@@ -1,40 +1,121 @@
 pub(super) fn section() -> &'static str {
     r#"
-int32_t fz_native_net_bind(void) {
-  (void)pthread_once(&fz_env_bootstrap_once, fz_env_bootstrap);
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    char msg[256];
-    snprintf(msg, sizeof(msg), "http.bind failed: socket() errno=%d (%s)", errno, strerror(errno));
-    fz_set_last_error(errno, 3, msg);
+static int fz_split_bind_addr(
+    const char* addr,
+    char* host,
+    size_t host_cap,
+    char* service,
+    size_t service_cap) {
+  if (addr == NULL || addr[0] == '\0') {
     return -1;
   }
-  (void)fz_mark_cloexec(fd);
-  int yes = 1;
-  (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-  struct sockaddr_in addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = fz_default_addr();
-  addr.sin_port = htons((uint16_t)fz_default_port());
-  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-    char host[64];
-    const char* rendered = inet_ntop(AF_INET, &addr.sin_addr, host, sizeof(host));
-    if (rendered == NULL) {
-      rendered = fz_default_host_name();
+  if (addr[0] == '[') {
+    const char* end = strchr(addr, ']');
+    if (end == NULL || end[1] != ':' || end == addr + 1) {
+      return -1;
     }
-    int bind_port = (int)ntohs(addr.sin_port);
+    size_t host_len = (size_t)(end - addr - 1);
+    const char* port = end + 2;
+    size_t port_len = strlen(port);
+    if (host_len + 1 > host_cap || port_len == 0 || port_len + 1 > service_cap) {
+      return -1;
+    }
+    memcpy(host, addr + 1, host_len);
+    host[host_len] = '\0';
+    memcpy(service, port, port_len + 1);
+    return 0;
+  }
+  const char* colon = strrchr(addr, ':');
+  if (colon == NULL || colon == addr || colon[1] == '\0' || strchr(colon + 1, ':') != NULL) {
+    return -1;
+  }
+  if (strchr(addr, ':') != colon) {
+    return -1;
+  }
+  size_t host_len = (size_t)(colon - addr);
+  size_t port_len = strlen(colon + 1);
+  if (host_len + 1 > host_cap || port_len + 1 > service_cap) {
+    return -1;
+  }
+  memcpy(host, addr, host_len);
+  host[host_len] = '\0';
+  memcpy(service, colon + 1, port_len + 1);
+  return 0;
+}
+
+int32_t fz_native_net_bind(int32_t addr_id) {
+  (void)pthread_once(&fz_env_bootstrap_once, fz_env_bootstrap);
+  const char* addr = fz_lookup_string(addr_id);
+  char host[NI_MAXHOST];
+  char service[NI_MAXSERV];
+  if (fz_split_bind_addr(addr, host, sizeof(host), service, sizeof(service)) != 0) {
     char msg[320];
     snprintf(
         msg,
         sizeof(msg),
-        "http.bind failed on %s:%d errno=%d (%s); set FZ_HOST/FZ_PORT or AGENT_HOST/AGENT_PORT",
-        rendered,
-        bind_port,
-        errno,
-        strerror(errno));
-    fz_set_last_error(errno, 3, msg);
+        "http.bind failed: invalid addr `%s` (expected host:port or [ipv6]:port)",
+        addr == NULL ? "" : addr);
+    fz_set_last_error(EINVAL, 3, msg);
+    return -1;
+  }
+
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_NUMERICSERV;
+
+  struct addrinfo* results = NULL;
+  int gai = getaddrinfo(host, service, &hints, &results);
+  if (gai != 0) {
+    char msg[320];
+    snprintf(
+        msg,
+        sizeof(msg),
+        "http.bind failed for %s:%s: %s",
+        host,
+        service,
+        gai_strerror(gai));
+    fz_set_last_error(EINVAL, 3, msg);
+    return -1;
+  }
+
+  int fd = -1;
+  int last_errno = EADDRNOTAVAIL;
+  for (struct addrinfo* it = results; it != NULL; it = it->ai_next) {
+    fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+    if (fd < 0) {
+      last_errno = errno;
+      continue;
+    }
+    (void)fz_mark_cloexec(fd);
+    int yes = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#ifdef IPV6_V6ONLY
+    if (it->ai_family == AF_INET6) {
+      (void)setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes));
+    }
+#endif
+    if (bind(fd, it->ai_addr, it->ai_addrlen) == 0) {
+      break;
+    }
+    last_errno = errno;
     close(fd);
+    fd = -1;
+  }
+  freeaddrinfo(results);
+
+  if (fd < 0) {
+    char msg[320];
+    snprintf(
+        msg,
+        sizeof(msg),
+        "http.bind failed on %s:%s errno=%d (%s)",
+        host,
+        service,
+        last_errno,
+        strerror(last_errno));
+    fz_set_last_error(last_errno, 3, msg);
     return -1;
   }
   pthread_mutex_lock(&fz_listener_lock);
@@ -81,7 +162,7 @@ int32_t fz_native_net_accept(void) {
     fz_set_last_error(EINVAL, 3, "http.accept failed: listener not initialized");
     return -1;
   }
-  struct sockaddr_in peer;
+  struct sockaddr_storage peer;
   socklen_t peer_len = sizeof(peer);
   int conn_fd = accept(listener, (struct sockaddr*)&peer, &peer_len);
   if (conn_fd < 0) {
@@ -99,17 +180,24 @@ int32_t fz_native_net_accept(void) {
     return -1;
   }
   (void)fz_mark_cloexec(conn_fd);
-  char peer_addr[64];
-  const char* rendered = inet_ntop(AF_INET, &peer.sin_addr, peer_addr, sizeof(peer_addr));
-  if (rendered == NULL) {
-    rendered = "";
+  char peer_addr[NI_MAXHOST];
+  if (getnameinfo(
+          (struct sockaddr*)&peer,
+          peer_len,
+          peer_addr,
+          sizeof(peer_addr),
+          NULL,
+          0,
+          NI_NUMERICHOST)
+      != 0) {
+    peer_addr[0] = '\0';
   }
   pthread_mutex_lock(&fz_conn_lock);
   fz_conn_state* state = fz_conn_state_for(conn_fd, 1);
   if (state != NULL) {
     fz_conn_state_reset_request_body(state);
     fz_conn_state_reset_response_headers(state);
-    state->remote_addr_id = fz_intern_slice(rendered, strlen(rendered));
+    state->remote_addr_id = fz_intern_slice(peer_addr, strlen(peer_addr));
     state->request_id = 0;
     state->header_count = 0;
     state->query_count = 0;

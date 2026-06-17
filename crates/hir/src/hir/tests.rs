@@ -253,7 +253,7 @@ mod tests {
         let source = r#"
             use core.http;
             fn main() -> i32 {
-                let l = http.bind();
+                let l = http.bind("127.0.0.1:8787");
                 http.listen(l);
                 let c = http.accept();
                 http.read(c);
@@ -2086,7 +2086,7 @@ mod tests {
         let source = r#"
             use core.http;
             fn open_listener() -> HttpHandle {
-                return http.bind();
+                return http.bind("127.0.0.1:8787");
             }
             fn main() -> i32 {
                 let listener = open_listener();
@@ -2398,7 +2398,7 @@ mod tests {
             }
 
             fn main() -> i32 {
-                let listener = http.bind();
+                let listener = http.bind("127.0.0.1:8787");
                 defer close(listener);
                 let conn = http.accept();
                 let ws = http.websocket_accept(conn);

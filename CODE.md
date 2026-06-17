@@ -646,7 +646,7 @@ cat > /tmp/code_http_namespace.fzy <<'FZY'
 use core.http;
 
 fn main() -> i32 {
-    let listener = http.bind()
+    let listener = http.bind("127.0.0.1:8787")
     if http.listen(listener) != 0 {
         return 1
     }

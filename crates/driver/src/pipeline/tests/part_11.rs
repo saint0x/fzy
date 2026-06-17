@@ -791,11 +791,11 @@ fn async_c_exports_use_sanitized_link_symbols_not_qualified_module_paths() {
 }
 
 #[test]
-fn native_runtime_shim_uses_documented_bind_defaults_and_visibility() {
+fn native_runtime_shim_uses_explicit_bind_addr_and_numeric_listener_logging() {
     let shim = render_native_runtime_shim(&[], &[], &[], &[]);
-    assert!(shim.contains("int port = 8787;"));
-    assert!(shim.contains("[fz-runtime] listen active addr=%s port=%d"));
-    assert!(shim.contains("host_source=%s port_source=%s"));
+    assert!(shim.contains("invalid addr `%s` (expected host:port or [ipv6]:port)"));
+    assert!(shim.contains("getaddrinfo(host, service, &hints, &results)"));
+    assert!(shim.contains("[fz-runtime] listen active addr=%s port=%s"));
 }
 
 #[test]

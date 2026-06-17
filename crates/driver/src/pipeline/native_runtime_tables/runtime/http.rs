@@ -4,7 +4,7 @@ pub(crate) const IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "http.bind",
         symbol: "fz_native_net_bind",
-        arity: 0,
+        arity: 1,
     },
     NativeRuntimeImport {
         callee: "http.listen",

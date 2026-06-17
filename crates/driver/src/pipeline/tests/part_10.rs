@@ -149,7 +149,7 @@ fn compile_project_uses_capabilities_from_declared_modules() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "mod infra;\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    http.listen(listener)\n    return 0\n}\n",
+        "mod infra;\nfn main() -> i32 {\n    let listener = http.bind(\"127.0.0.1:8787\")\n    defer close(listener)\n    http.listen(listener)\n    return 0\n}\n",
     )
     .expect("main source should be written");
     std::fs::write(root.join("src/infra.fzy"), "use core.http;\n")
@@ -612,7 +612,7 @@ fn profile_checks_can_be_disabled() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "use core.http;\nfn main() -> i32 {\n    let listener = http.bind()\n    return listener\n}\n",
+        "use core.http;\nfn main() -> i32 {\n    let listener = http.bind(\"127.0.0.1:8787\")\n    return listener\n}\n",
     )
     .expect("source should be written");
 

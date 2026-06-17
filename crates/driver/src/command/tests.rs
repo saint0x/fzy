@@ -3141,7 +3141,7 @@ mod tests {
         std::fs::write(
             &source,
             format!(
-                "use core.http;\nuse core.proc;\nuse core.thread;\n\nfn probe_worker() -> i32 {{\n    return 7\n}}\n\nfn left_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn right_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn write_response(conn: HttpHandle) -> i32 {{\n    let probe = spawn(probe_worker)\n    let left = spawn(left_worker)\n    let right = spawn(right_worker)\n    let probe_result = join(probe)\n    let left_result = join(left)\n    let right_result = join(right)\n    if probe_result == 7 && left_result == 0 && right_result == 0 {{\n        let payload = map.new()\n        discard map.set(payload, \"probe_result\", json.str(\"7\"))\n        discard map.set(payload, \"left_result\", json.str(\"0\"))\n        discard map.set(payload, \"right_result\", json.str(\"0\"))\n        http.write_json(conn, 200, json.object(payload))\n        return 0\n    }}\n    let err = map.new()\n    discard map.set(err, \"probe_result\", json.str(\"bad\"))\n    discard map.set(err, \"left_result\", json.str(\"bad\"))\n    discard map.set(err, \"right_result\", json.str(\"bad\"))\n    http.write_json(conn, 500, json.object(err))\n    return 13\n}}\n\nfn main() -> i32 {{\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    http.read(conn)\n    let method = http.method(conn)\n    let path = http.path(conn)\n    if method == \"POST\" && path == \"/tools/parallel_bash/run\" {{\n        return write_response(conn)\n    }}\n    http.write_json(conn, 404, \"{{}}\")\n    return 0\n}}\n",
+                "use core.http;\nuse core.proc;\nuse core.thread;\n\nfn probe_worker() -> i32 {{\n    return 7\n}}\n\nfn left_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn right_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn write_response(conn: HttpHandle) -> i32 {{\n    let probe = spawn(probe_worker)\n    let left = spawn(left_worker)\n    let right = spawn(right_worker)\n    let probe_result = join(probe)\n    let left_result = join(left)\n    let right_result = join(right)\n    if probe_result == 7 && left_result == 0 && right_result == 0 {{\n        let payload = map.new()\n        discard map.set(payload, \"probe_result\", json.str(\"7\"))\n        discard map.set(payload, \"left_result\", json.str(\"0\"))\n        discard map.set(payload, \"right_result\", json.str(\"0\"))\n        http.write_json(conn, 200, json.object(payload))\n        return 0\n    }}\n    let err = map.new()\n    discard map.set(err, \"probe_result\", json.str(\"bad\"))\n    discard map.set(err, \"left_result\", json.str(\"bad\"))\n    discard map.set(err, \"right_result\", json.str(\"bad\"))\n    http.write_json(conn, 500, json.object(err))\n    return 13\n}}\n\nfn main() -> i32 {{\n    let listener = http.bind(\"127.0.0.1:{port}\")\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    http.read(conn)\n    let method = http.method(conn)\n    let path = http.path(conn)\n    if method == \"POST\" && path == \"/tools/parallel_bash/run\" {{\n        return write_response(conn)\n    }}\n    http.write_json(conn, 404, \"{{}}\")\n    return 0\n}}\n",
             ),
         )
         .expect("source should be written");
@@ -3167,8 +3167,6 @@ mod tests {
         });
 
         let mut child = std::process::Command::new(&binary)
-            .env("AGENT_HOST", "127.0.0.1")
-            .env("AGENT_PORT", port.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3243,7 +3241,9 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.poll_register(conn) != 0 {\n        discard http.close(conn)\n        return 23\n    }\n    discard http.poll_next()\n    let read_status = http.read(conn)\n    if read_status != 0 {\n        http.write(conn, 503, \"{\\\"error\\\":\\\"read_failed\\\"}\")\n        return 25\n    }\n    http.write(conn, 200, \"ok\")\n    return 0\n}\n",
+            &format!(
+                "use core.http;\n\nfn main() -> i32 {{\n    let listener = http.bind(\"127.0.0.1:{port}\")\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    if http.poll_register(conn) != 0 {{\n        discard http.close(conn)\n        return 23\n    }}\n    discard http.poll_next()\n    let read_status = http.read(conn)\n    if read_status != 0 {{\n        http.write(conn, 503, \"{{\\\"error\\\":\\\"read_failed\\\"}}\")\n        return 25\n    }}\n    http.write(conn, 200, \"ok\")\n    return 0\n}}\n"
+            ),
         )
         .expect("source should be written");
 
@@ -3259,8 +3259,6 @@ mod tests {
             .expect("build artifact should include output path");
 
         let mut child = std::process::Command::new(&binary)
-            .env("AGENT_HOST", "127.0.0.1")
-            .env("AGENT_PORT", port.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3325,7 +3323,9 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn write_echo(conn: HttpHandle, body: JsonHandle) -> i32 {\n    let message = json.get_str(body, \"message\")\n    let tag = json.get_str(body, \"tag\")\n    let meta = map.new()\n    discard map.set(meta, \"message\", json.str(message))\n    discard map.set(meta, \"tag\", json.str(tag))\n    discard map.set(meta, \"kind\", json.str(\"body_json\"))\n    let items = list.new()\n    discard list.push(items, json.str(message))\n    discard list.push(items, json.str(tag))\n    discard list.push(items, json.object(meta))\n    let payload = map.new()\n    discard map.set(payload, \"ok\", json.raw(\"true\"))\n    discard map.set(payload, \"message\", json.str(message))\n    discard map.set(payload, \"tag\", json.str(tag))\n    discard map.set(payload, \"echo\", json.object(meta))\n    discard map.set(payload, \"items\", json.array(items))\n    return http.write_json(conn, 200, json.object(payload))\n}\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let mut served = 0\n    while served < 12 {\n        let conn = http.accept()\n        http.read(conn)\n        let method = http.method(conn)\n        let path = http.path(conn)\n        if method == \"POST\" && path == \"/echo\" {\n            let body = http.body_json(conn)\n            discard write_echo(conn, body)\n        } else {\n            http.write_json(conn, 404, \"{}\")\n        }\n        served = served + 1\n    }\n    return 0\n}\n",
+            &format!(
+                "use core.http;\n\nfn write_echo(conn: HttpHandle, body: JsonHandle) -> i32 {{\n    let message = json.get_str(body, \"message\")\n    let tag = json.get_str(body, \"tag\")\n    let meta = map.new()\n    discard map.set(meta, \"message\", json.str(message))\n    discard map.set(meta, \"tag\", json.str(tag))\n    discard map.set(meta, \"kind\", json.str(\"body_json\"))\n    let items = list.new()\n    discard list.push(items, json.str(message))\n    discard list.push(items, json.str(tag))\n    discard list.push(items, json.object(meta))\n    let payload = map.new()\n    discard map.set(payload, \"ok\", json.raw(\"true\"))\n    discard map.set(payload, \"message\", json.str(message))\n    discard map.set(payload, \"tag\", json.str(tag))\n    discard map.set(payload, \"echo\", json.object(meta))\n    discard map.set(payload, \"items\", json.array(items))\n    return http.write_json(conn, 200, json.object(payload))\n}}\n\nfn main() -> i32 {{\n    let listener = http.bind(\"127.0.0.1:{port}\")\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let mut served = 0\n    while served < 12 {{\n        let conn = http.accept()\n        http.read(conn)\n        let method = http.method(conn)\n        let path = http.path(conn)\n        if method == \"POST\" && path == \"/echo\" {{\n            let body = http.body_json(conn)\n            discard write_echo(conn, body)\n        }} else {{\n            http.write_json(conn, 404, \"{{}}\")\n        }}\n        served = served + 1\n    }}\n    return 0\n}}\n"
+            ),
         )
         .expect("source should be written");
 
@@ -3341,8 +3341,6 @@ mod tests {
             .expect("build artifact should include output path");
 
         let mut child = std::process::Command::new(&binary)
-            .env("AGENT_HOST", "127.0.0.1")
-            .env("AGENT_PORT", port.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3433,7 +3431,9 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read(conn) != 0 {\n        discard http.close(conn)\n        return 23\n    }\n    let body = http.body(conn)\n    discard http.write_response(conn, 200, \"application/json; charset=utf-8\", body, 1)\n    if body == \"{\\\"ok\\\":true}\" {\n        return 0\n    }\n    return 25\n}\n",
+            &format!(
+                "use core.http;\n\nfn main() -> i32 {{\n    let listener = http.bind(\"127.0.0.1:{port}\")\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    if http.read(conn) != 0 {{\n        discard http.close(conn)\n        return 23\n    }}\n    let body = http.body(conn)\n    discard http.write_response(conn, 200, \"application/json; charset=utf-8\", body, 1)\n    if body == \"{{\\\"ok\\\":true}}\" {{\n        return 0\n    }}\n    return 25\n}}\n"
+            ),
         )
         .expect("source should be written");
 
@@ -3449,8 +3449,6 @@ mod tests {
             .expect("build artifact should include output path");
 
         let mut child = std::process::Command::new(&binary)
-            .env("AGENT_HOST", "127.0.0.1")
-            .env("AGENT_PORT", port.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3722,7 +3720,9 @@ fn main() -> i32 {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read(conn) != 0 {\n        discard http.close(conn)\n        return 23\n    }\n    discard http.response_header_set(conn, \"X-Test\", \"present\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"sid=abc; Path=/; HttpOnly\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"pref=dark; Path=/; Secure\")\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", \"ok\", 1)\n    return 0\n}\n",
+            &format!(
+                "use core.http;\n\nfn main() -> i32 {{\n    let listener = http.bind(\"127.0.0.1:{port}\")\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    if http.read(conn) != 0 {{\n        discard http.close(conn)\n        return 23\n    }}\n    discard http.response_header_set(conn, \"X-Test\", \"present\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"sid=abc; Path=/; HttpOnly\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"pref=dark; Path=/; Secure\")\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", \"ok\", 1)\n    return 0\n}}\n"
+            ),
         )
         .expect("source should be written");
 
@@ -3738,8 +3738,6 @@ fn main() -> i32 {
             .expect("build artifact should include output path");
 
         let mut child = std::process::Command::new(&binary)
-            .env("AGENT_HOST", "127.0.0.1")
-            .env("AGENT_PORT", port.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3812,7 +3810,9 @@ fn main() -> i32 {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read_headers(conn) != 0 {\n        discard http.close(conn)\n        return 23\n    }\n    let mut body = \"\"\n    while http.body_eof(conn) == 0 {\n        body = str.concat(body, http.body_read(conn, 4))\n    }\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", body, 1)\n    return 0\n}\n",
+            &format!(
+                "use core.http;\n\nfn main() -> i32 {{\n    let listener = http.bind(\"127.0.0.1:{port}\")\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    if http.read_headers(conn) != 0 {{\n        discard http.close(conn)\n        return 23\n    }}\n    let mut body = \"\"\n    while http.body_eof(conn) == 0 {{\n        body = str.concat(body, http.body_read(conn, 4))\n    }}\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", body, 1)\n    return 0\n}}\n"
+            ),
         )
         .expect("source should be written");
 
@@ -3828,8 +3828,6 @@ fn main() -> i32 {
             .expect("build artifact should include output path");
 
         let mut child = std::process::Command::new(&binary)
-            .env("AGENT_HOST", "127.0.0.1")
-            .env("AGENT_PORT", port.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3951,7 +3949,9 @@ fn main() -> i32 {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    defer close(conn)\n    if http.read_headers(conn) != 0 {\n        return 23\n    }\n    let ws = http.websocket_accept(conn)\n    let message = http.websocket_read(ws, 256)\n    let kind = http.websocket_kind(ws)\n    if kind != \"text\" || message != \"hello\" {\n        discard http.websocket_close(ws, 1002, \"protocol\")\n        return 25\n    }\n    discard http.websocket_write_text(ws, \"world\")\n    discard http.websocket_close(ws, 1000, \"bye\")\n    return 0\n}\n",
+            &format!(
+                "use core.http;\n\nfn main() -> i32 {{\n    let listener = http.bind(\"127.0.0.1:{port}\")\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    defer close(conn)\n    if http.read_headers(conn) != 0 {{\n        return 23\n    }}\n    let ws = http.websocket_accept(conn)\n    let message = http.websocket_read(ws, 256)\n    let kind = http.websocket_kind(ws)\n    if kind != \"text\" || message != \"hello\" {{\n        discard http.websocket_close(ws, 1002, \"protocol\")\n        return 25\n    }}\n    discard http.websocket_write_text(ws, \"world\")\n    discard http.websocket_close(ws, 1000, \"bye\")\n    return 0\n}}\n"
+            ),
         )
         .expect("source should be written");
 
@@ -3967,8 +3967,6 @@ fn main() -> i32 {
             .expect("build artifact should include output path");
 
         let mut child = std::process::Command::new(&binary)
-            .env("AGENT_HOST", "127.0.0.1")
-            .env("AGENT_PORT", port.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -7127,7 +7125,7 @@ fn main() -> i32 {
         assert!(match_unreachable.contains("unreachable"));
 
         let capability = run_check_text(
-            "fn main() -> i32 {\n    let listener = http.bind()\n    return listener\n}\n",
+            "fn main() -> i32 {\n    let listener = http.bind(\"127.0.0.1:8787\")\n    return listener\n}\n",
             "capability-violation",
         );
         assert!(capability.contains("missing required capability"));

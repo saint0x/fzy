@@ -17,6 +17,7 @@ use webcore;
 struct ServerConfig {
     service_name: str,
     service_version: str,
+    bind_addr: str,
     store_path: str,
     session_secret: str,
     timeout_ms: i32,
@@ -101,6 +102,7 @@ fn server_config() -> ServerConfig {
     return ServerConfig {
         service_name: text_env("FZWEB_SERVICE_NAME", "fzweb"),
         service_version: text_env("FZWEB_SERVICE_VERSION", "dev"),
+        bind_addr: text_env("FZWEB_BIND", "127.0.0.1:8787"),
         store_path: text_env("FZWEB_STORE_PATH", "fzweb.store.kv"),
         session_secret: text_env("FZWEB_SESSION_SECRET", "fzweb-dev-secret"),
         timeout_ms: i32_env("FZWEB_TIMEOUT_MS", 2500, 1, 30000),
@@ -592,7 +594,7 @@ fn run_live_server() -> i32 {
     let cfg = server_config()
     let web = default_app(cfg)
     let policy = policy_from_config(cfg)
-    let listener = http.bind()
+    let listener = http.bind(cfg.bind_addr)
     if http.listen(listener) != 0 {
         close(listener)
         return 11

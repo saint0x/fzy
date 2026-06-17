@@ -304,7 +304,6 @@ static int fz_websocket_read_frame(
 static void fz_dotenv_load(void);
 static void fz_env_bootstrap(void);
 static const char* fz_env_get_bootstrapped(const char* key);
-static int fz_has_env_value(const char* key);
 static void fz_log_bind_target(int listener_fd);
 static void fz_crypto_memzero(void* ptr, size_t len);
 static int fz_crypto_fill_random(void* out, size_t len);

@@ -253,7 +253,7 @@ fn compile_file_memory_report_tracks_runtime_handle_families() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "use core.http;\nuse core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn close_ws(ws: WebSocketHandle) -> i32 {\n    return http.websocket_close(ws, 1000, \"ok\")\n}\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard close_ws(ws)\n    let handle = spawn(worker)\n    discard join(handle)\n    return 0\n}\n",
+        "use core.http;\nuse core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn close_ws(ws: WebSocketHandle) -> i32 {\n    return http.websocket_close(ws, 1000, \"ok\")\n}\nfn main() -> i32 {\n    let listener = http.bind(\"127.0.0.1:8787\")\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard close_ws(ws)\n    let handle = spawn(worker)\n    discard join(handle)\n    return 0\n}\n",
     )
     .expect("source should be written");
 
@@ -306,7 +306,7 @@ fn compile_file_runtime_contracts_cover_runtime_handle_consumers() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "use core.http;\nuse core.proc;\nuse core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard http.websocket_close(ws, 1000, \"ok\")\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let proc_handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(proc_handle)\n    let handle = spawn(worker)\n    discard join(handle)\n    return 0\n}\n",
+        "use core.http;\nuse core.proc;\nuse core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let listener = http.bind(\"127.0.0.1:8787\")\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard http.websocket_close(ws, 1000, \"ok\")\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let proc_handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(proc_handle)\n    let handle = spawn(worker)\n    discard join(handle)\n    return 0\n}\n",
     )
     .expect("source should be written");
 

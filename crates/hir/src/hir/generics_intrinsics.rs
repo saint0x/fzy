@@ -1649,9 +1649,8 @@ pub(crate) fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "free" => (vec![ptr_u8], Type::Void),
         "mem.freeze" | "mem.unfreeze" => (vec![], Type::Void),
         "close" => (vec![http_handle.clone()], Type::Void),
-        "http.bind" | "http.accept" | "http.connect" | "http.poll_next" => {
-            (vec![], http_handle.clone())
-        }
+        "http.bind" => (vec![str_ty.clone()], http_handle.clone()),
+        "http.accept" | "http.connect" | "http.poll_next" => (vec![], http_handle.clone()),
         "http.listen" | "http.read" | "http.read_headers" | "http.close" | "http.poll_register" => {
             (vec![http_handle.clone()], i32.clone())
         }

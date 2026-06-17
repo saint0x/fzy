@@ -518,7 +518,7 @@ fn host_and_io_showcase() -> i32 {
     let env_key = text.upper_ascii(str.concat("tool_arg_", str.slice("message", 0, 7)));
     discard term.transcript_kv("env_key", env_key, 10);
 
-    let listener = http.bind();
+    let listener = http.bind("127.0.0.1:8787");
     defer close(listener);
     if listener >= 0 {
         http.listen(listener);

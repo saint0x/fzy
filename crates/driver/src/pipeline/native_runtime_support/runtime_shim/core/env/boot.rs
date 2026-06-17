@@ -102,83 +102,31 @@ static const char* fz_env_get_bootstrapped(const char* key) {
   return getenv(key);
 }
 
-static int fz_has_env_value(const char* key) {
-  const char* value = fz_env_get_bootstrapped(key);
-  return value != NULL && value[0] != '\0';
-}
-
-static int fz_parse_port_from_env(const char* key, int fallback) {
-  const char* raw = fz_env_get_bootstrapped(key);
-  if (raw == NULL || raw[0] == '\0') {
-    return fallback;
-  }
-  char* end = NULL;
-  long parsed = strtol(raw, &end, 10);
-  if (end == raw || parsed <= 0 || parsed > 65535) {
-    return fallback;
-  }
-  return (int)parsed;
-}
-
-static int fz_default_port(void) {
-  int port = 8787;
-  port = fz_parse_port_from_env("PORT", port);
-  port = fz_parse_port_from_env("AGENT_PORT", port);
-  port = fz_parse_port_from_env("FZ_PORT", port);
-  return port;
-}
-
-static const char* fz_default_host_name(void) {
-  const char* host = fz_env_get_bootstrapped("FZ_HOST");
-  if (host == NULL || host[0] == '\0') {
-    host = fz_env_get_bootstrapped("AGENT_HOST");
-  }
-  if (host == NULL || host[0] == '\0') {
-    host = "127.0.0.1";
-  }
-  return host;
-}
-
-static uint32_t fz_default_addr(void) {
-  const char* host = fz_default_host_name();
-  struct in_addr addr;
-  if (inet_pton(AF_INET, host, &addr) == 1) {
-    return addr.s_addr;
-  }
-  if (strcmp(host, "localhost") == 0) {
-    return htonl(INADDR_LOOPBACK);
-  }
-  return htonl(INADDR_LOOPBACK);
-}
-
 static void fz_log_bind_target(int listener_fd) {
-  struct sockaddr_in addr;
+  struct sockaddr_storage addr;
   socklen_t addr_len = sizeof(addr);
   memset(&addr, 0, sizeof(addr));
   if (getsockname(listener_fd, (struct sockaddr*)&addr, &addr_len) != 0) {
     return;
   }
-  char host[64];
-  const char* rendered = inet_ntop(AF_INET, &addr.sin_addr, host, sizeof(host));
-  if (rendered == NULL) {
-    rendered = "127.0.0.1";
+  char host[NI_MAXHOST];
+  char service[NI_MAXSERV];
+  int rc = getnameinfo(
+      (struct sockaddr*)&addr,
+      addr_len,
+      host,
+      sizeof(host),
+      service,
+      sizeof(service),
+      NI_NUMERICHOST | NI_NUMERICSERV);
+  if (rc != 0) {
+    return;
   }
-  int port = (int)ntohs(addr.sin_port);
-  const char* host_source = fz_has_env_value("FZ_HOST")
-      ? "FZ_HOST"
-      : (fz_has_env_value("AGENT_HOST") ? "AGENT_HOST" : "default");
-  const char* port_source = fz_has_env_value("FZ_PORT")
-      ? "FZ_PORT"
-      : (fz_has_env_value("AGENT_PORT")
-            ? "AGENT_PORT"
-            : (fz_has_env_value("PORT") ? "PORT" : "default"));
   fprintf(
       stderr,
-      "[fz-runtime] listen active addr=%s port=%d (host_source=%s port_source=%s)\n",
-      rendered,
-      port,
-      host_source,
-      port_source);
+      "[fz-runtime] listen active addr=%s port=%s\n",
+      host,
+      service);
   fflush(stderr);
 }
 

@@ -119,9 +119,8 @@ def reserve_port():
 def start_server(extra_env: dict[str, str] | None = None):
     env = dict(os.environ)
     env["FZWEB_MAX_REQUESTS"] = "256"
-    env["FZ_HOST"] = "127.0.0.1"
     port = reserve_port()
-    env["FZ_PORT"] = str(port)
+    env["FZWEB_BIND"] = f"127.0.0.1:{port}"
     if extra_env:
         env.update(extra_env)
     cmd = [

@@ -181,8 +181,7 @@ Use cases:
   - `fz trace verify`, `fz replay`, and `fz ci` are expected production gates for GPU changes too
 
 Native host-backed runtime defaults:
-- bind host default is `127.0.0.1` (`FZ_HOST` > `AGENT_HOST` > default)
-- bind port default is `8787` (`FZ_PORT` > `AGENT_PORT` > `PORT` > default)
+- `http.bind` requires an explicit address such as `127.0.0.1:8787` or `[::1]:8787`
 - runtime emits effective bind `addr/port` on successful `listen`
 - runtime bootstraps env from `.env` (or `FZ_DOTENV_PATH`) before env/http calls
 - HTTP transport diagnostics are available through `http.last_error`
