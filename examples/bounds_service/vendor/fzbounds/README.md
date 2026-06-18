@@ -20,7 +20,6 @@ Compiler DX note:
 - Bounded arena, list, map, queue, channel, and buffer helpers with inspectable overflow state.
 - Region lifecycle support with per-region allocation counts, peaks, timing, and validation.
 - First-class telemetry and integration reports for `fzweb`, jobs, auth/session, and realtime-style workloads.
-- Honest production semantics: this package enforces explicit accounting and rejection policy today, and leaves compiler/allocator hardening for future work where the spec says it belongs.
 
 ## Layout (Grouped by Concern)
 
