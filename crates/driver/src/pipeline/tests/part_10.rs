@@ -444,6 +444,39 @@ fn compile_project_fails_for_missing_path_dependency() {
 }
 
 #[test]
+fn compile_project_resolves_framework_dependency_shorthand() {
+    let project_name = format!(
+        "fozzylang-framework-dep-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[deps]\nfzbounds={}\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use fzbounds;\nfn main() -> i32 {\n    return fzbounds.touch()\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("build should succeed");
+    assert_eq!(artifact.status, "ok");
+
+    let lock_text =
+        std::fs::read_to_string(root.join("fozzy.lock")).expect("lockfile should be readable");
+    assert!(lock_text.contains("\"sourceType\": \"framework\""));
+    assert!(lock_text.contains("\"canonicalPath\":"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_project_fails_when_lockfile_drifts() {
     let project_name = format!(
         "fozzylang-lock-drift-{}",

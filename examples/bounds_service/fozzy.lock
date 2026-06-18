@@ -1,5 +1,5 @@
 {
-  "dependencyGraphHash": "321d6fa449a1cb92470f9f15c55576afefd1fb9ff137a93952b7bf9a42e11d5e",
+  "dependencyGraphHash": "1488fa2680c4a30ac1bcc56460ecadb49ef448cb04f97cf9cfba39e170b1b680",
   "graph": {
     "deps": [
       {
@@ -10,13 +10,12 @@
           "name": "fzbounds",
           "version": "0.1.0"
         },
-        "path": "../../frameworklib/fzbounds",
-        "sourceHash": "50352e42cfd4f285922f3aab34efd76c89370e20939b5d23ded3c0ea52fb7afd",
-        "sourceType": "path"
+        "sourceHash": "92380c70972133e69f4be101e0ff1b72c30b7585f786c67b9700ba376b90243e",
+        "sourceType": "framework"
       }
     ],
     "package": {
-      "manifestHash": "edf5d16ccb6147fd7d79069bcd1ef14c1a874042cb1b21b1bf47f051836f49ca",
+      "manifestHash": "e71acd4bab27c7d627d37e5710b102e0f9e654abb272eab3dddebeb8c6be6fb2",
       "name": "bounds_service",
       "version": "0.1.0"
     }

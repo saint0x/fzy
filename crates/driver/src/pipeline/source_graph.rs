@@ -31,6 +31,19 @@ pub(super) enum LockfileMode {
     ForceRewrite,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DependencyResolutionKind {
+    Framework,
+    Path,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LocalDependencyResolution {
+    pub(crate) root: PathBuf,
+    pub(crate) kind: DependencyResolutionKind,
+    pub(crate) manifest_path: Option<String>,
+}
+
 pub(super) fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
     resolve_source_path_with_target(input, false)
 }
@@ -307,17 +320,74 @@ pub(super) fn load_workspace_policy(dir: &Path) -> Result<Option<(PathBuf, Works
     Ok(None)
 }
 
-pub(super) fn validate_dependency_paths(dir: &Path, manifest: &manifest::Manifest) -> Result<()> {
-    for (name, dependency) in &manifest.deps {
-        if let manifest::Dependency::Path { path } = dependency {
+pub(crate) fn canonical_frameworklib_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("frameworklib")
+}
+
+pub(crate) fn resolve_local_dependency(
+    dir: &Path,
+    alias: &str,
+    dependency: &manifest::Dependency,
+) -> Result<LocalDependencyResolution> {
+    match dependency {
+        manifest::Dependency::Framework { .. } => {
+            let root = canonical_frameworklib_dir().join(alias);
+            if !root.exists() {
+                return Err(anyhow!(
+                    "framework dependency `{}` not found at {}",
+                    alias,
+                    root.display()
+                ));
+            }
+            Ok(LocalDependencyResolution {
+                root: root.canonicalize().with_context(|| {
+                    format!(
+                        "failed canonicalizing framework dependency `{}` at {}",
+                        alias,
+                        root.display()
+                    )
+                })?,
+                kind: DependencyResolutionKind::Framework,
+                manifest_path: None,
+            })
+        }
+        manifest::Dependency::Path { path } => {
             let resolved = dir.join(path);
             if !resolved.exists() {
                 return Err(anyhow!(
                     "path dependency `{}` not found at {}",
-                    name,
+                    alias,
                     resolved.display()
                 ));
             }
+            Ok(LocalDependencyResolution {
+                root: resolved.canonicalize().with_context(|| {
+                    format!(
+                        "failed canonicalizing path dependency `{}` at {}",
+                        alias,
+                        resolved.display()
+                    )
+                })?,
+                kind: DependencyResolutionKind::Path,
+                manifest_path: Some(normalize_rel_path(path)),
+            })
+        }
+        manifest::Dependency::Version { .. } | manifest::Dependency::Git { .. } => Err(anyhow!(
+            "dependency `{}` is not a local framework/path dependency",
+            alias
+        )),
+    }
+}
+
+pub(super) fn validate_dependency_paths(dir: &Path, manifest: &manifest::Manifest) -> Result<()> {
+    for (name, dependency) in &manifest.deps {
+        match dependency {
+            manifest::Dependency::Framework { .. } | manifest::Dependency::Path { .. } => {
+                resolve_local_dependency(dir, name, dependency)?;
+            }
+            manifest::Dependency::Version { .. } | manifest::Dependency::Git { .. } => {}
         }
     }
     Ok(())
@@ -389,15 +459,9 @@ pub(super) fn build_dependency_graph(
     let mut dep_entries = Vec::new();
     for (name, dependency) in &manifest.deps {
         match dependency {
-            manifest::Dependency::Path { path } => {
-                let resolved = dir.join(path);
-                let canonical = resolved.canonicalize().with_context(|| {
-                    format!(
-                        "failed canonicalizing path dependency `{}` at {}",
-                        name,
-                        resolved.display()
-                    )
-                })?;
+            manifest::Dependency::Framework { .. } | manifest::Dependency::Path { .. } => {
+                let resolution = resolve_local_dependency(dir, name, dependency)?;
+                let canonical = resolution.root;
                 let dep_state = dependency_source_state(&canonical).with_context(|| {
                     format!(
                         "failed loading cached dependency state for `{}` at {}",
@@ -405,10 +469,13 @@ pub(super) fn build_dependency_graph(
                         canonical.display()
                     )
                 })?;
-                dep_entries.push(serde_json::json!({
+                let source_type = match resolution.kind {
+                    DependencyResolutionKind::Framework => "framework",
+                    DependencyResolutionKind::Path => "path",
+                };
+                let mut entry = serde_json::json!({
                     "name": name,
-                    "sourceType": "path",
-                    "path": normalize_rel_path(path),
+                    "sourceType": source_type,
                     "canonicalPath": canonical.display().to_string(),
                     "package": {
                         "name": dep_state.package_name,
@@ -416,7 +483,11 @@ pub(super) fn build_dependency_graph(
                     },
                     "manifestHash": dep_state.manifest_hash,
                     "sourceHash": dep_state.source_hash,
-                }));
+                });
+                if let Some(path) = resolution.manifest_path {
+                    entry["path"] = serde_json::Value::String(path);
+                }
+                dep_entries.push(entry);
             }
             manifest::Dependency::Version { version, source } => {
                 let source_locator = source

@@ -60,6 +60,10 @@ pub struct Link {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Dependency {
+    Framework {
+        #[serde(default)]
+        package: Option<String>,
+    },
     Path {
         path: String,
     },
@@ -192,6 +196,14 @@ impl Manifest {
         }
         for (name, dep) in &self.deps {
             match dep {
+                Dependency::Framework { package } => {
+                    if package
+                        .as_deref()
+                        .is_some_and(|value| value.trim().is_empty())
+                    {
+                        return Err(format!("deps.{name}.package cannot be empty when set"));
+                    }
+                }
                 Dependency::Path { path } => {
                     if path.trim().is_empty() {
                         return Err(format!("deps.{name}.path cannot be empty"));
@@ -370,6 +382,30 @@ mod tests {
         assert!(matches!(
             manifest.deps.get("parser"),
             Some(super::Dependency::Git { .. })
+        ));
+    }
+
+    #[test]
+    fn loads_framework_dependency_shorthand() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [deps]
+            fzbounds={}
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        manifest
+            .validate()
+            .expect("manifest should pass validation");
+        assert!(matches!(
+            manifest.deps.get("fzbounds"),
+            Some(super::Dependency::Framework { .. })
         ));
     }
 

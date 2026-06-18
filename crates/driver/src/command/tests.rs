@@ -1164,6 +1164,37 @@ mod tests {
     }
 
     #[test]
+    fn vendor_command_copies_framework_dependencies() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-vendor-framework-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project src should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"vendor_framework\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"vendor_framework\"\npath=\"src/main.fzy\"\n\n[deps]\nfzbounds={}\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "use fzbounds;\nfn main() -> i32 {\n    return fzbounds.touch()\n}\n",
+        )
+        .expect("main source should be written");
+
+        let output = run(Command::Vendor { path: root.clone() }, Format::Json)
+            .expect("vendor command should succeed");
+        assert!(output.contains("\"ok\":true"));
+        let vendor_manifest = root.join("vendor/fozzy-vendor.json");
+        let vendor_manifest_text =
+            std::fs::read_to_string(&vendor_manifest).expect("vendor manifest should be readable");
+        assert!(vendor_manifest_text.contains("\"sourceType\": \"framework\""));
+        assert!(root.join("vendor/fzbounds/src/lib.fzy").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn rpc_gen_command_emits_schema_and_stubs() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7741,12 +7772,10 @@ fn main() -> i32 {
         )
         .expect("first incremental build should succeed");
         assert_eq!(first.status, "ok");
-        assert!(
-            first
-                .incremental
-                .as_ref()
-                .is_some_and(|report| report.rebuilt_modules > 0)
-        );
+        assert!(first
+            .incremental
+            .as_ref()
+            .is_some_and(|report| report.rebuilt_modules > 0));
 
         let second = compile_file_incremental_with_backend_with_root_guidance(
             &root,
@@ -7806,9 +7835,10 @@ fn main() -> i32 {
             .expect("incremental report should be attached");
         assert!(report.rebuilt_modules >= 1);
         assert!(report.rebuilt_modules < report.module_count);
-        assert!(report.module_details.iter().any(|module| {
-            module.path.ends_with("src/services/mod.fzy") && module.rebuilt
-        }));
+        assert!(report
+            .module_details
+            .iter()
+            .any(|module| { module.path.ends_with("src/services/mod.fzy") && module.rebuilt }));
 
         let _ = std::fs::remove_dir_all(root);
     }

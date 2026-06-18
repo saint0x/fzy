@@ -71,8 +71,7 @@ pub(crate) fn parse_program_uncached_with_root_source(
         });
     }
     interface_fingerprints.sort();
-    let global_interface_fingerprint =
-        sha256_hex(interface_fingerprints.join("\n").as_bytes());
+    let global_interface_fingerprint = sha256_hex(interface_fingerprints.join("\n").as_bytes());
     let mut merged = state
         .loaded
         .remove(canonical)
@@ -201,7 +200,9 @@ pub(crate) struct ModuleLoadState {
     visiting_set: HashSet<PathBuf>,
 }
 
-pub(crate) fn parse_project_context_for_source(source_path: &Path) -> Result<Option<ParseProjectContext>> {
+pub(crate) fn parse_project_context_for_source(
+    source_path: &Path,
+) -> Result<Option<ParseProjectContext>> {
     let Some(project_root) = find_project_root_for_source(source_path) else {
         return Ok(None);
     };
@@ -212,16 +213,13 @@ pub(crate) fn parse_project_context_for_source(source_path: &Path) -> Result<Opt
     }];
     let mut extra_stamp_paths = vec![project_root.join("fozzy.toml")];
     for (alias, dependency) in &manifest.deps {
-        let manifest::Dependency::Path { path } = dependency else {
-            continue;
+        let resolution = match dependency {
+            manifest::Dependency::Framework { .. } | manifest::Dependency::Path { .. } => {
+                resolve_local_dependency(&project_root, alias, dependency)?
+            }
+            manifest::Dependency::Version { .. } | manifest::Dependency::Git { .. } => continue,
         };
-        let dep_root = project_root.join(path).canonicalize().with_context(|| {
-            format!(
-                "failed resolving path dependency `{}` from {}",
-                alias,
-                project_root.display()
-            )
-        })?;
+        let dep_root = resolution.root;
         let dep_manifest = load_manifest_for_parse(&dep_root)?;
         let Some(lib_target) = dep_manifest.target.lib.as_ref() else {
             continue;
@@ -232,7 +230,7 @@ pub(crate) fn parse_project_context_for_source(source_path: &Path) -> Result<Opt
                 .canonicalize()
                 .with_context(|| {
                     format!(
-                        "failed resolving library target for path dependency `{}` at {}",
+                        "failed resolving library target for dependency `{}` at {}",
                         alias,
                         dep_root.display()
                     )

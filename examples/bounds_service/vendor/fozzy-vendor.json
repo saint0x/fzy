@@ -6,14 +6,14 @@
         "name": "fzbounds",
         "version": "0.1.0"
       },
-      "source": "/Users/deepsaint/Desktop/fozzylang/examples/bounds_service/../../frameworklib/fzbounds",
-      "sourceHash": "cf08a2bfab3dc45d627bf983b652b7f0771ae90d74ea8ec069c5f19fd5be7e49",
-      "sourceType": "path",
+      "source": "/Users/deepsaint/Desktop/fozzylang/frameworklib/fzbounds",
+      "sourceHash": "92380c70972133e69f4be101e0ff1b72c30b7585f786c67b9700ba376b90243e",
+      "sourceType": "framework",
       "target": "/Users/deepsaint/Desktop/fozzylang/examples/bounds_service/vendor/fzbounds",
-      "vendorHash": "cf08a2bfab3dc45d627bf983b652b7f0771ae90d74ea8ec069c5f19fd5be7e49"
+      "vendorHash": "92380c70972133e69f4be101e0ff1b72c30b7585f786c67b9700ba376b90243e"
     }
   ],
-  "lockHash": "efb6c8e777259bf425a66e02c9c06df89cdff0f7936e3f6adde63095cf9e8c13",
+  "lockHash": "1488fa2680c4a30ac1bcc56460ecadb49ef448cb04f97cf9cfba39e170b1b680",
   "lockfile": "/Users/deepsaint/Desktop/fozzylang/examples/bounds_service/fozzy.lock",
   "schemaVersion": "fozzylang.vendor.v0"
 }

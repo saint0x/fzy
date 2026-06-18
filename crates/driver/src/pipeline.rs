@@ -29,6 +29,8 @@ mod gpu_kernel_metal;
 mod gpu_kernel_nvptx;
 #[path = "pipeline/gpu_kernel_spirv.rs"]
 mod gpu_kernel_spirv;
+#[path = "pipeline/graph.rs"]
+mod graph;
 #[path = "pipeline/linker_support.rs"]
 mod linker_support;
 #[path = "pipeline/llvm.rs"]
@@ -41,14 +43,11 @@ mod native_metadata;
 mod native_runtime_support;
 #[path = "pipeline/native_runtime_tables.rs"]
 mod native_runtime_tables;
-#[path = "pipeline/graph.rs"]
-mod graph;
 #[path = "pipeline/policy_artifacts.rs"]
 mod policy_artifacts;
 
-pub(crate) use self::gpu_backend::gpu_backend_report_json;
-pub(crate) use self::graph::embedded_core_stdlib_module_source;
-pub(crate) use self::snapshot::prepare_build_snapshot;
+use self::audit::*;
+use self::compile::*;
 pub use self::compile::{
     check_file, compile_file, compile_file_incremental_with_backend, compile_file_with_backend,
     compile_library_incremental_with_backend, compile_library_with_backend, emit_ir,
@@ -56,11 +55,14 @@ pub use self::compile::{
     verify_file_with_root_source,
 };
 pub(crate) use self::compile::{lower_fir_cached_with_metadata, parse_program_with_metadata};
-pub use self::source_graph::refresh_lockfile;
+use self::flow::*;
+pub(crate) use self::gpu_backend::gpu_backend_report_json;
 use self::gpu_backend::{
     fir_module_uses_gpu, gpu_backend_execution_diagnostics, module_uses_gpu, resolve_gpu_backend,
 };
 use self::gpu_kernel_metal::{metal_kernel_descriptor_strings, metal_kernel_launch_descriptors};
+pub(crate) use self::graph::embedded_core_stdlib_module_source;
+use self::graph::*;
 use self::linker_support::{
     apply_extra_linker_args, apply_manifest_link_args, apply_pgo_flags,
     apply_profile_optimization_flags, apply_target_link_flags, archiver_candidates,
@@ -71,6 +73,8 @@ use self::native_backend_support::{
     declare_native_runtime_imports, experimental_feature_diagnostics,
     native_lowerability_diagnostics,
 };
+use self::native_emit::*;
+use self::native_lowering::*;
 use self::native_metadata::{
     build_global_const_i32_map, build_mutable_static_i32_map, build_string_literal_ids,
     build_variant_tag_map, collect_native_string_literals,
@@ -89,15 +93,12 @@ use self::native_runtime_tables::{
     native_data_plane_import_for_callee, native_runtime_contracts,
     native_runtime_import_for_callee, NativeRuntimeImport, NATIVE_DATA_PLANE_IMPORTS,
 };
-use self::graph::*;
-use self::compile::*;
-use self::flow::*;
-use self::native_emit::*;
-use self::native_lowering::*;
 use self::reports::*;
-use self::audit::*;
-use self::source_graph::*;
+pub(crate) use self::snapshot::prepare_build_snapshot;
 use self::snapshot::*;
+pub use self::source_graph::refresh_lockfile;
+use self::source_graph::*;
+pub(crate) use self::source_graph::{resolve_local_dependency, DependencyResolutionKind};
 use self::task::*;
 
 #[derive(Clone, Copy)]
@@ -242,24 +243,24 @@ const NATIVE_AGG_SET_I64: &str = "__fz_native_agg_set_i64";
 const NATIVE_AGG_GET_I64: &str = "__fz_native_agg_get_i64";
 const NATIVE_AGG_TAG: &str = "__fz_native_agg_tag";
 
-#[path = "pipeline/compile.rs"]
-mod compile;
-#[path = "pipeline/reports.rs"]
-mod reports;
 #[path = "pipeline/audit.rs"]
 mod audit;
-#[path = "pipeline/task.rs"]
-mod task;
+#[path = "pipeline/compile.rs"]
+mod compile;
 #[path = "pipeline/flow.rs"]
 mod flow;
-#[path = "pipeline/native_lowering.rs"]
-mod native_lowering;
-#[path = "pipeline/source_graph.rs"]
-mod source_graph;
-#[path = "pipeline/snapshot.rs"]
-mod snapshot;
 #[path = "pipeline/native_emit.rs"]
 mod native_emit;
+#[path = "pipeline/native_lowering.rs"]
+mod native_lowering;
+#[path = "pipeline/reports.rs"]
+mod reports;
+#[path = "pipeline/snapshot.rs"]
+mod snapshot;
+#[path = "pipeline/source_graph.rs"]
+mod source_graph;
+#[path = "pipeline/task.rs"]
+mod task;
 
 #[cfg(test)]
 #[path = "pipeline/tests.rs"]

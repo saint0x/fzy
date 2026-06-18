@@ -4,7 +4,7 @@
 
 Consume it like a normal package dependency:
 
-- declare `fzbounds = { path = "../../frameworklib/fzbounds" }` under `[deps]`
+- declare `fzbounds = {}` under `[deps]`
 - import it in source with `use fzbounds;`
 - call the public surface such as `fzbounds.inspect_json()` or `fzbounds.doctor_json()`
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::pipeline::{resolve_local_dependency, DependencyResolutionKind};
 pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
     if !path.is_dir() {
         bail!("vendor requires a project directory: {}", path.display());
@@ -37,15 +38,9 @@ pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
             .get(name.as_str())
             .ok_or_else(|| anyhow!("lockfile missing dependency entry for `{name}`"))?;
         match dependency {
-            manifest::Dependency::Path { path: dep_path } => {
-                let source_dir = path.join(dep_path);
-                if !source_dir.exists() {
-                    bail!(
-                        "path dependency `{}` not found at {}",
-                        name,
-                        source_dir.display()
-                    );
-                }
+            manifest::Dependency::Framework { .. } | manifest::Dependency::Path { .. } => {
+                let resolution = resolve_local_dependency(path, name, dependency)?;
+                let source_dir = resolution.root;
                 let target_dir = vendor_dir.join(name);
                 if target_dir.exists() {
                     std::fs::remove_dir_all(&target_dir).with_context(|| {
@@ -70,9 +65,13 @@ pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
                         vendor_hash
                     );
                 }
+                let source_type = match resolution.kind {
+                    DependencyResolutionKind::Framework => "framework",
+                    DependencyResolutionKind::Path => "path",
+                };
                 copied.push(serde_json::json!({
                     "name": name,
-                    "sourceType": "path",
+                    "sourceType": source_type,
                     "source": source_dir.display().to_string(),
                     "target": target_dir.display().to_string(),
                     "sourceHash": source_hash,
@@ -221,7 +220,6 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
 }
-
 
 pub(crate) fn ensure_exists(path: &Path) -> Result<()> {
     if !path.exists() {

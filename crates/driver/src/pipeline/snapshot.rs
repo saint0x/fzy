@@ -59,8 +59,12 @@ pub(crate) fn prepare_build_snapshot(project_root: &Path) -> Result<BuildSnapsho
         object_store_root: object_store_root.clone(),
     };
     let snapshots_root = canonical_project_root.join(".fz").join("snapshots");
-    std::fs::create_dir_all(&snapshots_root)
-        .with_context(|| format!("failed creating snapshots directory: {}", snapshots_root.display()))?;
+    std::fs::create_dir_all(&snapshots_root).with_context(|| {
+        format!(
+            "failed creating snapshots directory: {}",
+            snapshots_root.display()
+        )
+    })?;
     let _lock = acquire_snapshot_lock(&snapshots_root)?;
     if let Some(existing) = load_existing_build_snapshot(&snapshot_project_root)? {
         return Ok(existing);
@@ -69,8 +73,9 @@ pub(crate) fn prepare_build_snapshot(project_root: &Path) -> Result<BuildSnapsho
     for entry in &snapshot_files {
         let destination = snapshot_tree_root.join(&entry.relative);
         if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed creating snapshot directory: {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed creating snapshot directory: {}", parent.display())
+            })?;
         }
         std::fs::copy(&entry.source, &destination).with_context(|| {
             format!(
@@ -98,7 +103,10 @@ pub(crate) fn prepare_build_snapshot(project_root: &Path) -> Result<BuildSnapsho
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
     let manifest_text = String::from_utf8(manifest_bytes)
         .map_err(|error| anyhow!("failed encoding snapshot manifest as utf-8: {error}"))?;
-    write_atomic_text_file(&snapshot_manifest_path(&snapshot_project_root), &manifest_text)?;
+    write_atomic_text_file(
+        &snapshot_manifest_path(&snapshot_project_root),
+        &manifest_text,
+    )?;
     Ok(snapshot)
 }
 
@@ -131,16 +139,21 @@ pub(crate) fn map_path_into_snapshot(snapshot: &BuildSnapshot, path: &Path) -> R
     if path.starts_with(&snapshot.snapshot_tree_root) {
         return Ok(path.to_path_buf());
     }
-    let canonical = path
-        .canonicalize()
-        .with_context(|| format!("failed resolving path for snapshot mapping: {}", path.display()))?;
-    let relative = canonical.strip_prefix(&snapshot.source_anchor).with_context(|| {
+    let canonical = path.canonicalize().with_context(|| {
         format!(
-            "path {} is outside snapshot source anchor {}",
-            canonical.display(),
-            snapshot.source_anchor.display()
+            "failed resolving path for snapshot mapping: {}",
+            path.display()
         )
     })?;
+    let relative = canonical
+        .strip_prefix(&snapshot.source_anchor)
+        .with_context(|| {
+            format!(
+                "path {} is outside snapshot source anchor {}",
+                canonical.display(),
+                snapshot.source_anchor.display()
+            )
+        })?;
     Ok(snapshot.snapshot_tree_root.join(relative))
 }
 
@@ -225,9 +238,8 @@ fn acquire_lock_file(
         {
             Ok(mut file) => {
                 use std::io::Write;
-                file.write_all(owner.as_bytes()).with_context(|| {
-                    format!("failed writing lock file: {}", path.display())
-                })?;
+                file.write_all(owner.as_bytes())
+                    .with_context(|| format!("failed writing lock file: {}", path.display()))?;
                 return Ok(SnapshotCaptureLock {
                     path: path.to_path_buf(),
                 });
@@ -246,7 +258,8 @@ fn acquire_lock_file(
                 std::thread::sleep(retry_delay);
             }
             Err(err) => {
-                return Err(err).with_context(|| format!("failed creating lock file: {}", path.display()));
+                return Err(err)
+                    .with_context(|| format!("failed creating lock file: {}", path.display()));
             }
         }
     }
@@ -257,25 +270,24 @@ fn collect_snapshot_project_roots(
     seen: &mut HashSet<PathBuf>,
     out: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    let canonical = root
-        .canonicalize()
-        .with_context(|| format!("failed canonicalizing snapshot project root: {}", root.display()))?;
+    let canonical = root.canonicalize().with_context(|| {
+        format!(
+            "failed canonicalizing snapshot project root: {}",
+            root.display()
+        )
+    })?;
     if !seen.insert(canonical.clone()) {
         return Ok(());
     }
     out.push(canonical.clone());
     let (manifest, _, _) = load_manifest(&canonical, LockfileMode::ValidateOrCreate)?;
-    for dependency in manifest.deps.values() {
-        let manifest::Dependency::Path { path } = dependency else {
-            continue;
+    for (alias, dependency) in &manifest.deps {
+        let dep_root = match dependency {
+            manifest::Dependency::Framework { .. } | manifest::Dependency::Path { .. } => {
+                resolve_local_dependency(&canonical, alias, dependency)?.root
+            }
+            manifest::Dependency::Version { .. } | manifest::Dependency::Git { .. } => continue,
         };
-        let dep_root = canonical.join(path).canonicalize().with_context(|| {
-            format!(
-                "failed resolving path dependency {} from {}",
-                path,
-                canonical.display()
-            )
-        })?;
         collect_snapshot_project_roots(&dep_root, seen, out)?;
     }
     Ok(())

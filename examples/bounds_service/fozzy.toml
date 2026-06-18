@@ -7,7 +7,7 @@ name = "bounds_service"
 path = "src/main.fzy"
 
 [deps]
-fzbounds = { path = "../../frameworklib/fzbounds" }
+fzbounds = {}
 
 [unsafe]
 contracts = "compiler"
