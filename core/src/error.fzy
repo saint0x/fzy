@@ -1,0 +1,23 @@
+// core.error
+// Public facade for last-error inspection. The actual error state is maintained
+// by compiler/runtime-owned `error.*` intrinsics that reflect the most recent
+// runtime boundary failure for the current execution context.
+// Hidden subsystems:
+// - capability gate: `error`
+// - runtime imports: last error code/class/message/context
+// - host/deterministic runtime error bridge owned by the compiler/runtime
+fn has_error() -> i32 {
+    if error.code() == 0 {
+        return 0
+    }
+    return 1
+}
+fn summary() -> str {
+    if has_error() == 0 {
+        return ""
+    }
+    return error.message()
+}
+fn clear_context(marker: str) -> i32 {
+    return error.context(marker)
+}

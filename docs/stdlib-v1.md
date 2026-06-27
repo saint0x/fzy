@@ -22,10 +22,10 @@ The v1 stdlib provides production baseline primitives for:
 ## Surface Architecture
 
 - Canonical `core.*` modules are the only supported stdlib import story for language-facing APIs.
-- First-class subsystem names are sacred product surface: `core.http`, `core.log`, `core.thread`, `core.term`, `core.mem`, `core.io`, `core.process`, `core.text`, `core.security`, `core.simd`, `core.duration`, and `core.bytes`.
+- First-class subsystem names are sacred product surface: `core.bytes`, `core.collections`, `core.crypto`, `core.duration`, `core.encoding`, `core.error`, `core.fs`, `core.gpu`, `core.http`, `core.io`, `core.log`, `core.mem`, `core.network`, `core.path`, `core.proc`, `core.process`, `core.result`, `core.security`, `core.simd`, `core.storage`, `core.term`, `core.text`, `core.thread`, and `core.time`.
 - Helper-shelf naming such as `*kit` is not part of the public contract.
-- `core/src/lib.fzy` defines architecture and internal layering only; it is not a wrapper shelf and does not aggregate `sample()` or `selftest()` behavior.
-- Internal support modules may exist in `core/src`, but they are reorganizable implementation details and must not be required for normal stdlib use.
+- `core/src/lib.fzy` defines the public package layout only; it is not a wrapper shelf and does not aggregate `sample()` or `selftest()` behavior.
+- Compiler/runtime-only support shelves live under `core/internal/`; they are reorganizable implementation details and must not be required for normal stdlib use.
 
 ## Module Contracts
 
@@ -46,7 +46,7 @@ The v1 stdlib provides production baseline primitives for:
   - `pubext c fn` for exports
   - `ext unsafe c fn` for imports
   - generated headers, ABI manifests, and embedding inspection artifacts
-- Internal shelves such as `core/src/abi.fzy` and `core/src/cinterop.fzy` exist only to support compiler/runtime interop policy and are not part of the import story.
+- Internal shelves such as `core/internal/abi.fzy` and `core/internal/cinterop.fzy` exist only to support compiler/runtime interop policy and are not part of the import story.
 
 ### `io`
 

@@ -1,0 +1,28 @@
+// core.fs
+// Public facade for filesystem-native operations that are implemented by the
+// compiler/runtime as `fs.*` intrinsics plus native runtime contract tables.
+// Hidden subsystems:
+// - capability gate: `fs`
+// - runtime imports: file handles, atomic writes, flush/fsync/lock, stat
+// - host/deterministic backend routing owned by the compiler/runtime
+fn normalize_path(raw_path: str) -> str {
+    return str.trim(raw_path)
+}
+fn read_text(file_path: str) -> str {
+    let normalized = normalize_path(file_path) if normalized == "" {
+        return ""
+    }
+    return fs.read_file(normalized)
+}
+fn write_text(file_path: str, value: str) -> i32 {
+    let normalized = normalize_path(file_path) if normalized == "" {
+        return 1
+    }
+    return fs.atomic_write(normalized, value)
+}
+fn remove_target(file_path: str) -> i32 {
+    let normalized = normalize_path(file_path) if normalized == "" {
+        return 1
+    }
+    return fs.remove(normalized)
+}

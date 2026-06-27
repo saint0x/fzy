@@ -1,38 +1,35 @@
+// core.security
+// Public application-security facade layered on top of `core.crypto`. Hidden
+// subsystems include runtime cryptographic primitives, constant-time compare
+// contracts, and capability-aware security policy enforcement.
 use core.crypto;
-
 struct SignerConfig {
     version_prefix: str,
 }
-
 fn default_signer() -> SignerConfig {
     return SignerConfig {
         version_prefix: "v1:",
     }
 }
-
 fn signer(version_prefix: str) -> SignerConfig {
-    let safe = str.trim(version_prefix)
-    if safe == "" {
+    let safe = str.trim(version_prefix) if safe == "" {
         return default_signer()
     }
     return SignerConfig {
         version_prefix: safe,
     }
 }
-
 fn opaque_token(bytes: i32) -> str {
-    let standard = crypto.random_base64(bytes)
-    let no_pad = str.replace(standard, "=", "")
-    let step1 = str.replace(no_pad, "+", "-")
-    return str.replace(step1, "/", "_")
+    let standard = crypto.random_base64(bytes) let no_pad = str.replace(standard, "=", "") let step1 = str.replace(no_pad, "+", "-") return str.replace(step1, "/", "_")
 }
-
 fn sign(config: SignerConfig, key: str, data: str) -> str {
-    let prefix = str.trim(config.version_prefix)
-    let effective_prefix = if prefix == "" { default_signer().version_prefix } else { prefix }
+    let prefix = str.trim(config.version_prefix) let effective_prefix = if prefix == "" {
+        default_signer().version_prefix
+    } else {
+        prefix
+    }
     return str.concat(effective_prefix, crypto.hmac_sha256(key, data))
 }
-
 fn verify(config: SignerConfig, key: str, data: str, signed_value: str) -> i32 {
     return crypto.constant_time_eq(sign(config, key, data), signed_value)
 }

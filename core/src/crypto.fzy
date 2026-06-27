@@ -1,0 +1,17 @@
+// core.crypto
+// Public facade for cryptography and secure-random helpers. The primitive
+// operations are implemented as compiler/runtime-owned `crypto.*` intrinsics so
+// language authors get one stable import path and deterministic contract model.
+// Hidden subsystems:
+// - capability gate: `rng`
+// - runtime imports: hashing, MACs, random tokens, base64/base64url codecs
+// - native crypto backend selection owned by the runtime
+fn opaque_hex(bytes: i32) -> str {
+    return crypto.random_hex(bytes)
+}
+fn opaque_base64(bytes: i32) -> str {
+    return crypto.random_base64(bytes)
+}
+fn secure_eq(left: str, right: str) -> i32 {
+    return crypto.constant_time_eq(left, right)
+}

@@ -1,76 +1,61 @@
+// core.text
+// Public facade for string/text composition helpers. Hidden subsystems include
+// the builtin `str.*` namespace and runtime-visible string layout/ANSI display
+// conventions that stay outside normal application code.
 fn clamp_nonnegative(value: i32) -> i32 {
     if value < 0 {
         return 0
     }
     return value
 }
-
 fn trim(v: str) -> str {
     return str.trim(v)
 }
-
 fn replace(v: str, needle: str, with: str) -> str {
     return str.replace(v, needle, with)
 }
-
 fn contains(v: str, needle: str) -> i32 {
     return str.contains(v, needle)
 }
-
 fn starts_with(v: str, needle: str) -> i32 {
     return str.starts_with(v, needle)
 }
-
 fn ends_with(v: str, needle: str) -> i32 {
     return str.ends_with(v, needle)
 }
-
 fn len(v: str) -> i32 {
     return str.len(v)
 }
-
 fn repeat(piece: str, count: i32) -> str {
     return str.repeat(piece, clamp_nonnegative(count))
 }
-
 fn spaces(count: i32) -> str {
     return str.repeat(" ", clamp_nonnegative(count))
 }
-
 fn pad_left(v: str, width: i32) -> str {
-    let current = len(v)
-    let target = clamp_nonnegative(width)
-    if current >= target {
+    let current = len(v) let target = clamp_nonnegative(width) if current >= target {
         return v
     }
     return str.concat(spaces(target - current), v)
 }
-
 fn pad_right(v: str, width: i32) -> str {
-    let current = len(v)
-    let target = clamp_nonnegative(width)
-    if current >= target {
+    let current = len(v) let target = clamp_nonnegative(width) if current >= target {
         return v
     }
     return str.concat(v, spaces(target - current))
 }
-
 fn indent(v: str, prefix: str) -> str {
     if v == "" {
         return prefix
     }
     return str.concat(prefix, replace(v, "\n", str.concat("\n", prefix)))
 }
-
 fn visible_len_ansi(v: str) -> i32 {
     return str.visible_len_ansi(v)
 }
-
 fn upper_ascii(v: str) -> str {
     return str.upper_ascii(v)
 }
-
 fn lower_ascii(v: str) -> str {
     return str.lower_ascii(v)
 }
-

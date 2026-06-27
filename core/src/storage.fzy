@@ -1,0 +1,17 @@
+// core.storage
+// Public facade for durable append and key/value store primitives. The owning
+// semantics and native contract details are implemented by compiler/runtime
+// `storage.*` intrinsics and native runtime tables.
+// Hidden subsystems:
+// - capability gate: `storage`
+// - runtime imports: append log edges, kv handle open/get/put/close
+// - handle linearity enforcement owned by verifier/runtime contracts
+fn append_line(file_path: str, line: str) -> i32 {
+    return storage.append(file_path, line)
+}
+fn durable_append_line(file_path: str, line: str) -> i32 {
+    return storage.atomic_append(file_path, line)
+}
+fn kv_write_once(file_path: str, key: str, value: str) -> i32 {
+    let store = storage.kv_open(file_path) discard storage.kv_put(store, key, value) return storage.kv_close(store)
+}

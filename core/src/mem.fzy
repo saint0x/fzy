@@ -1,18 +1,14 @@
+// core.mem
+// Public facade for memory-phase controls. Hidden subsystems include verifier
+// ownership tracking, freeze/unfreeze runtime state, and native allocation
+// lifecycle enforcement owned by the compiler/runtime.
 use core.mem;
-
 fn freeze() -> i32 {
-    mem.freeze()
-    return 0
+    mem.freeze() return 0
 }
-
 fn unfreeze() -> i32 {
-    mem.unfreeze()
-    return 0
+    mem.unfreeze() return 0
 }
-
 fn phase_fence() -> i32 {
-    discard freeze()
-    discard unfreeze()
-    return 0
+    discard freeze() discard unfreeze() return 0
 }
-

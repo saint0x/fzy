@@ -1,0 +1,19 @@
+// core.proc
+// Public facade for process-native runtime operations that are implemented by
+// the compiler/runtime as `proc.*` intrinsics and native runtime contracts.
+// Hidden subsystems:
+// - capability gate: `proc`
+// - runtime imports: argv/env builders, process handles, wait/poll/close
+// - host/deterministic backend routing for process execution
+fn argv_len() -> i32 {
+    return proc.argv_count()
+}
+fn argv_first_or(fallback: str) -> str {
+    let value = proc.argv_get(0) if value == "" {
+        return fallback
+    }
+    return value
+}
+fn default_wait_timeout_ms() -> i32 {
+    return 30000
+}

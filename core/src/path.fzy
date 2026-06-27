@@ -1,0 +1,16 @@
+// core.path
+// Public facade for canonical path helpers. Most path behavior is implemented
+// by compiler-known `path.*` intrinsics so authors can rely on one stable
+// product surface while the runtime owns platform normalization details.
+// Hidden subsystems:
+// - compiler-known path intrinsics: join/basename/dirname/stem/extension/normalize
+// - platform normalization and path-safety policy owned by the runtime/tooling
+fn join3(left: str, middle: str, right: str) -> str {
+    return path.join(path.join(left, middle), right)
+}
+fn file_name_without_ext(file_path: str) -> str {
+    return path.stem(path.basename(file_path))
+}
+fn normalize_dir(dir_path: str) -> str {
+    return path.normalize(dir_path)
+}

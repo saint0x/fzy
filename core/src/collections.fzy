@@ -1,0 +1,17 @@
+// core.collections
+// Public facade for deterministic-friendly collection usage. The underlying
+// value/handle model still lives in builtin namespaces such as `list.*` and
+// `map.*`, but this file documents the blessed import path for collection-heavy
+// application code and offers a few convenience helpers.
+// Hidden subsystems:
+// - builtin namespaces: `list.*`, `map.*`
+// - handle/runtime ownership semantics owned by the compiler/runtime
+fn list_count(items: ListHandle) -> i32 {
+    return list.len(items)
+}
+fn map_count(items: MapHandle) -> i32 {
+    return map.len(items)
+}
+fn singleton_map(key: str, value: str) -> MapHandle {
+    let out = map.new() discard map.set(out, key, value) return out
+}

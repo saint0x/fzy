@@ -1,87 +1,70 @@
+// core.term
+// Public ergonomic facade over `term.*` intrinsics for CLI and TTY-oriented
+// authoring. Hidden subsystems include runtime stdin/stdout probing and host
+// terminal integration managed by the compiler/runtime.
 use core.term;
-
 struct TerminalStatus {
-    stdin_is_tty: i32,
-    stdout_is_tty: i32,
-    interactive: i32,
-    stdin_eof: i32,
+    stdin_is_tty: i32, stdout_is_tty: i32, interactive: i32, stdin_eof: i32,
 }
-
 struct TranscriptStyle {
     label_width: i32,
 }
-
 fn status() -> TerminalStatus {
-    let stdin_is_tty = term.stdin_is_tty()
-    let stdout_is_tty = term.stdout_is_tty()
-    return TerminalStatus {
-        stdin_is_tty: stdin_is_tty,
-        stdout_is_tty: stdout_is_tty,
-        interactive: if stdin_is_tty == 1 && stdout_is_tty == 1 { 1 } else { 0 },
-        stdin_eof: term.stdin_eof(),
+    let stdin_is_tty = term.stdin_is_tty() let stdout_is_tty = term.stdout_is_tty() return TerminalStatus {
+        stdin_is_tty: stdin_is_tty, stdout_is_tty: stdout_is_tty, interactive: if stdin_is_tty == 1 & & stdout_is_tty == 1 {
+            1
+        } else {
+            0
+        }
+        , stdin_eof: term.stdin_eof(),
     }
 }
-
 fn print(text: str) -> i32 {
     return term.write(text)
 }
-
 fn print_line(text: str) -> i32 {
     return term.write(str.concat(text, "\n"))
 }
-
 fn eprint(text: str) -> i32 {
     return term.write_err(text)
 }
-
 fn eprint_line(text: str) -> i32 {
     return term.write_err(str.concat(text, "\n"))
 }
-
 fn prompt_line(prompt: str) -> str {
     if is_interactive() == 0 {
         return ""
     }
-    discard print(prompt)
-    return term.read_line()
+    discard print(prompt) return term.read_line()
 }
-
 fn is_interactive() -> i32 {
     return status().interactive
 }
-
 fn transcript_style(label_width: i32) -> TranscriptStyle {
-    let mut safe = label_width
-    if safe < 0 {
+    let mut safe = label_width if safe < 0 {
         safe = 0
     }
     return TranscriptStyle {
         label_width: safe,
     }
 }
-
 fn repeat_spaces(count: i32) -> str {
-    let mut safe = count
-    if safe < 0 {
+    let mut safe = count if safe < 0 {
         safe = 0
     }
     return str.repeat(" ", safe)
 }
-
 fn transcript_line(text: str) -> i32 {
     return print_line(text)
 }
-
 fn transcript_write(style: TranscriptStyle, label: str, value: str) -> i32 {
-    let padding = style.label_width - str.len(label)
-    let padded = if padding > 0 {
+    let padding = style.label_width - str.len(label) let padded = if padding > 0 {
         str.concat(label, repeat_spaces(padding))
     } else {
         label
     }
     return print_line(str.concat(padded, " ", value))
 }
-
 fn transcript_kv(label: str, value: str, label_width: i32) -> i32 {
     return transcript_write(transcript_style(label_width), label, value)
 }

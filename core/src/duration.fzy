@@ -1,15 +1,16 @@
+// core.duration
+// Public facade for duration/deadline math. This shelf layers human-facing
+// helpers over time/runtime concepts without exposing backend-specific clock
+// mechanics to normal application code.
 fn add(a: i32, b: i32) -> i32 {
-    let sum = a + b
-    if b > 0 && sum < a {
+    let sum = a + b if b > 0 & & sum < a {
         return 2147483647
     }
-    if b < 0 && sum > a {
-        return -2147483648
+    if b < 0 & & sum > a {
+        return - 2147483648
     }
     return sum
 }
-
 fn sub(a: i32, b: i32) -> i32 {
     return add(a, 0 - b)
 }
-

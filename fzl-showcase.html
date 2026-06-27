@@ -95,7 +95,7 @@
 // Highlights in this snapshot:
 // - `pubext` as the primary C export syntax
 // - `[ffi] panic_boundary` policy in fozzy.toml
-// - `core.c` ownership/view helpers
+// - expanded production `core.*` surface with direct public facades
 // - canonical enum variant syntax (`Type::Variant`)
 // - async + spawn/join + deterministic scheduler hooks
 // - real `defer` runtime semantics across return/loop/unsafe paths
@@ -129,8 +129,8 @@ use core.encoding;
 use core.error;
 use core.path;
 use core.collections;
-use core.c;
 use core.security;
+use core.storage;
 
 use app;
 use cookies;
@@ -394,7 +394,7 @@ fn closure_demo(seed: i32) -> i32 {
 }
 
 // ------------------------------------------------------------
-// SECTION F: async/runtime/concurrency + core.c helpers
+// SECTION F: async/runtime/tasking + public core helpers
 // ------------------------------------------------------------
 async fn async_worker(id: i32) -> i32 {
     requires id >= 0;

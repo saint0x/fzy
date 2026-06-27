@@ -1,0 +1,19 @@
+// core.time
+// Public facade for time-native runtime operations that are implemented by the
+// compiler/runtime as `time.*` intrinsics with host and deterministic backends.
+// Hidden subsystems:
+// - capability gate: `time`
+// - runtime imports: wall-clock, monotonic clock, sleep/tick/deadline helpers
+// - backend routing for host time vs deterministic virtual time
+fn now_ms() -> i32 {
+    return time.now()
+}
+fn monotonic_now_ms() -> i32 {
+    return time.monotonic_ms()
+}
+fn sleep_brief(ms: i32) -> i32 {
+    if ms < 0 {
+        return time.sleep_ms(0)
+    }
+    return time.sleep_ms(ms)
+}

@@ -97,26 +97,38 @@ pub(super) fn surface_always_available_groups() -> Vec<(&'static str, Vec<&'stat
 
 pub(super) fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
-        ("text", "stdlib facade", "no explicit capability"),
+        ("bytes", "stdlib facade", "no explicit capability"),
+        ("collections", "stdlib facade", "no explicit capability"),
+        ("crypto", "stdlib facade", "implies `rng`"),
+        ("duration", "stdlib facade", "no explicit capability"),
+        ("encoding", "stdlib facade", "no explicit capability"),
+        ("error", "stdlib facade", "implies `error`"),
+        ("fs", "stdlib facade", "implies `fs`"),
+        ("gpu", "stdlib facade", "implies `gpu`"),
+        ("http", "stdlib facade", "implies `http`"),
         ("io", "stdlib facade", "no explicit capability"),
+        ("log", "stdlib facade", "implies `log`"),
+        ("mem", "stdlib facade", "implies `mem`"),
+        ("network", "stdlib facade", "no explicit capability"),
         ("path", "stdlib facade", "no explicit capability"),
-        ("concurrency", "stdlib facade", "no explicit capability"),
+        ("proc", "stdlib facade over `proc.*`", "implies `proc`"),
         (
             "process",
             "stdlib facade over `proc.*`",
             "no explicit capability",
         ),
+        ("result", "stdlib facade", "no explicit capability"),
+        ("security", "stdlib facade", "implies `rng`"),
+        ("simd", "stdlib facade", "no explicit capability"),
+        ("storage", "stdlib facade", "implies `storage`"),
         (
             "term",
             "stdlib facade over `term.*`",
             "no explicit capability",
         ),
-        ("gpu", "stdlib facade", "implies `gpu`"),
+        ("text", "stdlib facade", "no explicit capability"),
         ("thread", "stdlib facade", "implies `thread`"),
-        ("log", "stdlib facade", "implies `log`"),
-        ("http", "stdlib facade", "implies `http`"),
-        ("security", "stdlib facade", "implies `rng`"),
-        ("result", "stdlib facade", "no explicit capability"),
+        ("time", "stdlib facade", "implies `time`"),
         (
             "env",
             "builtin namespace marker only",
@@ -132,7 +144,7 @@ pub(super) fn surface_core_modules() -> Vec<(&'static str, &'static str, &'stati
 
 pub(super) fn surface_capabilities() -> Vec<&'static str> {
     vec![
-        "time", "rng", "fs", "http", "proc", "mem", "thread", "log", "error", "gpu",
+        "time", "rng", "fs", "http", "proc", "mem", "thread", "log", "error", "gpu", "storage",
     ]
 }
 
@@ -804,4 +816,3 @@ pub(super) fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathB
     }
     Ok(changed)
 }
-

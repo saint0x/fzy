@@ -37,15 +37,30 @@ Notes:
 
 Canonical facades:
 
+- `use core.bytes;`
+- `use core.collections;`
+- `use core.crypto;`
+- `use core.duration;`
+- `use core.encoding;`
+- `use core.error;`
+- `use core.fs;`
+- `use core.gpu;`
 - `use core.text;`
 - `use core.io;`
 - `use core.path;`
+- `use core.proc;`
 - `use core.process;`
 - `use core.term;`
 - `use core.thread;`
 - `use core.log;`
 - `use core.http;`
+- `use core.mem;`
+- `use core.network;`
+- `use core.result;`
 - `use core.security;`
+- `use core.simd;`
+- `use core.storage;`
+- `use core.time;`
 
 Non-facades:
 

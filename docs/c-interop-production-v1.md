@@ -113,7 +113,7 @@ Generated headers expose lifecycle and callback ABI:
 
 Callback signature is validated by C type contract (`fz_callback_i32_v0`).
 
-Fozzy source does not import a public `core.c` helper shelf for callback metadata. Callback slot contracts live in generated embedding/header artifacts and in host-side support code.
+Fozzy source does not import a public `core.c` helper shelf for callback metadata. Callback slot contracts live in generated embedding/header artifacts, host-side support code, and compiler/runtime-only shelves under `core/internal/`.
 
 Embedding contract:
 - Call `fz_host_init()` before invoking exported Fozzy functions from an in-process host.

@@ -1,0 +1,17 @@
+// core.encoding
+// Public facade for common encoding workflows. JSON/list/map builtins and
+// crypto codecs remain compiler/runtime-owned subsystems; this file is the
+// stable `core.*` shelf for encoding-oriented authoring.
+// Hidden subsystems:
+// - builtin namespace: `json.*`
+// - crypto codecs surfaced by `crypto.*`
+// - runtime payload/handle semantics owned by the compiler/runtime
+fn json_string_field(payload: MapHandle, key: str, value: str) -> i32 {
+    return map.set(payload, key, json.str(value))
+}
+fn json_object_text(payload: MapHandle) -> str {
+    return json.object(payload)
+}
+fn base64url_token(bytes: i32) -> str {
+    let encoded = crypto.random_base64(bytes) let no_pad = str.replace(encoded, "=", "") let step1 = str.replace(no_pad, "+", "-") return str.replace(step1, "/", "_")
+}

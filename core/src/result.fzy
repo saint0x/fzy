@@ -1,246 +1,81 @@
+// core.result
+// Public facade for typed result/error helpers. Hidden subsystems include
+// runtime last-error state via `error.*` plus compiler-owned handle/error
+// bridge conventions that feed production diagnostics.
 enum ErrorCode {
-    None,
-    InvalidInput,
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    Conflict,
-    Timeout,
-    Cancelled,
-    ResourceExhausted,
-    Unavailable,
-    Io,
-    Security,
-    Ffi,
-    Gpu,
-    Internal,
+    None, InvalidInput, Unauthorized, Forbidden, NotFound, Conflict, Timeout, Cancelled, ResourceExhausted, Unavailable, Io, Security, Ffi, Gpu, Internal,
 }
-
 enum ErrorCategory {
-    None,
-    Client,
-    Policy,
-    Timeout,
-    Cancelled,
-    Resource,
-    Transport,
-    Security,
-    Runtime,
-    Internal,
+    None, Client, Policy, Timeout, Cancelled, Resource, Transport, Security, Runtime, Internal,
 }
-
 enum ErrorSource {
-    Unknown,
-    Http,
-    Io,
-    Process,
-    Security,
-    Gpu,
-    Ffi,
-    Memory,
-    Thread,
-    Network,
-    Runtime,
+    Unknown, Http, Io, Process, Security, Gpu, Ffi, Memory, Thread, Network, Runtime,
 }
-
 struct Error {
-    machine_code: i32,
-    code: ErrorCode,
-    category: ErrorCategory,
-    source: ErrorSource,
-    status: i32,
-    retryable: i32,
-    message: str,
-    context: str,
-    cause_machine_code: i32,
-    cause_message: str,
+    machine_code: i32, code: ErrorCode, category: ErrorCategory, source: ErrorSource, status: i32, retryable: i32, message: str, context: str, cause_machine_code: i32, cause_message: str,
 }
-
 fn sanitize_message(message: str) -> str {
     return str.trim(message)
 }
-
 fn sanitize_context(context: str) -> str {
     return str.trim(context)
 }
-
 fn code_name(code: ErrorCode) -> str {
     match code {
-        ErrorCode::None => return "none",
-        ErrorCode::InvalidInput => return "invalid_input",
-        ErrorCode::Unauthorized => return "unauthorized",
-        ErrorCode::Forbidden => return "forbidden",
-        ErrorCode::NotFound => return "not_found",
-        ErrorCode::Conflict => return "conflict",
-        ErrorCode::Timeout => return "timeout",
-        ErrorCode::Cancelled => return "cancelled",
-        ErrorCode::ResourceExhausted => return "resource_exhausted",
-        ErrorCode::Unavailable => return "unavailable",
-        ErrorCode::Io => return "io",
-        ErrorCode::Security => return "security",
-        ErrorCode::Ffi => return "ffi",
-        ErrorCode::Gpu => return "gpu",
-        ErrorCode::Internal => return "internal",
-        _ => return "internal",
+        ErrorCode::None => return "none", ErrorCode::InvalidInput => return "invalid_input", ErrorCode::Unauthorized => return "unauthorized", ErrorCode::Forbidden => return "forbidden", ErrorCode::NotFound => return "not_found", ErrorCode::Conflict => return "conflict", ErrorCode::Timeout => return "timeout", ErrorCode::Cancelled => return "cancelled", ErrorCode::ResourceExhausted => return "resource_exhausted", ErrorCode::Unavailable => return "unavailable", ErrorCode::Io => return "io", ErrorCode::Security => return "security", ErrorCode::Ffi => return "ffi", ErrorCode::Gpu => return "gpu", ErrorCode::Internal => return "internal", _ => return "internal",
     }
 }
-
 fn category_name(category: ErrorCategory) -> str {
     match category {
-        ErrorCategory::None => return "none",
-        ErrorCategory::Client => return "client",
-        ErrorCategory::Policy => return "policy",
-        ErrorCategory::Timeout => return "timeout",
-        ErrorCategory::Cancelled => return "cancelled",
-        ErrorCategory::Resource => return "resource",
-        ErrorCategory::Transport => return "transport",
-        ErrorCategory::Security => return "security",
-        ErrorCategory::Runtime => return "runtime",
-        ErrorCategory::Internal => return "internal",
-        _ => return "internal",
+        ErrorCategory::None => return "none", ErrorCategory::Client => return "client", ErrorCategory::Policy => return "policy", ErrorCategory::Timeout => return "timeout", ErrorCategory::Cancelled => return "cancelled", ErrorCategory::Resource => return "resource", ErrorCategory::Transport => return "transport", ErrorCategory::Security => return "security", ErrorCategory::Runtime => return "runtime", ErrorCategory::Internal => return "internal", _ => return "internal",
     }
 }
-
 fn source_name(source: ErrorSource) -> str {
     match source {
-        ErrorSource::Http => return "http",
-        ErrorSource::Io => return "io",
-        ErrorSource::Process => return "proc",
-        ErrorSource::Security => return "security",
-        ErrorSource::Gpu => return "gpu",
-        ErrorSource::Ffi => return "ffi",
-        ErrorSource::Memory => return "mem",
-        ErrorSource::Thread => return "thread",
-        ErrorSource::Network => return "network",
-        ErrorSource::Runtime => return "runtime",
-        _ => return "unknown",
+        ErrorSource::Http => return "http", ErrorSource::Io => return "io", ErrorSource::Process => return "proc", ErrorSource::Security => return "security", ErrorSource::Gpu => return "gpu", ErrorSource::Ffi => return "ffi", ErrorSource::Memory => return "mem", ErrorSource::Thread => return "thread", ErrorSource::Network => return "network", ErrorSource::Runtime => return "runtime", _ => return "unknown",
     }
 }
-
 fn code_machine(code: ErrorCode) -> i32 {
     match code {
-        ErrorCode::None => return 0,
-        ErrorCode::InvalidInput => return 1001,
-        ErrorCode::Unauthorized => return 1002,
-        ErrorCode::Forbidden => return 1003,
-        ErrorCode::NotFound => return 1004,
-        ErrorCode::Conflict => return 1005,
-        ErrorCode::Timeout => return 1006,
-        ErrorCode::Cancelled => return 1007,
-        ErrorCode::ResourceExhausted => return 1008,
-        ErrorCode::Unavailable => return 1009,
-        ErrorCode::Io => return 1010,
-        ErrorCode::Security => return 1011,
-        ErrorCode::Ffi => return 1012,
-        ErrorCode::Gpu => return 1013,
-        ErrorCode::Internal => return 1099,
-        _ => return 1099,
+        ErrorCode::None => return 0, ErrorCode::InvalidInput => return 1001, ErrorCode::Unauthorized => return 1002, ErrorCode::Forbidden => return 1003, ErrorCode::NotFound => return 1004, ErrorCode::Conflict => return 1005, ErrorCode::Timeout => return 1006, ErrorCode::Cancelled => return 1007, ErrorCode::ResourceExhausted => return 1008, ErrorCode::Unavailable => return 1009, ErrorCode::Io => return 1010, ErrorCode::Security => return 1011, ErrorCode::Ffi => return 1012, ErrorCode::Gpu => return 1013, ErrorCode::Internal => return 1099, _ => return 1099,
     }
 }
-
 fn code_category(code: ErrorCode) -> ErrorCategory {
     match code {
-        ErrorCode::None => return ErrorCategory::None,
-        ErrorCode::InvalidInput => return ErrorCategory::Client,
-        ErrorCode::Unauthorized => return ErrorCategory::Security,
-        ErrorCode::Forbidden => return ErrorCategory::Security,
-        ErrorCode::NotFound => return ErrorCategory::Client,
-        ErrorCode::Conflict => return ErrorCategory::Policy,
-        ErrorCode::Timeout => return ErrorCategory::Timeout,
-        ErrorCode::Cancelled => return ErrorCategory::Cancelled,
-        ErrorCode::ResourceExhausted => return ErrorCategory::Resource,
-        ErrorCode::Unavailable => return ErrorCategory::Transport,
-        ErrorCode::Io => return ErrorCategory::Transport,
-        ErrorCode::Security => return ErrorCategory::Security,
-        ErrorCode::Ffi => return ErrorCategory::Runtime,
-        ErrorCode::Gpu => return ErrorCategory::Runtime,
-        ErrorCode::Internal => return ErrorCategory::Internal,
-        _ => return ErrorCategory::Internal,
+        ErrorCode::None => return ErrorCategory::None, ErrorCode::InvalidInput => return ErrorCategory::Client, ErrorCode::Unauthorized => return ErrorCategory::Security, ErrorCode::Forbidden => return ErrorCategory::Security, ErrorCode::NotFound => return ErrorCategory::Client, ErrorCode::Conflict => return ErrorCategory::Policy, ErrorCode::Timeout => return ErrorCategory::Timeout, ErrorCode::Cancelled => return ErrorCategory::Cancelled, ErrorCode::ResourceExhausted => return ErrorCategory::Resource, ErrorCode::Unavailable => return ErrorCategory::Transport, ErrorCode::Io => return ErrorCategory::Transport, ErrorCode::Security => return ErrorCategory::Security, ErrorCode::Ffi => return ErrorCategory::Runtime, ErrorCode::Gpu => return ErrorCategory::Runtime, ErrorCode::Internal => return ErrorCategory::Internal, _ => return ErrorCategory::Internal,
     }
 }
-
 fn code_status(code: ErrorCode) -> i32 {
     match code {
-        ErrorCode::None => return 0,
-        ErrorCode::InvalidInput => return 400,
-        ErrorCode::Unauthorized => return 401,
-        ErrorCode::Forbidden => return 403,
-        ErrorCode::NotFound => return 404,
-        ErrorCode::Conflict => return 409,
-        ErrorCode::Timeout => return 408,
-        ErrorCode::Cancelled => return 499,
-        ErrorCode::ResourceExhausted => return 429,
-        ErrorCode::Unavailable => return 503,
-        ErrorCode::Io => return 503,
-        ErrorCode::Security => return 403,
-        ErrorCode::Ffi => return 500,
-        ErrorCode::Gpu => return 503,
-        ErrorCode::Internal => return 500,
-        _ => return 500,
+        ErrorCode::None => return 0, ErrorCode::InvalidInput => return 400, ErrorCode::Unauthorized => return 401, ErrorCode::Forbidden => return 403, ErrorCode::NotFound => return 404, ErrorCode::Conflict => return 409, ErrorCode::Timeout => return 408, ErrorCode::Cancelled => return 499, ErrorCode::ResourceExhausted => return 429, ErrorCode::Unavailable => return 503, ErrorCode::Io => return 503, ErrorCode::Security => return 403, ErrorCode::Ffi => return 500, ErrorCode::Gpu => return 503, ErrorCode::Internal => return 500, _ => return 500,
     }
 }
-
 fn code_retryable(code: ErrorCode) -> i32 {
     match code {
-        ErrorCode::Timeout => return 1,
-        ErrorCode::ResourceExhausted => return 1,
-        ErrorCode::Unavailable => return 1,
-        ErrorCode::Io => return 1,
-        ErrorCode::Gpu => return 1,
-        ErrorCode::Internal => return 1,
-        _ => return 0,
+        ErrorCode::Timeout => return 1, ErrorCode::ResourceExhausted => return 1, ErrorCode::Unavailable => return 1, ErrorCode::Io => return 1, ErrorCode::Gpu => return 1, ErrorCode::Internal => return 1, _ => return 0,
     }
 }
-
 fn clear() -> Error {
     return Error {
-        machine_code: 0,
-        code: ErrorCode::None,
-        category: ErrorCategory::None,
-        source: ErrorSource::Unknown,
-        status: 0,
-        retryable: 0,
-        message: "",
-        context: "",
-        cause_machine_code: 0,
-        cause_message: "",
+        machine_code: 0, code: ErrorCode::None, category: ErrorCategory::None, source: ErrorSource::Unknown, status: 0, retryable: 0, message: "", context: "", cause_machine_code: 0, cause_message: "",
     }
 }
-
 fn is_clear(err: Error) -> i32 {
-    if err.machine_code == 0 && err.message == "" && err.context == "" {
+    if err.machine_code == 0 & & err.message == "" & & err.context == "" {
         return 1
     }
     return 0
 }
-
 fn make(code: ErrorCode, source: ErrorSource, message: str) -> Error {
     return Error {
-        machine_code: code_machine(code),
-        code: code,
-        category: code_category(code),
-        source: source,
-        status: code_status(code),
-        retryable: code_retryable(code),
-        message: sanitize_message(message),
-        context: "",
-        cause_machine_code: 0,
-        cause_message: "",
+        machine_code: code_machine(code), code: code, category: code_category(code), source: source, status: code_status(code), retryable: code_retryable(code), message: sanitize_message(message), context: "", cause_machine_code: 0, cause_message: "",
     }
 }
-
 fn normalize(err: Error) -> Error {
-    let mut next_code = err.code
-    let mut next_machine_code = err.machine_code
-    let mut next_status = err.status
-    let next_message = sanitize_message(err.message)
-    let next_context = sanitize_context(err.context)
-    let next_cause_message = sanitize_message(err.cause_message)
-    let mut next_retryable = err.retryable
-    if next_code == ErrorCode::None && (next_machine_code != 0 || next_message != "" || next_context != "") {
+    let mut next_code = err.code let mut next_machine_code = err.machine_code let mut next_status = err.status let next_message = sanitize_message(err.message) let next_context = sanitize_context(err.context) let next_cause_message = sanitize_message(err.cause_message) let mut next_retryable = err.retryable if next_code == ErrorCode::None & & (next_machine_code != 0 | | next_message != "" | | next_context != "") {
         next_code = ErrorCode::Internal
     }
-    if next_machine_code == 0 && next_code != ErrorCode::None {
+    if next_machine_code == 0 & & next_code != ErrorCode::None {
         next_machine_code = code_machine(next_code)
     }
     if next_status <= 0 {
@@ -252,23 +87,11 @@ fn normalize(err: Error) -> Error {
         next_retryable = code_retryable(next_code)
     }
     return Error {
-        machine_code: next_machine_code,
-        code: next_code,
-        category: code_category(next_code),
-        source: err.source,
-        status: next_status,
-        retryable: next_retryable,
-        message: next_message,
-        context: next_context,
-        cause_machine_code: err.cause_machine_code,
-        cause_message: next_cause_message,
+        machine_code: next_machine_code, code: next_code, category: code_category(next_code), source: err.source, status: next_status, retryable: next_retryable, message: next_message, context: next_context, cause_machine_code: err.cause_machine_code, cause_message: next_cause_message,
     }
 }
-
 fn with_context(err: Error, context: str) -> Error {
-    let safe = normalize(err)
-    let safe_context = sanitize_context(context)
-    if safe_context == "" {
+    let safe = normalize(err) let safe_context = sanitize_context(context) if safe_context == "" {
         return safe
     }
     let next_context = if safe.context == "" {
@@ -277,93 +100,37 @@ fn with_context(err: Error, context: str) -> Error {
         str.concat(safe.context, str.concat(" -> ", safe_context))
     }
     return Error {
-        machine_code: safe.machine_code,
-        code: safe.code,
-        category: safe.category,
-        source: safe.source,
-        status: safe.status,
-        retryable: safe.retryable,
-        message: safe.message,
-        context: next_context,
-        cause_machine_code: safe.cause_machine_code,
-        cause_message: safe.cause_message,
+        machine_code: safe.machine_code, code: safe.code, category: safe.category, source: safe.source, status: safe.status, retryable: safe.retryable, message: safe.message, context: next_context, cause_machine_code: safe.cause_machine_code, cause_message: safe.cause_message,
     }
 }
-
 fn with_cause(err: Error, cause: Error) -> Error {
-    let safe = normalize(err)
-    let safe_cause = normalize(cause)
-    if is_clear(safe_cause) == 1 {
+    let safe = normalize(err) let safe_cause = normalize(cause) if is_clear(safe_cause) == 1 {
         return safe
     }
     return Error {
-        machine_code: safe.machine_code,
-        code: safe.code,
-        category: safe.category,
-        source: safe.source,
-        status: safe.status,
-        retryable: safe.retryable,
-        message: safe.message,
-        context: safe.context,
-        cause_machine_code: safe_cause.machine_code,
-        cause_message: render(safe_cause),
+        machine_code: safe.machine_code, code: safe.code, category: safe.category, source: safe.source, status: safe.status, retryable: safe.retryable, message: safe.message, context: safe.context, cause_machine_code: safe_cause.machine_code, cause_message: render(safe_cause),
     }
 }
-
 fn with_status(err: Error, status: i32) -> Error {
-    let safe = normalize(err)
-    return Error {
-        machine_code: safe.machine_code,
-        code: safe.code,
-        category: safe.category,
-        source: safe.source,
-        status: status,
-        retryable: safe.retryable,
-        message: safe.message,
-        context: safe.context,
-        cause_machine_code: safe.cause_machine_code,
-        cause_message: safe.cause_message,
+    let safe = normalize(err) return Error {
+        machine_code: safe.machine_code, code: safe.code, category: safe.category, source: safe.source, status: status, retryable: safe.retryable, message: safe.message, context: safe.context, cause_machine_code: safe.cause_machine_code, cause_message: safe.cause_message,
     }
 }
-
 fn with_machine_code(err: Error, machine_code: i32) -> Error {
-    let safe = normalize(err)
-    return Error {
-        machine_code: machine_code,
-        code: safe.code,
-        category: safe.category,
-        source: safe.source,
-        status: safe.status,
-        retryable: safe.retryable,
-        message: safe.message,
-        context: safe.context,
-        cause_machine_code: safe.cause_machine_code,
-        cause_message: safe.cause_message,
+    let safe = normalize(err) return Error {
+        machine_code: machine_code, code: safe.code, category: safe.category, source: safe.source, status: safe.status, retryable: safe.retryable, message: safe.message, context: safe.context, cause_machine_code: safe.cause_machine_code, cause_message: safe.cause_message,
     }
 }
-
 fn with_retryable(err: Error, retryable: i32) -> Error {
-    let safe = normalize(err)
-    return Error {
-        machine_code: safe.machine_code,
-        code: safe.code,
-        category: safe.category,
-        source: safe.source,
-        status: safe.status,
-        retryable: retryable,
-        message: safe.message,
-        context: safe.context,
-        cause_machine_code: safe.cause_machine_code,
-        cause_message: safe.cause_message,
+    let safe = normalize(err) return Error {
+        machine_code: safe.machine_code, code: safe.code, category: safe.category, source: safe.source, status: safe.status, retryable: retryable, message: safe.message, context: safe.context, cause_machine_code: safe.cause_machine_code, cause_message: safe.cause_message,
     }
 }
-
 fn from_status(status: i32, source: ErrorSource, message: str) -> Error {
     if status <= 0 {
         return clear()
     }
-    let mut code = ErrorCode::Internal
-    if status == 400 {
+    let mut code = ErrorCode::Internal if status == 400 {
         code = ErrorCode::InvalidInput
     } else {
         if status == 401 {
@@ -387,10 +154,10 @@ fn from_status(status: i32, source: ErrorSource, message: str) -> Error {
                                 if status == 499 {
                                     code = ErrorCode::Cancelled
                                 } else {
-                                    if status >= 500 && status < 600 {
+                                    if status >= 500 & & status < 600 {
                                         code = ErrorCode::Unavailable
                                     } else {
-                                        if status >= 400 && status < 500 {
+                                        if status >= 400 & & status < 500 {
                                             code = ErrorCode::InvalidInput
                                         }
                                     }
@@ -404,14 +171,11 @@ fn from_status(status: i32, source: ErrorSource, message: str) -> Error {
     }
     return normalize(with_status(make(code, source, message), status))
 }
-
 fn from_http_status(status: i32, message: str) -> Error {
     return from_status(status, ErrorSource::Http, message)
 }
-
 fn from_io_status(status: i32, operation: str, path_value: str, message: str) -> Error {
-    let mut code = ErrorCode::Io
-    if status == 2 {
+    let mut code = ErrorCode::Io if status == 2 {
         code = ErrorCode::NotFound
     } else {
         if status == 13 {
@@ -426,7 +190,7 @@ fn from_io_status(status: i32, operation: str, path_value: str, message: str) ->
                     if status == 28 {
                         code = ErrorCode::ResourceExhausted
                     } else {
-                        if status == 60 || status == 110 {
+                        if status == 60 | | status == 110 {
                             code = ErrorCode::Timeout
                         }
                     }
@@ -434,23 +198,15 @@ fn from_io_status(status: i32, operation: str, path_value: str, message: str) ->
             }
         }
     }
-    let machine_code = if status <= 0 { code_machine(code) } else { status }
-    return with_context(
-        with_machine_code(make(code, ErrorSource::Io, message), machine_code),
-        str.concat(operation, str.concat(" ", path_value)),
-    )
+    let machine_code = if status <= 0 {
+        code_machine(code)
+    } else {
+        status
+    }
+    return with_context(with_machine_code(make(code, ErrorSource::Io, message), machine_code), str.concat(operation, str.concat(" ", path_value)),)
 }
-
-fn from_process_failure(
-    command: str,
-    exit_code: i32,
-    timed_out: i32,
-    cancelled: i32,
-    signal: i32,
-    message: str
-) -> Error {
-    let mut code = ErrorCode::Internal
-    if cancelled == 1 {
+fn from_process_failure(command: str, exit_code: i32, timed_out: i32, cancelled: i32, signal: i32, message: str) -> Error {
+    let mut code = ErrorCode::Internal if cancelled == 1 {
         code = ErrorCode::Cancelled
     } else {
         if timed_out == 1 {
@@ -461,8 +217,7 @@ fn from_process_failure(
             }
         }
     }
-    let mut err = make(code, ErrorSource::Process, message)
-    if exit_code > 0 && code == ErrorCode::Internal {
+    let mut err = make(code, ErrorSource::Process, message) if exit_code > 0 & & code == ErrorCode::Internal {
         err = with_machine_code(err, exit_code)
     }
     if signal > 0 {
@@ -470,25 +225,20 @@ fn from_process_failure(
     }
     return with_context(err, str.concat("cmd ", command))
 }
-
 fn from_security_failure(message: str) -> Error {
     return make(ErrorCode::Security, ErrorSource::Security, message)
 }
-
 fn from_gpu_failure(message: str) -> Error {
     return make(ErrorCode::Gpu, ErrorSource::Gpu, message)
 }
-
 fn from_ffi_failure(message: str) -> Error {
     return make(ErrorCode::Ffi, ErrorSource::Ffi, message)
 }
-
 fn from_native_runtime(code_value: i32, class_value: i32, message: str, context: str) -> Error {
-    if code_value == 0 && sanitize_message(message) == "" && sanitize_context(context) == "" {
+    if code_value == 0 & & sanitize_message(message) == "" & & sanitize_context(context) == "" {
         return clear()
     }
-    let mut code = ErrorCode::Internal
-    if code_value >= 400 && code_value < 600 {
+    let mut code = ErrorCode::Internal if code_value >= 400 & & code_value < 600 {
         code = from_status(code_value, ErrorSource::Runtime, message).code
     } else {
         if code_value == 2 {
@@ -503,7 +253,7 @@ fn from_native_runtime(code_value: i32, class_value: i32, message: str, context:
                     if code_value == 28 {
                         code = ErrorCode::ResourceExhausted
                     } else {
-                        if code_value == 60 || code_value == 110 {
+                        if code_value == 60 | | code_value == 110 {
                             code = ErrorCode::Timeout
                         } else {
                             if class_value == 3 {
@@ -515,20 +265,16 @@ fn from_native_runtime(code_value: i32, class_value: i32, message: str, context:
             }
         }
     }
-    let mut err = with_machine_code(make(code, ErrorSource::Runtime, message), code_value)
-    if code_value >= 400 && code_value < 600 {
+    let mut err = with_machine_code(make(code, ErrorSource::Runtime, message), code_value) if code_value >= 400 & & code_value < 600 {
         err = with_status(err, code_value)
     }
     return with_context(err, context)
 }
-
 fn current_runtime_error() -> Error {
     return from_native_runtime(error.code(), error.class(), error.message(), "")
 }
-
 fn should_retry(err: Error, attempt: i32, max_attempts: i32) -> i32 {
-    let safe = normalize(err)
-    if max_attempts < 1 {
+    let safe = normalize(err) if max_attempts < 1 {
         return 0
     }
     if attempt < 0 {
@@ -539,21 +285,14 @@ fn should_retry(err: Error, attempt: i32, max_attempts: i32) -> i32 {
     }
     return safe.retryable
 }
-
 fn render(err: Error) -> str {
-    let safe = normalize(err)
-    if is_clear(safe) == 1 {
+    let safe = normalize(err) if is_clear(safe) == 1 {
         return "ok"
     }
-    let mut out = str.concat(source_name(safe.source), str.concat(".", code_name(safe.code)))
-    out = str.concat(out, str.concat(" status=", str.from_i32(safe.status)))
-    out = str.concat(out, str.concat(" retryable=", str.from_i32(safe.retryable)))
-    out = str.concat(out, str.concat(" category=", category_name(safe.category)))
-    out = str.concat(out, str.concat(": ", safe.message))
-    if safe.context != "" {
+    let mut out = str.concat(source_name(safe.source), str.concat(".", code_name(safe.code))) out = str.concat(out, str.concat(" status=", str.from_i32(safe.status))) out = str.concat(out, str.concat(" retryable=", str.from_i32(safe.retryable))) out = str.concat(out, str.concat(" category=", category_name(safe.category))) out = str.concat(out, str.concat(": ", safe.message)) if safe.context != "" {
         out = str.concat(out, str.concat(" [", str.concat(safe.context, "]")))
     }
-    if safe.cause_machine_code != 0 || safe.cause_message != "" {
+    if safe.cause_machine_code != 0 | | safe.cause_message != "" {
         out = str.concat(out, str.concat(" <- ", safe.cause_message))
     }
     return out

@@ -1,31 +1,38 @@
+// core
+// Package root for the shipped core standard library. `core/src` is reserved
+// for public `core.*` shelves only; compiler/runtime-only helpers live under
+// `core/internal/` and are intentionally absent from the language-facing import
+// story. Each public file here is the canonical authoring surface, even when it
+// delegates to hidden intrinsics or native runtime contracts.
+// Hidden subsystems:
+// - builtin namespaces: `env.*`, `str.*`, `json.*`, `list.*`, `map.*`, `route.*`
+// - native capability/runtime namespaces: `fs.*`, `proc.*`, `time.*`, `error.*`
+// - compiler/runtime implementation shelves relocated under `core/internal/`
 use core.error;
-
-// Canonical public stdlib surface.
-mod text;
 mod bytes;
+mod collections;
+mod crypto;
 mod duration;
-mod io;
-mod process;
-mod term;
+mod encoding;
+mod error;
+mod fs;
+mod gpu;
 mod http;
+mod io;
 mod log;
 mod mem;
-mod thread;
-mod security;
-mod result;
-mod simd;
 mod network;
-
-// Internal support modules. These are implementation detail shelves, not
-// canonical product-facing namespaces.
-mod capability;
-mod retry;
-mod concurrency;
-// FFI contracts live in language/tooling surfaces, not in a public `core.*`
-// import path.
-mod abi;
-mod cinterop;
-
+mod path;
+mod proc;
+mod process;
+mod result;
+mod security;
+mod simd;
+mod storage;
+mod term;
+mod text;
+mod thread;
+mod time;
 pub fn version() -> str {
     return "0.2.0"
 }

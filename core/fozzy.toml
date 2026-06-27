@@ -8,4 +8,4 @@ path = "src/lib.fzy"
 
 [[target.bin]]
 name = "core_smoke"
-path = "src/main.fzy"
+path = "internal/core_smoke_main.fzy"

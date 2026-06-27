@@ -1,140 +1,86 @@
+// core.log
+// Public facade for structured logging policy and event composition. Hidden
+// subsystems include runtime sink configuration, capability-gated log delivery,
+// and native error propagation for logging backends.
 use core.log;
-
 enum LogLevel {
-    Info,
-    Warn,
-    Error,
+    Info, Warn, Error,
 }
-
 enum LogSink {
-    Stdout,
-    Stderr,
+    Stdout, Stderr,
 }
-
 enum Redaction {
-    Public,
-    Secret,
+    Public, Secret,
 }
-
 struct LoggerConfig {
-    json: i32,
-    include_correlation: i32,
-    max_field_bytes: i32,
-    sample_every_n: i32,
-    enabled: i32,
-    sink: LogSink,
-    min_level: LogLevel,
+    json: i32, include_correlation: i32, max_field_bytes: i32, sample_every_n: i32, enabled: i32, sink: LogSink, min_level: LogLevel,
 }
-
 struct SamplingPolicy {
     every_n: i32,
 }
-
 struct Correlation {
-    request_id: str,
-    trace_id: str,
-    span_id: str,
+    request_id: str, trace_id: str, span_id: str,
 }
-
 struct Event {
-    level: LogLevel,
-    message: str,
-    fields: MapHandle,
-    correlation: Correlation,
+    level: LogLevel, message: str, fields: MapHandle, correlation: Correlation,
 }
-
 fn default_config() -> LoggerConfig {
     return LoggerConfig {
-        json: 1,
-        include_correlation: 1,
-        max_field_bytes: 256,
-        sample_every_n: 1,
-        enabled: 1,
-        sink: LogSink::Stdout,
-        min_level: LogLevel::Info,
+        json: 1, include_correlation: 1, max_field_bytes: 256, sample_every_n: 1, enabled: 1, sink: LogSink::Stdout, min_level: LogLevel::Info,
     }
 }
-
 fn default_sampling() -> SamplingPolicy {
     return SamplingPolicy {
         every_n: 1,
     }
 }
-
 fn sampling_policy(every_n: i32) -> SamplingPolicy {
-    let mut safe = every_n
-    if safe < 1 {
+    let mut safe = every_n if safe < 1 {
         safe = 1
     }
     return SamplingPolicy {
         every_n: safe,
     }
 }
-
 fn correlation(request_id: str, trace_id: str, span_id: str) -> Correlation {
     return Correlation {
-        request_id: request_id,
-        trace_id: trace_id,
-        span_id: span_id,
+        request_id: request_id, trace_id: trace_id, span_id: span_id,
     }
 }
-
 fn event(level: LogLevel, message: str) -> Event {
     return Event {
-        level: level,
-        message: message,
-        fields: map.new(),
-        correlation: correlation("", "", ""),
+        level: level, message: message, fields: map.new(), correlation: correlation("", "", ""),
     }
 }
-
 fn level_name(level: LogLevel) -> str {
     match level {
-        LogLevel::Warn => return "warn",
-        LogLevel::Error => return "error",
-        _ => return "info",
+        LogLevel::Warn => return "warn", LogLevel::Error => return "error", _ => return "info",
     }
 }
-
 fn sink_name(sink: LogSink) -> str {
     match sink {
-        LogSink::Stderr => return "stderr",
-        _ => return "stdout",
+        LogSink::Stderr => return "stderr", _ => return "stdout",
     }
 }
-
 fn level_rank(level: LogLevel) -> i32 {
     match level {
-        LogLevel::Info => return 1,
-        LogLevel::Warn => return 2,
-        LogLevel::Error => return 3,
-        _ => return 1,
+        LogLevel::Info => return 1, LogLevel::Warn => return 2, LogLevel::Error => return 3, _ => return 1,
     }
 }
-
 fn normalize_flag(value: i32) -> i32 {
     if value == 0 {
         return 0
     }
     return 1
 }
-
 fn sanitize_config(config: LoggerConfig) -> LoggerConfig {
-    let mut max_field_bytes = config.max_field_bytes
-    if max_field_bytes < 1 {
+    let mut max_field_bytes = config.max_field_bytes if max_field_bytes < 1 {
         max_field_bytes = 1
     }
     return LoggerConfig {
-        json: normalize_flag(config.json),
-        include_correlation: normalize_flag(config.include_correlation),
-        max_field_bytes: max_field_bytes,
-        sample_every_n: sampling_policy(config.sample_every_n).every_n,
-        enabled: normalize_flag(config.enabled),
-        sink: config.sink,
-        min_level: config.min_level,
+        json: normalize_flag(config.json), include_correlation: normalize_flag(config.include_correlation), max_field_bytes: max_field_bytes, sample_every_n: sampling_policy(config.sample_every_n).every_n, enabled: normalize_flag(config.enabled), sink: config.sink, min_level: config.min_level,
     }
 }
-
 fn clamp_field(value: str, max_bytes: i32) -> str {
     if max_bytes < 1 {
         return ""
@@ -144,115 +90,77 @@ fn clamp_field(value: str, max_bytes: i32) -> str {
     }
     return str.slice(value, 0, max_bytes)
 }
-
 fn normalize_key(key: str) -> str {
     return str.lower_ascii(str.trim(key))
 }
-
 fn redact_value(value: str, mode: Redaction, max_bytes: i32) -> str {
     match mode {
-        Redaction::Secret => return clamp_field("[redacted]", max_bytes),
-        _ => return clamp_field(value, max_bytes),
+        Redaction::Secret => return clamp_field("[redacted]", max_bytes), _ => return clamp_field(value, max_bytes),
     }
 }
-
 fn default_max_field_bytes() -> i32 {
     return 256
 }
-
 fn field_with_limit(event_value: Event, key: str, value: str, redaction: Redaction, max_field_bytes: i32) -> Event {
-    let safe_key = normalize_key(key)
-    if safe_key == "" {
+    let safe_key = normalize_key(key) if safe_key == "" {
         return event_value
     }
-    let payload = json.str(redact_value(value, redaction, max_field_bytes))
-    discard map.set(event_value.fields, safe_key, payload)
-    return Event {
-        level: event_value.level,
-        message: event_value.message,
-        fields: event_value.fields,
-        correlation: event_value.correlation,
+    let payload = json.str(redact_value(value, redaction, max_field_bytes)) discard map.set(event_value.fields, safe_key, payload) return Event {
+        level: event_value.level, message: event_value.message, fields: event_value.fields, correlation: event_value.correlation,
     }
 }
-
 fn field_with_redaction(event_value: Event, key: str, value: str, redaction: Redaction) -> Event {
     return field_with_limit(event_value, key, value, redaction, default_max_field_bytes())
 }
-
 fn field(event_value: Event, key: str, value: str) -> Event {
     return field_with_redaction(event_value, key, value, Redaction::Public)
 }
-
 fn secret_field(event_value: Event, key: str, value: str) -> Event {
     return field_with_redaction(event_value, key, value, Redaction::Secret)
 }
-
 fn with_correlation(event_value: Event, ids: Correlation) -> Event {
     return Event {
-        level: event_value.level,
-        message: event_value.message,
-        fields: event_value.fields,
-        correlation: ids,
+        level: event_value.level, message: event_value.message, fields: event_value.fields, correlation: ids,
     }
 }
-
 fn set_json_mode(enabled: i32) -> i32 {
     return log.set_json(enabled)
 }
-
 fn set_logging_enabled(enabled: i32) -> i32 {
     return log.set_enabled(enabled)
 }
-
 fn set_level_name(level: str) -> i32 {
     return log.set_level(level)
 }
-
 fn set_min_level(level: LogLevel) -> i32 {
     return set_level_name(level_name(level))
 }
-
 fn set_sink_name(sink: str) -> i32 {
     return log.set_sink(sink)
 }
-
 fn set_output_sink(sink: LogSink) -> i32 {
     return set_sink_name(sink_name(sink))
 }
-
 fn use_stdout() -> i32 {
     return set_output_sink(LogSink::Stdout)
 }
-
 fn use_stderr() -> i32 {
     return set_output_sink(LogSink::Stderr)
 }
-
 fn quiet() -> i32 {
     return set_logging_enabled(0)
 }
-
 fn verbose() -> i32 {
     return set_logging_enabled(1)
 }
-
 fn apply_config(config: LoggerConfig) -> i32 {
-    let safe = sanitize_config(config)
-    let mut rc = 0
-    rc = rc + set_logging_enabled(safe.enabled)
-    rc = rc + set_json_mode(safe.json)
-    rc = rc + set_output_sink(safe.sink)
-    rc = rc + set_min_level(safe.min_level)
-    return rc
+    let safe = sanitize_config(config) let mut rc = 0 rc = rc + set_logging_enabled(safe.enabled) rc = rc + set_json_mode(safe.json) rc = rc + set_output_sink(safe.sink) rc = rc + set_min_level(safe.min_level) return rc
 }
-
 fn set_policy(config: LoggerConfig) -> i32 {
     return apply_config(config)
 }
-
 fn should_emit(config: LoggerConfig, level: LogLevel) -> i32 {
-    let safe = sanitize_config(config)
-    if safe.enabled == 0 {
+    let safe = sanitize_config(config) if safe.enabled == 0 {
         return 0
     }
     if level_rank(level) < level_rank(safe.min_level) {
@@ -260,21 +168,18 @@ fn should_emit(config: LoggerConfig, level: LogLevel) -> i32 {
     }
     return 1
 }
-
 fn should_sample(counter: i32, policy: SamplingPolicy) -> i32 {
-    let safe = sampling_policy(policy.every_n)
-    if safe.every_n <= 1 {
+    let safe = sampling_policy(policy.every_n) if safe.every_n <= 1 {
         return 1
     }
     if counter < 0 {
         return 0
     }
-    if (counter % safe.every_n) == 0 {
+    if (counter% safe.every_n) == 0 {
         return 1
     }
     return 0
 }
-
 fn attach_correlation_fields(fields: MapHandle, ids: Correlation, max_field_bytes: i32) -> i32 {
     if ids.request_id != "" {
         discard map.set(fields, "request_id", json.str(clamp_field(ids.request_id, max_field_bytes)))
@@ -287,29 +192,20 @@ fn attach_correlation_fields(fields: MapHandle, ids: Correlation, max_field_byte
     }
     return 0
 }
-
 fn emit(config: LoggerConfig, event_value: Event) -> i32 {
-    let safe = sanitize_config(config)
-    if should_emit(safe, event_value.level) == 0 {
+    let safe = sanitize_config(config) if should_emit(safe, event_value.level) == 0 {
         return 0
     }
     if safe.include_correlation == 1 {
         discard attach_correlation_fields(event_value.fields, event_value.correlation, safe.max_field_bytes)
     }
-    let msg = clamp_field(event_value.message, safe.max_field_bytes)
-    let payload = log.fields(event_value.fields)
-    match event_value.level {
-        LogLevel::Warn => discard log.warn(msg, payload),
-        LogLevel::Error => discard log.error(msg, payload),
-        _ => discard log.info(msg, payload),
+    let msg = clamp_field(event_value.message, safe.max_field_bytes) let payload = log.fields(event_value.fields) match event_value.level {
+        LogLevel::Warn => discard log.warn(msg, payload), LogLevel::Error => discard log.error(msg, payload), _ => discard log.info(msg, payload),
     }
     match event_value.level {
-        LogLevel::Warn => return 2,
-        LogLevel::Error => return 3,
-        _ => return 1,
+        LogLevel::Warn => return 2, LogLevel::Error => return 3, _ => return 1,
     }
 }
-
 fn emit_sampled(config: LoggerConfig, policy: SamplingPolicy, counter: i32, event_value: Event) -> i32 {
     if should_sample(counter, policy) == 0 {
         return 0

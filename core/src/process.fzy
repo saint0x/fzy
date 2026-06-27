@@ -1,67 +1,42 @@
+// core.process
+// Public ergonomic facade over `core.proc` and the native process runtime.
+// Hidden subsystems include argv/env/process-handle intrinsics, capability
+// gates, timeout handling, and backend execution contracts.
 use core.proc;
-
 enum ExitClass {
-    Ok,
-    Failure,
-    Timeout,
-    Cancelled,
-    Signaled,
+    Ok, Failure, Timeout, Cancelled, Signaled,
 }
-
 struct CurrentProcess {
-    argc: i32,
-    command: str,
+    argc: i32, command: str,
 }
-
 struct ProcessLimits {
-    wait_timeout_ms: i32,
-    max_output_bytes: i32,
-    max_children: i32,
+    wait_timeout_ms: i32, max_output_bytes: i32, max_children: i32,
 }
-
 struct ProcessObservation {
-    wait_status: i32,
-    polled_ready: i32,
-    exit_code: i32,
-    timed_out: i32,
-    cancelled: i32,
-    signal: i32,
-    class: ExitClass,
-    stdout: str,
-    stderr: str,
+    wait_status: i32, polled_ready: i32, exit_code: i32, timed_out: i32, cancelled: i32, signal: i32, class: ExitClass, stdout: str, stderr: str,
 }
-
 fn current() -> CurrentProcess {
     return CurrentProcess {
-        argc: proc.argv_count(),
-        command: proc.argv_get(0),
+        argc: proc.argv_count(), command: proc.argv_get(0),
     }
 }
-
 fn argv_count() -> i32 {
     return current().argc
 }
-
 fn argv(index: i32) -> str {
     return proc.argv_get(index)
 }
-
 fn argv_or(index: i32, fallback: str) -> str {
-    let value = argv(index)
-    if value == "" {
+    let value = argv(index) if value == "" {
         return fallback
     }
     return value
 }
-
 fn command_name() -> str {
     return current().command
 }
-
 fn has_flag(flag: str) -> i32 {
-    let count = argv_count()
-    let mut index = 1
-    while index < count {
+    let count = argv_count() let mut index = 1 while index < count {
         if argv(index) == flag {
             return 1
         }
@@ -69,78 +44,53 @@ fn has_flag(flag: str) -> i32 {
     }
     return 0
 }
-
 fn close(handle: ProcessHandle) -> i32 {
     return proc.close(handle)
 }
-
 fn poll(handle: ProcessHandle) -> i32 {
     return proc.poll(handle)
 }
-
 fn stdout(handle: ProcessHandle) -> str {
     return proc.stdout(handle)
 }
-
 fn stderr(handle: ProcessHandle) -> str {
     return proc.stderr(handle)
 }
-
 fn exit_code(handle: ProcessHandle) -> i32 {
     return proc.exit_code(handle)
 }
-
 fn default_limits() -> ProcessLimits {
     return ProcessLimits {
-        wait_timeout_ms: 30000,
-        max_output_bytes: 1048576,
-        max_children: 16,
+        wait_timeout_ms: 30000, max_output_bytes: 1048576, max_children: 16,
     }
 }
-
 fn sanitize_limits(limits: ProcessLimits) -> ProcessLimits {
-    let mut wait_timeout_ms = limits.wait_timeout_ms
-    let mut max_output_bytes = limits.max_output_bytes
-    let mut max_children = limits.max_children
-    if wait_timeout_ms < 1 { wait_timeout_ms = 1 }
-    if max_output_bytes < 0 { max_output_bytes = 0 }
-    if max_children < 1 { max_children = 1 }
+    let mut wait_timeout_ms = limits.wait_timeout_ms let mut max_output_bytes = limits.max_output_bytes let mut max_children = limits.max_children if wait_timeout_ms < 1 {
+        wait_timeout_ms = 1
+    }
+    if max_output_bytes < 0 {
+        max_output_bytes = 0
+    }
+    if max_children < 1 {
+        max_children = 1
+    }
     return ProcessLimits {
-        wait_timeout_ms: wait_timeout_ms,
-        max_output_bytes: max_output_bytes,
-        max_children: max_children,
+        wait_timeout_ms: wait_timeout_ms, max_output_bytes: max_output_bytes, max_children: max_children,
     }
 }
-
 fn classify_exit(exit_code: i32, timed_out: i32, cancelled: i32, signal: i32) -> ExitClass {
-    if cancelled == 1 then return ExitClass::Cancelled
-    if timed_out == 1 then return ExitClass::Timeout
-    if signal > 0 then return ExitClass::Signaled
-    if exit_code == 0 then return ExitClass::Ok
-    return ExitClass::Failure
+    if cancelled == 1 then return ExitClass::Cancelled if timed_out == 1 then return ExitClass::Timeout if signal > 0 then return ExitClass::Signaled if exit_code == 0 then return ExitClass::Ok return ExitClass::Failure
 }
-
 fn observe(handle: ProcessHandle, timeout_ms: i32) -> ProcessObservation {
     let safe_timeout_ms = sanitize_limits(ProcessLimits {
-        wait_timeout_ms: timeout_ms,
-        max_output_bytes: 0,
-        max_children: 1,
-    }).wait_timeout_ms
-    let wait_status = proc.wait(handle, safe_timeout_ms)
-    let polled_ready = proc.poll(handle)
-    let stdout = proc.stdout(handle)
-    let stderr = proc.stderr(handle)
-    let exit_code = proc.exit_code(handle)
-    let timed_out = if wait_status == 0 { 0 } else { 1 }
+        wait_timeout_ms: timeout_ms, max_output_bytes: 0, max_children: 1,
+    }
+    ).wait_timeout_ms let wait_status = proc.wait(handle, safe_timeout_ms) let polled_ready = proc.poll(handle) let stdout = proc.stdout(handle) let stderr = proc.stderr(handle) let exit_code = proc.exit_code(handle) let timed_out = if wait_status == 0 {
+        0
+    } else {
+        1
+    }
     return ProcessObservation {
-        wait_status: wait_status,
-        polled_ready: polled_ready,
-        exit_code: exit_code,
-        timed_out: timed_out,
-        cancelled: 0,
-        signal: 0,
-        class: classify_exit(exit_code, timed_out, 0, 0),
-        stdout: stdout,
-        stderr: stderr,
+        wait_status: wait_status, polled_ready: polled_ready, exit_code: exit_code, timed_out: timed_out, cancelled: 0, signal: 0, class: classify_exit(exit_code, timed_out, 0, 0), stdout: stdout, stderr: stderr,
     }
 }

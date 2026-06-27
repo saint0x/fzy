@@ -1,15 +1,16 @@
+// core.bytes
+// Public facade for byte-oriented helpers. This shelf is authored directly in
+// Fzy and stays intentionally small; native runtime byte-buffer internals and
+// endian details remain hidden behind this stable `core.*` contract.
 fn clamp_byte(value: i32) -> i32 {
-    let mut safe = value
-    if safe < 0 { safe = 0 }
-    if safe > 255 { safe = 255 }
+    let mut safe = value if safe < 0 {
+        safe = 0
+    }
+    if safe > 255 {
+        safe = 255
+    }
     return safe
 }
-
 fn read_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
-    let byte0 = clamp_byte(b0)
-    let byte1 = clamp_byte(b1)
-    let byte2 = clamp_byte(b2)
-    let byte3 = clamp_byte(b3)
-    return byte0 + (byte1 << 8) + (byte2 << 16) + (byte3 << 24)
+    let byte0 = clamp_byte(b0) let byte1 = clamp_byte(b1) let byte2 = clamp_byte(b2) let byte3 = clamp_byte(b3) return byte0 + (byte1 < < 8) + (byte2 < < 16) + (byte3 < < 24)
 }
-
