@@ -1,6 +1,6 @@
-use super::*;
 use super::clif::{ast_signature_type_to_clif_type, pointer_sized_clif_type};
 use super::native_runtime_tables::native_runtime_imports;
+use super::*;
 
 #[path = "native_backend_support/diag.rs"]
 mod diag;

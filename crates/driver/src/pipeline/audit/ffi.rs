@@ -362,4 +362,3 @@ pub(crate) fn render_native_runtime_contracts_markdown(value: &serde_json::Value
     }
     out
 }
-

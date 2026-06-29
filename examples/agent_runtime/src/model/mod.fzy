@@ -25,9 +25,9 @@ fn tool_record_json(tool_id: str, kind: str, mode: str, description: str) -> str
 
 fn tool_catalog_json() -> str {
     let tools = list.new()
-    discard list.push(tools, json.raw(tool_record_json("bash", "process", "single", "Run one bounded shell command")))
-    discard list.push(tools, json.raw(tool_record_json("repo_inspect", "read", "single", "Inspect local files and cite exact paths")))
-    discard list.push(tools, json.raw(tool_record_json("parallel_plan", "orchestrator", "batch", "Break a task into bounded parallel work")))
+    discard list.push(tools, tool_record_json("bash", "process", "single", "Run one bounded shell command"))
+    discard list.push(tools, tool_record_json("repo_inspect", "read", "single", "Inspect local files and cite exact paths"))
+    discard list.push(tools, tool_record_json("parallel_plan", "orchestrator", "batch", "Break a task into bounded parallel work"))
     return json.array(tools)
 }
 

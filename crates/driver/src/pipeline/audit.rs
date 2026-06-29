@@ -1,11 +1,11 @@
 use super::*;
 
-#[path = "audit/rpc.rs"]
-mod rpc;
 #[path = "audit/ffi.rs"]
 mod ffi;
 #[path = "audit/mem.rs"]
 mod mem;
+#[path = "audit/rpc.rs"]
+mod rpc;
 #[path = "audit/task.rs"]
 mod task;
 

@@ -1,9 +1,9 @@
 use super::*;
 
-#[path = "event/gpu.rs"]
-mod gpu;
 #[path = "event/finding.rs"]
 mod finding;
+#[path = "event/gpu.rs"]
+mod gpu;
 #[path = "event/group.rs"]
 mod group;
 

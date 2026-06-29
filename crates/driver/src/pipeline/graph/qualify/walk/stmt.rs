@@ -12,7 +12,13 @@ pub(crate) fn qualify_stmt(
             if let Some(ty) = ty {
                 qualify_type(ty, namespace, local_types, module_aliases);
             }
-            qualify_expr(value, namespace, local_functions, local_types, module_aliases)
+            qualify_expr(
+                value,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            )
         }
         ast::Stmt::LetPattern {
             pattern, ty, value, ..
@@ -21,7 +27,13 @@ pub(crate) fn qualify_stmt(
             if let Some(ty) = ty {
                 qualify_type(ty, namespace, local_types, module_aliases);
             }
-            qualify_expr(value, namespace, local_functions, local_types, module_aliases)
+            qualify_expr(
+                value,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            )
         }
         ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
@@ -102,7 +114,13 @@ pub(crate) fn qualify_stmt(
             body,
         } => {
             if let Some(init) = init {
-                qualify_stmt(init, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    init,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             if let Some(condition) = condition {
                 qualify_expr(
@@ -114,7 +132,13 @@ pub(crate) fn qualify_stmt(
                 );
             }
             if let Some(step) = step {
-                qualify_stmt(step, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    step,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             for stmt in body {
                 qualify_stmt(

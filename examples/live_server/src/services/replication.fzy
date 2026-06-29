@@ -4,6 +4,7 @@ fn push_state() -> i32 {
     let listener_owned: HttpHandle = http.bind("127.0.0.1:8080");
     http.listen(listener_owned);
     let conn_owned: HttpHandle = http.accept();
+    timeout(1000);
     http.read(conn_owned);
     http.write(conn_owned, 200, "ok");
     close(listener_owned);

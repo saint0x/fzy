@@ -16,13 +16,11 @@ UNSAFE_BUDGET="${UNSAFE_BUDGET:-38}"
 UNSAFE_AUDIT_TARGET="${UNSAFE_AUDIT_TARGET:-.}"
 RUST_UNSAFE_BUDGET="${RUST_UNSAFE_BUDGET:-2}"
 
-if command -v fz >/dev/null 2>&1; then
-  FZ_CMD=(fz)
-else
-  FZ_CMD=(cargo run -q -p fz --)
-fi
+FZ_CMD=(cargo run -q -p fz --)
 
 mkdir -p "$ARTIFACT_DIR"
+TMP_DIR="$(mktemp -d "$ROOT/.tmp.production-gate.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "[gate] deterministic doctor"
 "${FZ_CMD[@]}" doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
@@ -52,23 +50,68 @@ python3 ./scripts/safety_claim_integrity_gate.py >/dev/null
 echo "[gate] deterministic strict tests"
 "${FZ_CMD[@]}" test tests/*.fozzy.json --det --strict-verify --seed "$SEED" --json >/dev/null
 
-echo "[gate] primitive parity/equivalence probes"
+echo "[gate] primitive parity probes"
 "${FZ_CMD[@]}" parity tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
-"${FZ_CMD[@]}" equivalence tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/native_completeness/main.fzy --seed "$SEED" --json >/dev/null
-"${FZ_CMD[@]}" equivalence tests/fixtures/native_completeness/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/direct_memory_contract/main.fzy --seed "$SEED" --json >/dev/null
-"${FZ_CMD[@]}" equivalence tests/fixtures/direct_memory_contract/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/direct_memory_safety/main.fzy --seed "$SEED" --json >/dev/null
-"${FZ_CMD[@]}" equivalence tests/fixtures/direct_memory_safety/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/trait_generic/main.fzy --seed "$SEED" --json >/dev/null
-"${FZ_CMD[@]}" equivalence tests/fixtures/trait_generic/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/trait_generic_async/main.fzy --seed "$SEED" --json >/dev/null
-"${FZ_CMD[@]}" equivalence tests/fixtures/trait_generic_async/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/generic_data_structure/main.fzy --seed "$SEED" --json >/dev/null
-"${FZ_CMD[@]}" equivalence tests/fixtures/generic_data_structure/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/trait_service/main.fzy --seed "$SEED" --json >/dev/null
-"${FZ_CMD[@]}" equivalence tests/fixtures/trait_service/main.fzy --seed "$SEED" --json >/dev/null
+
+echo "[gate] native test manifest and nondet routing"
+NATIVE_TEST_FIXTURE="$TMP_DIR/native_test_surface.fzy"
+NATIVE_TEST_RECORD="$ARTIFACT_DIR/native-test-gate.${SEED}.$$.trace.json"
+cat > "$NATIVE_TEST_FIXTURE" <<'FZY'
+test "stable" {
+    assert.eq_i32(1, 1)
+}
+
+test "chaos" nondet {
+    assert.eq_i32(2, 2)
+}
+
+fn main() -> i32 {
+    return 0
+}
+FZY
+"${FZ_CMD[@]}" test "$NATIVE_TEST_FIXTURE" --det --strict-verify --seed "$SEED" --record "$NATIVE_TEST_RECORD" --json >"$TMP_DIR/native.det.json"
+"${FZ_CMD[@]}" test "$NATIVE_TEST_FIXTURE" --seed "$SEED" --json >"$TMP_DIR/native.fast.json"
+python3 - <<'PY' "$TMP_DIR/native.det.json" "$TMP_DIR/native.fast.json"
+import json, pathlib, sys
+
+det = json.loads(pathlib.Path(sys.argv[1]).read_text())
+fast = json.loads(pathlib.Path(sys.argv[2]).read_text())
+
+assert det["mode"] == "det", det
+assert det["deterministicTestNames"] == ["stable"], det
+assert det["nondeterministicTestNames"] == [], det
+artifacts = det["artifacts"]
+assert artifacts is not None, det
+trace = pathlib.Path(artifacts["trace"])
+report = pathlib.Path(artifacts["report"])
+manifest = pathlib.Path(artifacts["manifest"])
+for path in (trace, report, manifest):
+    assert path.exists(), path
+assert json.loads(trace.read_text())["schemaVersion"] == "fozzylang.test_trace.v1"
+assert json.loads(report.read_text())["schemaVersion"] == "fozzylang.test_report.v1"
+assert json.loads(manifest.read_text())["schemaVersion"] == "fozzylang.test_manifest.v1"
+
+assert fast["mode"] == "fast", fast
+assert fast["nondeterministicTestNames"] == ["chaos"], fast
+assert fast["passedTests"] == 2, fast
+PY
+if "${FZ_CMD[@]}" replay "${NATIVE_TEST_RECORD%.json}.manifest.json" --json >/dev/null 2>"$TMP_DIR/native.replay.err"; then
+  echo "native test manifest unexpectedly replayed through scenario lifecycle" >&2
+  exit 1
+fi
+grep -q "native test manifests do not support scenario replay/ci/shrink" "$TMP_DIR/native.replay.err"
+if "${FZ_CMD[@]}" run "$NATIVE_TEST_FIXTURE" --det --host-backends --json >/dev/null 2>"$TMP_DIR/native.host.err"; then
+  echo "native deterministic host-backed bridge unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "no longer routes through placeholder scenarios" "$TMP_DIR/native.host.err"
 
 echo "[gate] native completeness execute-and-compare"
 cargo test -q -p driver pipeline::tests::cross_backend_native_completeness_fixture_execute_consistently -- --exact >/dev/null

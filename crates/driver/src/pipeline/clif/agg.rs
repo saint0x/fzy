@@ -214,4 +214,3 @@ pub(crate) fn clif_local_is_aggregate(name: &str, ctx: &ClifLoweringCtx<'_>) -> 
         Some(ast::Type::Tuple(_)) | Some(ast::Type::Named { .. })
     )
 }
-

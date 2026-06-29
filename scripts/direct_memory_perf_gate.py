@@ -8,6 +8,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BENCH_JSON = ROOT / "artifacts" / "bench_core_rust_vs_fzy.json"
 
+BENCH_ALIASES = {
+    "result_classify": "resultx_classify",
+}
+
 KERNEL_THRESHOLDS = {
     "bytes_kernel": 1.40,
     "result_classify": 1.30,
@@ -49,6 +53,8 @@ def main() -> int:
     for bench, threshold in KERNEL_THRESHOLDS.items():
         ratio = benches.get(bench)
         if ratio is None:
+            ratio = benches.get(BENCH_ALIASES.get(bench, ""))
+        if ratio is None:
             errors.append(f"missing benchmark `{bench}` in artifact")
             continue
         if ratio > threshold:
@@ -59,6 +65,8 @@ def main() -> int:
     for bench, threshold in NEAR_PARITY_KERNELS.items():
         ratio = benches.get(bench)
         if ratio is None:
+            ratio = benches.get(BENCH_ALIASES.get(bench, ""))
+        if ratio is None:
             errors.append(f"missing benchmark `{bench}` in artifact")
             continue
         if ratio > threshold:
@@ -68,6 +76,8 @@ def main() -> int:
 
     for bench, threshold in KNOWN_DELTA_KERNELS.items():
         ratio = benches.get(bench)
+        if ratio is None:
+            ratio = benches.get(BENCH_ALIASES.get(bench, ""))
         if ratio is None:
             errors.append(f"missing benchmark `{bench}` in artifact")
             continue

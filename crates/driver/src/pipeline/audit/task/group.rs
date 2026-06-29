@@ -106,7 +106,9 @@ fn collect_task_group_terminal_param_expr(
                             param.name == *name && param.ty.to_string() == "TaskGroupHandle"
                         })
                     {
-                        terminal_params.entry(index).or_insert_with(|| callee.clone());
+                        terminal_params
+                            .entry(index)
+                            .or_insert_with(|| callee.clone());
                     }
                 }
             }

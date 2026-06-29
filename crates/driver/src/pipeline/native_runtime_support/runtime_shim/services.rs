@@ -2,10 +2,10 @@
 mod base;
 #[path = "services/fs.rs"]
 mod fs;
-#[path = "services/net.rs"]
-mod net;
 #[path = "services/json.rs"]
 mod json;
+#[path = "services/net.rs"]
+mod net;
 
 pub(super) fn runtime_shim_section_services() -> String {
     let mut out = String::new();

@@ -1,5 +1,5 @@
-use super::*;
 use super::super::llvm::lower_llvm_ir;
+use super::*;
 
 #[test]
 fn backend_override_rejects_removed_c_shim() {

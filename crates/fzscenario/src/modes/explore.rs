@@ -1683,7 +1683,11 @@ mod tests {
             name: "explicit".to_string(),
             distributed: crate::DistributedDef {
                 node_count: None,
-                nodes: Some(vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]),
+                nodes: Some(vec![
+                    "alpha".to_string(),
+                    "beta".to_string(),
+                    "gamma".to_string(),
+                ]),
                 steps: vec![DistributedStep::ClientPut {
                     node: "gamma".to_string(),
                     key: "k".to_string(),

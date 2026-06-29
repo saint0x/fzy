@@ -58,13 +58,16 @@ Run host-backed confidence pass:
 fz run tests/host.pass.fozzy.json --host-backends --json
 ```
 
-For native source tests, use a single command path:
+For host-backed test validation, use scenario inputs directly:
 
 ```bash
-fz test <module>.fzy --host-backends --json
+fz test tests/run.pass.fozzy.json --host-backends --json
 ```
 
-This automatically generates temporary scenario artifacts and runs host-backed execution without a separate manual scenario conversion step.
+Native `.fzy` test execution is a separate surface:
+
+- `fz test <module>.fzy --det ...` executes compiled deterministic test descriptors directly.
+- `fz test <module>.fzy --host-backends` is intentionally unsupported; use `.fozzy.json` scenarios for host-backed execution.
 
 For native CLI and terminal-facing products, validate both launch modes:
 
@@ -109,7 +112,7 @@ This gate includes:
 - workspace compiler pipeline gate (`cargo check --workspace`)
 - warning-free policy gate (`RUSTFLAGS="-D warnings"`)
 - workspace test gate (`cargo test --workspace`)
-- parity + equivalence representative language probes
+- parity plus native deterministic test/runtime representative probes
 - safety-claim integrity gate (`scripts/safety_claim_integrity_gate.py`)
 - release-blocking FFI examples gate (`fz headers` + `fz abi-check`)
 - strict deterministic and host-backed Fozzy lifecycle

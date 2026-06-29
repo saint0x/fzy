@@ -38,7 +38,10 @@ pub(crate) fn qualify_generic_suffix(
     if suffix.is_empty() {
         return String::new();
     }
-    let Some(inner) = suffix.strip_prefix('<').and_then(|value| value.strip_suffix('>')) else {
+    let Some(inner) = suffix
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+    else {
         return suffix.to_string();
     };
     let Some(parts) = split_top_level_type_args(inner) else {

@@ -103,7 +103,9 @@ fn collect_gpu_event_terminal_param_expr(
                             param.name == *name && param.ty.to_string() == "GpuEvent"
                         })
                     {
-                        terminal_params.entry(index).or_insert_with(|| callee.clone());
+                        terminal_params
+                            .entry(index)
+                            .or_insert_with(|| callee.clone());
                     }
                 }
             }

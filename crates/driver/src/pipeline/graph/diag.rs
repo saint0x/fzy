@@ -308,4 +308,3 @@ pub(crate) fn resolve_declared_module(base_dir: &Path, module_decl: &str) -> Res
         mod_candidate.display()
     ))
 }
-

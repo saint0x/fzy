@@ -1,5 +1,5 @@
-use super::*;
 use super::super::clif::{clif_emit_function_cfg, pointer_sized_clif_type};
+use super::*;
 
 pub(super) fn emit_native_libraries_cranelift(
     fir: &fir::FirModule,
@@ -14,8 +14,10 @@ pub(super) fn emit_native_libraries_cranelift(
     let object_path = build_dir.join(format!("{artifact_stem}.ffi.o"));
     let shim_obj_path = build_dir.join(format!("{artifact_stem}.ffi.runtime.o"));
     let static_path = build_dir.join(format!("lib{artifact_stem}.a"));
-    let shared_path =
-        build_dir.join(format!("lib{artifact_stem}.{}", super::link::shared_lib_extension()));
+    let shared_path = build_dir.join(format!(
+        "lib{artifact_stem}.{}",
+        super::link::shared_lib_extension()
+    ));
 
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
@@ -328,9 +330,9 @@ pub(super) fn emit_incremental_module_object_cranelift(
         if local_mutable_globals.contains(&name) {
             let mut data = DataDescription::new();
             data.define((value as i32).to_le_bytes().to_vec().into_boxed_slice());
-            module
-                .define_data(data_id, &data)
-                .map_err(|error| anyhow!("failed defining mutable static `{name}` data: {error}"))?;
+            module.define_data(data_id, &data).map_err(|error| {
+                anyhow!("failed defining mutable static `{name}` data: {error}")
+            })?;
         }
         mutable_global_data_ids.insert(name, data_id);
     }
@@ -432,7 +434,11 @@ pub(super) fn emit_incremental_module_object_cranelift(
             &mut locals,
             &mut next_var,
             if function.name == "main" && signature.ret == Some(types::I32) {
-                Some(plan.forced_main_return.or(fir.entry_return_const_i32).unwrap_or(0))
+                Some(
+                    plan.forced_main_return
+                        .or(fir.entry_return_const_i32)
+                        .unwrap_or(0),
+                )
             } else {
                 None
             },
@@ -440,7 +446,12 @@ pub(super) fn emit_incremental_module_object_cranelift(
         builder.finalize();
         module
             .define_function(function_id, &mut context)
-            .map_err(|error| anyhow!("failed defining cranelift function `{}`: {error:?}", function.name))?;
+            .map_err(|error| {
+                anyhow!(
+                    "failed defining cranelift function `{}`: {error:?}",
+                    function.name
+                )
+            })?;
         module.clear_context(&mut context);
     }
     let object_product = module.finish();

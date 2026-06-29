@@ -93,7 +93,12 @@ pub(crate) fn lsp_hover_command(path: &Path, symbol: &str, format: Format) -> Re
     }
 }
 
-pub(crate) fn lsp_rename_command(path: &Path, from: &str, to: &str, format: Format) -> Result<String> {
+pub(crate) fn lsp_rename_command(
+    path: &Path,
+    from: &str,
+    to: &str,
+    format: Format,
+) -> Result<String> {
     let summary = ide::rename_on_disk(path, from, to)?;
     match format {
         Format::Text => Ok(render_text_fields(&[

@@ -1,7 +1,7 @@
-use crate::*;
 use crate::lex::{
     core_stdlib_binding, core_stdlib_implied_capability, parser_catalog_key, parser_help,
 };
+use crate::*;
 
 impl Parser {
     fn at_ident(&self, expected: &str) -> bool {

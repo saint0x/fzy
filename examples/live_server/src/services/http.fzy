@@ -23,7 +23,7 @@ fn route_users() -> i32 {
     let body = http.body_json(conn_owned);
     let user = json.get_str(body, "user");
     let payload = map.new();
-    discard map.set(payload, "ok", json.raw("true"));
+    discard map.set(payload, "ok", "true");
     discard map.set(payload, "user", json.str(user));
     http.write_json(conn_owned, 200, json.object(payload));
     cancel();

@@ -24,6 +24,62 @@ pub struct TypedFunction {
     pub required_capabilities: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestMode {
+    Deterministic,
+    Nondeterministic,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestDescriptor {
+    pub id: String,
+    pub name: String,
+    pub function: String,
+    pub mode: TestMode,
+    pub module: Option<String>,
+    pub required_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestStatus {
+    Passed,
+    Failed,
+    TimedOut,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestRunEvent {
+    pub kind: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestRunOutcome {
+    pub descriptor: TestDescriptor,
+    pub status: TestStatus,
+    pub failure: Option<String>,
+    pub steps: usize,
+    pub events: Vec<TestRunEvent>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TestRunnerConfig {
+    pub max_steps: usize,
+}
+
+impl Default for TestRunnerConfig {
+    fn default() -> Self {
+        Self {
+            max_steps: 250_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TestSuiteOutcome {
+    pub runs: Vec<TestRunOutcome>,
+}
+
 #[derive(Debug, Clone)]
 struct PendingTypedFunction {
     name: String,

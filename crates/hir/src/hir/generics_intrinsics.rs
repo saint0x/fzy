@@ -232,7 +232,10 @@ pub(crate) fn collect_and_rewrite_explicit_generic_calls(
     rewrite_stmts(&mut function.body, templates, depth, queue, rewrite);
 }
 
-pub(crate) fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, String>) {
+pub(crate) fn rewrite_generic_calls_in_stmts(
+    stmts: &mut [Stmt],
+    rewrite: &HashMap<String, String>,
+) {
     fn rewrite_expr(expr: &mut Expr, rewrite: &HashMap<String, String>) {
         match expr {
             Expr::Call { callee, args } => {
@@ -706,7 +709,11 @@ pub(crate) fn runtime_signature_generics(params: &[Type], ret: &Type) -> Vec<ast
         .collect()
 }
 
-pub(crate) fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<String, Type>) -> bool {
+pub(crate) fn bind_typevars(
+    template: &Type,
+    concrete: &Type,
+    bindings: &mut BTreeMap<String, Type>,
+) -> bool {
     match template {
         Type::TypeVar(name) => {
             if let Some(existing) = bindings.get(name) {

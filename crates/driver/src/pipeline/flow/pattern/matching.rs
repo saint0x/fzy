@@ -25,7 +25,7 @@ pub(crate) fn pattern_to_expr(
                 op: ast::BinaryOp::Eq,
                 left: Box::new(ast::Expr::Ident(scrutinee_name.to_string())),
                 right: Box::new(ast::Expr::Int(
-                    super::variant_tag_for_key(&key, variant_tags) as i128
+                    super::variant_tag_for_key(&key, variant_tags) as i128,
                 )),
             }
         }

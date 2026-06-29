@@ -1,6 +1,6 @@
-use super::*;
 use super::clif::lower_cranelift_ir;
 use super::llvm::lower_llvm_ir;
+use super::*;
 
 pub(super) fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> Result<String> {
     let plan = build_native_canonical_plan(fir, true);
@@ -82,14 +82,14 @@ pub(super) struct NativeDataOp {
     pub(super) effect_boundary: NativeEffectBoundary,
 }
 
-#[path = "native_lowering/data.rs"]
-mod data;
 #[path = "native_lowering/contract.rs"]
 mod contract;
-#[path = "native_lowering/plan.rs"]
-mod plan;
+#[path = "native_lowering/data.rs"]
+mod data;
 #[path = "native_lowering/eval.rs"]
 mod eval;
+#[path = "native_lowering/plan.rs"]
+mod plan;
 
 pub(super) use self::contract::*;
 pub(super) use self::data::*;

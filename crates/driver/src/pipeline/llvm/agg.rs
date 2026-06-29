@@ -1,7 +1,11 @@
-use super::*;
 use super::super::clif::variant_tag_for_key;
+use super::*;
 
-pub(crate) fn llvm_cast_i64_to_ty(ctx: &mut LlvmFuncCtx, raw_value: String, target_ty: &str) -> LlvmValue {
+pub(crate) fn llvm_cast_i64_to_ty(
+    ctx: &mut LlvmFuncCtx,
+    raw_value: String,
+    target_ty: &str,
+) -> LlvmValue {
     match target_ty {
         "i64" => LlvmValue {
             value: raw_value,
@@ -195,7 +199,11 @@ pub(crate) fn llvm_local_is_aggregate(name: &str, ctx: &LlvmFuncCtx) -> bool {
     )
 }
 
-pub(crate) fn llvm_emit_aggregate_handle(tag: i32, items: &[LlvmValue], ctx: &mut LlvmFuncCtx) -> LlvmValue {
+pub(crate) fn llvm_emit_aggregate_handle(
+    tag: i32,
+    items: &[LlvmValue],
+    ctx: &mut LlvmFuncCtx,
+) -> LlvmValue {
     let handle = ctx.value();
     ctx.code.push_str(&format!(
         "  {handle} = call i64 @{}(i32 {tag}, i32 {})\n",

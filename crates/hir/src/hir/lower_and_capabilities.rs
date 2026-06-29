@@ -203,7 +203,7 @@ pub fn lower(module: &Module) -> TypedModule {
                 });
             }
             ast::Item::Test(test) => {
-                let name = format!("test::{}", sanitize_test_name(&test.name));
+                let name = test_symbol_name(&test.name);
                 fn_sigs.insert(name.clone(), (Vec::new(), Type::Void));
                 fn_async.insert(name.clone(), false);
                 fn_generics.insert(name.clone(), Vec::new());
@@ -557,6 +557,10 @@ pub(crate) fn sanitize_test_name(name: &str) -> String {
     } else {
         out
     }
+}
+
+pub fn test_symbol_name(name: &str) -> String {
+    format!("test::{}", sanitize_test_name(name))
 }
 
 pub(crate) fn validate_trait_impls(

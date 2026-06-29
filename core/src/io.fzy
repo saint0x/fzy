@@ -25,7 +25,8 @@ fn normalize_path(raw_path: str) -> str {
     return str.trim(raw_path)
 }
 fn read_text(file_path: str) -> str {
-    let normalized = normalize_path(file_path) if normalized == "" {
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
         return ""
     }
     return fs.read_file(normalized)
@@ -45,37 +46,43 @@ fn write_text(file_path: str, value: str) -> i32 {
     return apply_write_text(write_text_plan(file_path, value))
 }
 fn mkdir(dir_path: str) -> i32 {
-    let normalized = normalize_path(dir_path) if normalized == "" {
+    let normalized = normalize_path(dir_path)
+    if normalized == "" {
         return 1
     }
     return fs.mkdir(normalized)
 }
 fn exists(file_path: str) -> i32 {
-    let normalized = normalize_path(file_path) if normalized == "" {
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
         return 0
     }
     return fs.exists(normalized)
 }
 fn is_file(file_path: str) -> i32 {
-    let normalized = normalize_path(file_path) if normalized == "" {
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
         return 0
     }
     return fs.is_file(normalized)
 }
 fn is_dir(dir_path: str) -> i32 {
-    let normalized = normalize_path(dir_path) if normalized == "" {
+    let normalized = normalize_path(dir_path)
+    if normalized == "" {
         return 0
     }
     return fs.is_dir(normalized)
 }
 fn is_symlink(file_path: str) -> i32 {
-    let normalized = normalize_path(file_path) if normalized == "" {
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
         return 0
     }
     return fs.is_symlink(normalized)
 }
 fn remove_file(file_path: str) -> i32 {
-    let normalized = normalize_path(file_path) if normalized == "" {
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
         return 1
     }
     return fs.remove_file(normalized)
@@ -98,14 +105,16 @@ fn remove(file_path: str) -> i32 {
     return remove_target(remove_plan(file_path, 1))
 }
 fn stat_size(file_path: str) -> i32 {
-    let normalized = normalize_path(file_path) if normalized == "" {
-        return - 1
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
+        return -1
     }
     return fs.stat_size(normalized)
 }
 fn stat_mtime(file_path: str) -> i32 {
-    let normalized = normalize_path(file_path) if normalized == "" {
-        return - 1
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
+        return -1
     }
     return fs.stat_mtime(normalized)
 }
@@ -113,15 +122,19 @@ fn temp_file(prefix: str) -> str {
     return fs.temp_file(prefix)
 }
 fn list_dir(dir_path: str) -> ListHandle {
-    let normalized = normalize_path(dir_path) if normalized == "" {
+    let normalized = normalize_path(dir_path)
+    if normalized == "" {
         return list.new()
     }
     return fs.listdir(normalized)
 }
 fn metadata(file_path: str) -> FileMetadata {
-    let normalized = normalize_path(file_path) let name = path.basename(normalized) let found = exists(normalized) if found == 0 {
+    let normalized = normalize_path(file_path)
+    let name = path.basename(normalized)
+    let found = exists(normalized)
+    if found == 0 {
         return FileMetadata {
-            path: normalized, name: name, exists: 0, is_file: 0, is_dir: 0, is_symlink: 0, size: - 1, modified_unix_secs: - 1,
+            path: normalized, name: name, exists: 0, is_file: 0, is_dir: 0, is_symlink: 0, size: -1, modified_unix_secs: -1,
         }
     }
     return FileMetadata {
@@ -134,7 +147,7 @@ fn copy_plan(src: str, dst: str, recursive: i32) -> CopyPlan {
     }
 }
 fn execute_copy(request: CopyPlan) -> i32 {
-    if request.src == "" | | request.dst == "" {
+    if request.src == "" || request.dst == "" {
         return 1
     }
     if request.src == request.dst {
@@ -169,7 +182,10 @@ fn dir_path(entries: DirectoryListing, index: i32) -> str {
     return path.join(entries.root, dir_name(entries, index))
 }
 fn dir_entry(entries: DirectoryListing, index: i32) -> DirEntry {
-    let name = dir_name(entries, index) let full_path = path.join(entries.root, name) let meta = metadata(full_path) return DirEntry {
+    let name = dir_name(entries, index)
+    let full_path = path.join(entries.root, name)
+    let meta = metadata(full_path)
+    return DirEntry {
         path: full_path, name: name, exists: meta.exists, is_file: meta.is_file, is_dir: meta.is_dir, is_symlink: meta.is_symlink, size: meta.size, modified_unix_secs: meta.modified_unix_secs,
     }
 }

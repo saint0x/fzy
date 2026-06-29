@@ -583,4 +583,3 @@ pub(super) fn production_lint_findings(path: &Path) -> Result<Vec<diagnostics::D
     diagnostics::assign_stable_codes(&mut out, diagnostics::DiagnosticDomain::Driver);
     Ok(out)
 }
-

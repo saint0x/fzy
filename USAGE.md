@@ -159,7 +159,7 @@ Use for new projects.
 ```bash
 fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
 fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends|--proc-backend host --fs-backend host --http-backend host] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck http://host:port/path] [--smoke-http http://host:port/path] [--json]
-fz test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
+fz test [path] [--det] [--strict-verify] [--seed N] [--record path] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
 ```
 
 Use cases:
@@ -173,7 +173,7 @@ Use cases:
   - `--max-seconds` enforces bounded runtime (returns timeout exit code on limit)
   - `--exit-on-healthcheck` and `--smoke-http` probe an HTTP endpoint and exit once healthy/smoke-success is observed
 - `test`: execute discovered tests with optional deterministic scheduler policy
-  - `--host-backends` on native `.fzy` sources now auto-bridges through generated temporary scenario artifacts (single command flow)
+  - native `.fzy` tests execute real compiled test bodies; `--host-backends` is reserved for `.fozzy.json` scenario execution
 - production memory safety verification is always enabled for `run` and `test`
 - GPU-native projects follow the same command surface:
   - `fz build` emits `.fz/gpu-kernel-package.{json,md}` for GPU kernels
@@ -269,7 +269,6 @@ fz emit-ir [path]
 fz perf [--artifact artifacts/bench_core_rust_vs_fzy.json]
 fz stability-dashboard
 fz parity [path] [--seed N]
-fz equivalence [path] [--seed N]
 fz audit unsafe [path] [--workspace]
 fz debug-check [path]
 ```
@@ -300,7 +299,7 @@ Recommended native completeness probe:
 
 ```bash
 fz parity tests/fixtures/native_completeness/main.fzy --seed 4242 --json
-fz equivalence tests/fixtures/native_completeness/main.fzy --seed 4242 --json
+fz test tests/fixtures/native_completeness/main.fzy --det --seed 4242 --json
 python3 scripts/direct_memory_architecture_gate.py
 python3 scripts/direct_memory_perf_gate.py
 ```
@@ -407,7 +406,7 @@ fz run <scenario> --host-backends --json
 Notes:
 
 - host-backed confidence runs are intentionally a separate pass from strict deterministic replay checks.
-- for native `.fzy` tests, `fz test --host-backends` supports a single-command bridge that generates temporary scenarios and runs host-backed execution directly.
+- for host-backed testing, use `.fozzy.json` scenarios with `fz test --host-backends`.
 
 ## 6.3 Useful discovery commands
 
@@ -633,7 +632,7 @@ For meaningful changes, run at least:
 
 - `init`, `build`, `run`, `test`
 - `fmt`, `check`, `verify`, `dx-check`, `spec-check`
-- `emit-ir`, `parity`, `equivalence`, `audit unsafe`, `debug-check`
+- `emit-ir`, `parity`, `audit unsafe`, `debug-check`
 - `vendor`, `abi-check`
 - `lsp diagnostics|definition|hover|rename|smoke|serve`
 - `headers`, `rpc gen`

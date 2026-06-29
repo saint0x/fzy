@@ -42,7 +42,10 @@ pub(crate) fn qualify_generic_params(
     for param in params {
         for bound in &mut param.bounds {
             *bound = super::super::text::qualify_type_name(
-                bound, namespace, local_types, module_aliases,
+                bound,
+                namespace,
+                local_types,
+                module_aliases,
             );
         }
     }
@@ -86,7 +89,8 @@ pub(crate) fn qualify_type(
             }
         }
         ast::Type::Named { name, args } => {
-            *name = super::super::text::qualify_type_name(name, namespace, local_types, module_aliases);
+            *name =
+                super::super::text::qualify_type_name(name, namespace, local_types, module_aliases);
             for arg in args {
                 qualify_type(arg, namespace, local_types, module_aliases);
             }

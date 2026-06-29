@@ -1,5 +1,5 @@
-use super::*;
 use super::super::llvm::{lower_llvm_ir, lower_llvm_ir_partitioned};
+use super::*;
 
 pub(super) fn emit_native_libraries_llvm(
     fir: &fir::FirModule,
@@ -16,8 +16,10 @@ pub(super) fn emit_native_libraries_llvm(
     let obj_path = build_dir.join(format!("{artifact_stem}.ffi.o"));
     let shim_obj_path = build_dir.join(format!("{artifact_stem}.ffi.runtime.o"));
     let static_path = build_dir.join(format!("lib{artifact_stem}.a"));
-    let shared_path =
-        build_dir.join(format!("lib{artifact_stem}.{}", super::link::shared_lib_extension()));
+    let shared_path = build_dir.join(format!(
+        "lib{artifact_stem}.{}",
+        super::link::shared_lib_extension()
+    ));
 
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;

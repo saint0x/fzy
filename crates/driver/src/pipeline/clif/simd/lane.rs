@@ -4,9 +4,7 @@ pub(crate) fn clif_simd_true_lane(builder: &mut FunctionBuilder) -> cranelift_co
     builder.ins().iconst(types::I32, -1)
 }
 
-pub(crate) fn clif_simd_false_lane(
-    builder: &mut FunctionBuilder,
-) -> cranelift_codegen::ir::Value {
+pub(crate) fn clif_simd_false_lane(builder: &mut FunctionBuilder) -> cranelift_codegen::ir::Value {
     builder.ins().iconst(types::I32, 0)
 }
 

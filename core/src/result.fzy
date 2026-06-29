@@ -61,7 +61,7 @@ fn clear() -> Error {
     }
 }
 fn is_clear(err: Error) -> i32 {
-    if err.machine_code == 0 & & err.message == "" & & err.context == "" {
+    if err.machine_code == 0 && err.message == "" && err.context == "" {
         return 1
     }
     return 0
@@ -72,10 +72,17 @@ fn make(code: ErrorCode, source: ErrorSource, message: str) -> Error {
     }
 }
 fn normalize(err: Error) -> Error {
-    let mut next_code = err.code let mut next_machine_code = err.machine_code let mut next_status = err.status let next_message = sanitize_message(err.message) let next_context = sanitize_context(err.context) let next_cause_message = sanitize_message(err.cause_message) let mut next_retryable = err.retryable if next_code == ErrorCode::None & & (next_machine_code != 0 | | next_message != "" | | next_context != "") {
+    let mut next_code = err.code
+    let mut next_machine_code = err.machine_code
+    let mut next_status = err.status
+    let next_message = sanitize_message(err.message)
+    let next_context = sanitize_context(err.context)
+    let next_cause_message = sanitize_message(err.cause_message)
+    let mut next_retryable = err.retryable
+    if next_code == ErrorCode::None && (next_machine_code != 0 || next_message != "" || next_context != "") {
         next_code = ErrorCode::Internal
     }
-    if next_machine_code == 0 & & next_code != ErrorCode::None {
+    if next_machine_code == 0 && next_code != ErrorCode::None {
         next_machine_code = code_machine(next_code)
     }
     if next_status <= 0 {
@@ -91,7 +98,9 @@ fn normalize(err: Error) -> Error {
     }
 }
 fn with_context(err: Error, context: str) -> Error {
-    let safe = normalize(err) let safe_context = sanitize_context(context) if safe_context == "" {
+    let safe = normalize(err)
+    let safe_context = sanitize_context(context)
+    if safe_context == "" {
         return safe
     }
     let next_context = if safe.context == "" {
@@ -104,7 +113,9 @@ fn with_context(err: Error, context: str) -> Error {
     }
 }
 fn with_cause(err: Error, cause: Error) -> Error {
-    let safe = normalize(err) let safe_cause = normalize(cause) if is_clear(safe_cause) == 1 {
+    let safe = normalize(err)
+    let safe_cause = normalize(cause)
+    if is_clear(safe_cause) == 1 {
         return safe
     }
     return Error {
@@ -112,17 +123,20 @@ fn with_cause(err: Error, cause: Error) -> Error {
     }
 }
 fn with_status(err: Error, status: i32) -> Error {
-    let safe = normalize(err) return Error {
+    let safe = normalize(err)
+    return Error {
         machine_code: safe.machine_code, code: safe.code, category: safe.category, source: safe.source, status: status, retryable: safe.retryable, message: safe.message, context: safe.context, cause_machine_code: safe.cause_machine_code, cause_message: safe.cause_message,
     }
 }
 fn with_machine_code(err: Error, machine_code: i32) -> Error {
-    let safe = normalize(err) return Error {
+    let safe = normalize(err)
+    return Error {
         machine_code: machine_code, code: safe.code, category: safe.category, source: safe.source, status: safe.status, retryable: safe.retryable, message: safe.message, context: safe.context, cause_machine_code: safe.cause_machine_code, cause_message: safe.cause_message,
     }
 }
 fn with_retryable(err: Error, retryable: i32) -> Error {
-    let safe = normalize(err) return Error {
+    let safe = normalize(err)
+    return Error {
         machine_code: safe.machine_code, code: safe.code, category: safe.category, source: safe.source, status: safe.status, retryable: retryable, message: safe.message, context: safe.context, cause_machine_code: safe.cause_machine_code, cause_message: safe.cause_message,
     }
 }
@@ -130,7 +144,8 @@ fn from_status(status: i32, source: ErrorSource, message: str) -> Error {
     if status <= 0 {
         return clear()
     }
-    let mut code = ErrorCode::Internal if status == 400 {
+    let mut code = ErrorCode::Internal
+    if status == 400 {
         code = ErrorCode::InvalidInput
     } else {
         if status == 401 {
@@ -154,10 +169,10 @@ fn from_status(status: i32, source: ErrorSource, message: str) -> Error {
                                 if status == 499 {
                                     code = ErrorCode::Cancelled
                                 } else {
-                                    if status >= 500 & & status < 600 {
+                                    if status >= 500 && status < 600 {
                                         code = ErrorCode::Unavailable
                                     } else {
-                                        if status >= 400 & & status < 500 {
+                                        if status >= 400 && status < 500 {
                                             code = ErrorCode::InvalidInput
                                         }
                                     }
@@ -175,7 +190,8 @@ fn from_http_status(status: i32, message: str) -> Error {
     return from_status(status, ErrorSource::Http, message)
 }
 fn from_io_status(status: i32, operation: str, path_value: str, message: str) -> Error {
-    let mut code = ErrorCode::Io if status == 2 {
+    let mut code = ErrorCode::Io
+    if status == 2 {
         code = ErrorCode::NotFound
     } else {
         if status == 13 {
@@ -190,7 +206,7 @@ fn from_io_status(status: i32, operation: str, path_value: str, message: str) ->
                     if status == 28 {
                         code = ErrorCode::ResourceExhausted
                     } else {
-                        if status == 60 | | status == 110 {
+                        if status == 60 || status == 110 {
                             code = ErrorCode::Timeout
                         }
                     }
@@ -206,7 +222,8 @@ fn from_io_status(status: i32, operation: str, path_value: str, message: str) ->
     return with_context(with_machine_code(make(code, ErrorSource::Io, message), machine_code), str.concat(operation, str.concat(" ", path_value)),)
 }
 fn from_process_failure(command: str, exit_code: i32, timed_out: i32, cancelled: i32, signal: i32, message: str) -> Error {
-    let mut code = ErrorCode::Internal if cancelled == 1 {
+    let mut code = ErrorCode::Internal
+    if cancelled == 1 {
         code = ErrorCode::Cancelled
     } else {
         if timed_out == 1 {
@@ -217,7 +234,8 @@ fn from_process_failure(command: str, exit_code: i32, timed_out: i32, cancelled:
             }
         }
     }
-    let mut err = make(code, ErrorSource::Process, message) if exit_code > 0 & & code == ErrorCode::Internal {
+    let mut err = make(code, ErrorSource::Process, message)
+    if exit_code > 0 && code == ErrorCode::Internal {
         err = with_machine_code(err, exit_code)
     }
     if signal > 0 {
@@ -235,10 +253,11 @@ fn from_ffi_failure(message: str) -> Error {
     return make(ErrorCode::Ffi, ErrorSource::Ffi, message)
 }
 fn from_native_runtime(code_value: i32, class_value: i32, message: str, context: str) -> Error {
-    if code_value == 0 & & sanitize_message(message) == "" & & sanitize_context(context) == "" {
+    if code_value == 0 && sanitize_message(message) == "" && sanitize_context(context) == "" {
         return clear()
     }
-    let mut code = ErrorCode::Internal if code_value >= 400 & & code_value < 600 {
+    let mut code = ErrorCode::Internal
+    if code_value >= 400 && code_value < 600 {
         code = from_status(code_value, ErrorSource::Runtime, message).code
     } else {
         if code_value == 2 {
@@ -253,7 +272,7 @@ fn from_native_runtime(code_value: i32, class_value: i32, message: str, context:
                     if code_value == 28 {
                         code = ErrorCode::ResourceExhausted
                     } else {
-                        if code_value == 60 | | code_value == 110 {
+                        if code_value == 60 || code_value == 110 {
                             code = ErrorCode::Timeout
                         } else {
                             if class_value == 3 {
@@ -265,7 +284,8 @@ fn from_native_runtime(code_value: i32, class_value: i32, message: str, context:
             }
         }
     }
-    let mut err = with_machine_code(make(code, ErrorSource::Runtime, message), code_value) if code_value >= 400 & & code_value < 600 {
+    let mut err = with_machine_code(make(code, ErrorSource::Runtime, message), code_value)
+    if code_value >= 400 && code_value < 600 {
         err = with_status(err, code_value)
     }
     return with_context(err, context)
@@ -274,7 +294,8 @@ fn current_runtime_error() -> Error {
     return from_native_runtime(error.code(), error.class(), error.message(), "")
 }
 fn should_retry(err: Error, attempt: i32, max_attempts: i32) -> i32 {
-    let safe = normalize(err) if max_attempts < 1 {
+    let safe = normalize(err)
+    if max_attempts < 1 {
         return 0
     }
     if attempt < 0 {
@@ -286,13 +307,19 @@ fn should_retry(err: Error, attempt: i32, max_attempts: i32) -> i32 {
     return safe.retryable
 }
 fn render(err: Error) -> str {
-    let safe = normalize(err) if is_clear(safe) == 1 {
+    let safe = normalize(err)
+    if is_clear(safe) == 1 {
         return "ok"
     }
-    let mut out = str.concat(source_name(safe.source), str.concat(".", code_name(safe.code))) out = str.concat(out, str.concat(" status=", str.from_i32(safe.status))) out = str.concat(out, str.concat(" retryable=", str.from_i32(safe.retryable))) out = str.concat(out, str.concat(" category=", category_name(safe.category))) out = str.concat(out, str.concat(": ", safe.message)) if safe.context != "" {
+    let mut out = str.concat(source_name(safe.source), str.concat(".", code_name(safe.code)))
+    out = str.concat(out, str.concat(" status=", str.from_i32(safe.status)))
+    out = str.concat(out, str.concat(" retryable=", str.from_i32(safe.retryable)))
+    out = str.concat(out, str.concat(" category=", category_name(safe.category)))
+    out = str.concat(out, str.concat(": ", safe.message))
+    if safe.context != "" {
         out = str.concat(out, str.concat(" [", str.concat(safe.context, "]")))
     }
-    if safe.cause_machine_code != 0 | | safe.cause_message != "" {
+    if safe.cause_machine_code != 0 || safe.cause_message != "" {
         out = str.concat(out, str.concat(" <- ", safe.cause_message))
     }
     return out

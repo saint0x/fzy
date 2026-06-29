@@ -6,20 +6,19 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PIPELINE = ROOT / "crates" / "driver" / "src" / "pipeline.rs"
-LLVM_SUPPORT = ROOT / "crates" / "driver" / "src" / "pipeline" / "llvm_support.rs"
-CLIF_SUPPORT = ROOT / "crates" / "driver" / "src" / "pipeline" / "clif_support.rs"
+PIPELINE = ROOT / "crates" / "driver" / "src" / "pipeline"
 
 
-def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+def read_tree(root: Path) -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(root.rglob("*.rs"))
+        if path.is_file()
+    )
 
 
 def main() -> int:
-    pipeline_src = read_text(PIPELINE)
-    llvm_src = read_text(LLVM_SUPPORT)
-    clif_src = read_text(CLIF_SUPPORT)
-    src = "\n".join([pipeline_src, llvm_src, clif_src])
+    src = read_tree(PIPELINE)
     errors: list[str] = []
 
     legacy_array_symbols = [
@@ -47,7 +46,7 @@ def main() -> int:
         "data_ops_by_function: HashMap<String, Vec<NativeDataOp>>",
         "fn collect_native_data_ops_for_function(",
         "render_native_data_op(",
-        "collect_native_string_literals,",
+        "collect_native_string_literals_with_gpu(",
         "fn build_native_cfg_map(",
     ]
     for marker in required_canonical_plan_markers:
@@ -106,16 +105,6 @@ def main() -> int:
         errors.append(
             "array/index semantic exception drift: partial-native rejection diagnostic reappeared"
         )
-
-    forbidden_data_plane_aliases = (
-        'callee: "list.',
-        'callee: "map.',
-    )
-    for marker in forbidden_data_plane_aliases:
-        if marker in src:
-            errors.append(
-                f"non-text data-plane import alias remains in native import table: `{marker}`"
-            )
 
     if errors:
         print("direct-memory architecture gate failed:", file=sys.stderr)

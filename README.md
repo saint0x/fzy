@@ -185,7 +185,7 @@ fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--
 fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>] [--json]
 
 # Test source/project or .fozzy scenario
-fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--filter substring] [--json]
+fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--backend llvm|cranelift] [--filter substring] [--json]
 
 # Verify/check/docs/tooling
 fz fmt [path ...] [--check] [--json]
@@ -198,7 +198,6 @@ fz emit-ir [path] [--json]
 fz perf [--artifact artifacts/bench_core_rust_vs_fzy.json] [--json]
 fz stability-dashboard [--json]
 fz parity [path] [--seed N] [--json]
-fz equivalence [path] [--seed N] [--json]
 fz audit unsafe [path] [--workspace] [--json]
 fz vendor [project] [--json]
 fz abi-check <current.abi.json> --baseline <baseline.abi.json> [--json]
@@ -385,15 +384,14 @@ FZY
 fz test /tmp/demo.fzy --det --sched random --seed 13 --record artifacts/demo.trace.json --json
 ```
 
-Inspect:
+Inspect the emitted native test artifacts directly:
 
-- `artifacts/demo.trace.json`
-- `artifacts/demo.trace.timeline.json`
+- `artifacts/demo.trace.native.trace.json`
 - `artifacts/demo.trace.report.json`
-- `artifacts/demo.trace.explore.json`
-- `artifacts/demo.trace.shrink.json`
-- `artifacts/demo.trace.scenarios.json`
+- `artifacts/demo.trace.timeline.json` when rich artifacts are enabled
 - `artifacts/demo.trace.manifest.json`
+
+Native test manifests are report/index artifacts only; they do not route into scenario `replay`/`ci`/`shrink`.
 
 ## Example Projects
 

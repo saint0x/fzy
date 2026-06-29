@@ -538,7 +538,6 @@ commands:\n\
   report query latest --list-paths\n\
   stability-dashboard\n\
   parity [path] [--seed N]\n\
-  equivalence [path] [--seed N]\n\
   audit unsafe [path] [--workspace]\n\
   audit ffi [path]\n\
   audit memory [path]\n\
@@ -1265,9 +1264,7 @@ mod tests {
         let command = parse_command(&args).expect("incremental build should parse");
         match command {
             Command::Build {
-                path,
-                incremental,
-                ..
+                path, incremental, ..
             } => {
                 assert_eq!(path, PathBuf::from("examples/fullstack"));
                 assert!(incremental);

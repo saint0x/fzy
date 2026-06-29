@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "reports/async.rs"]
+mod async_report;
 #[path = "reports/compat.rs"]
 mod compat;
 #[path = "reports/freeze.rs"]
@@ -8,12 +10,9 @@ mod freeze;
 mod mem;
 #[path = "reports/unsafe.rs"]
 mod unsafe_report;
-#[path = "reports/async.rs"]
-mod async_report;
 
 pub(crate) use self::freeze::{
-    build_freeze_phase_summaries, collect_freeze_phase_findings,
-    is_memory_phase_alloc_like_callee,
+    build_freeze_phase_summaries, collect_freeze_phase_findings, is_memory_phase_alloc_like_callee,
 };
 pub(crate) use self::mem::MemoryOwnerArtifact;
 

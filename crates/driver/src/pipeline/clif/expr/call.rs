@@ -107,28 +107,40 @@ pub(super) fn clif_emit_call_expr(
                 bail!("native backend lowering expected kernel/grid/block args for `{callee}`");
             }
             let ast::Expr::Ident(kernel_name) = &args[0] else {
-                bail!("native backend lowering for `{callee}` requires a direct kernel function name");
+                bail!(
+                    "native backend lowering for `{callee}` requires a direct kernel function name"
+                );
             };
             let descriptor = ctx
                 .gpu_kernel_launch_descriptors
                 .get(kernel_name)
-                .ok_or_else(|| anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`"))?;
+                .ok_or_else(|| {
+                    anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`")
+                })?;
             let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
             let kernel_id = ctx
                 .string_literal_ids
                 .get(&descriptor.kernel_name)
                 .copied()
-                .ok_or_else(|| anyhow!("missing native string literal id for kernel `{kernel_name}`"))?;
+                .ok_or_else(|| {
+                    anyhow!("missing native string literal id for kernel `{kernel_name}`")
+                })?;
             let source_id = ctx
                 .string_literal_ids
                 .get(&descriptor.source)
                 .copied()
-                .ok_or_else(|| anyhow!("missing native string literal id for Metal source `{kernel_name}`"))?;
+                .ok_or_else(|| {
+                    anyhow!("missing native string literal id for Metal source `{kernel_name}`")
+                })?;
             let layout_id = ctx
                 .string_literal_ids
                 .get(&descriptor.param_layout)
                 .copied()
-                .ok_or_else(|| anyhow!("missing native string literal id for Metal launch layout `{kernel_name}`"))?;
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing native string literal id for Metal launch layout `{kernel_name}`"
+                    )
+                })?;
             let mut grid = clif_emit_expr(builder, ctx, &args[1], locals, next_var)?;
             grid = cast_clif_value(builder, grid, types::I32)?;
             let mut block = clif_emit_expr(builder, ctx, &args[2], locals, next_var)?;

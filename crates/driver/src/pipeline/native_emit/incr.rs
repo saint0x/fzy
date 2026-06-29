@@ -35,16 +35,17 @@ fn acquire_lock_file(path: &Path, label: &str) -> Result<IncrementalBuildLock> {
         {
             Ok(mut file) => {
                 use std::io::Write;
-                file.write_all(owner.as_bytes())
-                    .with_context(|| format!("failed writing {} lock: {}", label, path.display()))?;
+                file.write_all(owner.as_bytes()).with_context(|| {
+                    format!("failed writing {} lock: {}", label, path.display())
+                })?;
                 return Ok(IncrementalBuildLock {
                     path: path.to_path_buf(),
                 });
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 if start.elapsed() >= timeout {
-                    let holder =
-                        std::fs::read_to_string(path).unwrap_or_else(|_| "<unknown lock holder>".to_string());
+                    let holder = std::fs::read_to_string(path)
+                        .unwrap_or_else(|_| "<unknown lock holder>".to_string());
                     bail!(
                         "timed out waiting for {} lock {} held by {}",
                         label,
@@ -55,8 +56,9 @@ fn acquire_lock_file(path: &Path, label: &str) -> Result<IncrementalBuildLock> {
                 std::thread::sleep(retry_delay);
             }
             Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed creating {} lock: {}", label, path.display()));
+                return Err(err).with_context(|| {
+                    format!("failed creating {} lock: {}", label, path.display())
+                });
             }
         }
     }
@@ -137,7 +139,10 @@ pub(crate) fn emit_native_incremental_binary(
         lowered_fir,
         manifest,
     )?;
-    let rebuilt_modules = module_results.iter().filter(|result| result.rebuilt).count();
+    let rebuilt_modules = module_results
+        .iter()
+        .filter(|result| result.rebuilt)
+        .count();
     let module_details = module_results
         .into_iter()
         .map(|result| IncrementalModuleReport {
@@ -227,10 +232,16 @@ pub(crate) fn emit_native_incremental_libraries(
         "lib{artifact_stem}.{}",
         super::link::shared_lib_extension()
     ));
-    let mut archive_objects = object_paths.iter().map(|path| path.as_path()).collect::<Vec<_>>();
+    let mut archive_objects = object_paths
+        .iter()
+        .map(|path| path.as_path())
+        .collect::<Vec<_>>();
     archive_objects.push(shim_obj_path.as_path());
     super::link::create_static_archive(&static_path, &archive_objects)?;
-    let mut shared_objects = object_paths.iter().map(|path| path.as_path()).collect::<Vec<_>>();
+    let mut shared_objects = object_paths
+        .iter()
+        .map(|path| path.as_path())
+        .collect::<Vec<_>>();
     shared_objects.push(shim_obj_path.as_path());
     let allow_undefined = !collect_extern_c_imports(lowered_fir).is_empty();
     super::link::link_shared_library(
@@ -240,7 +251,10 @@ pub(crate) fn emit_native_incremental_libraries(
         manifest,
         allow_undefined,
     )?;
-    let rebuilt_modules = module_results.iter().filter(|result| result.rebuilt).count();
+    let rebuilt_modules = module_results
+        .iter()
+        .filter(|result| result.rebuilt)
+        .count();
     let module_details = module_results
         .into_iter()
         .map(|result| IncrementalModuleReport {
@@ -299,10 +313,15 @@ pub(super) fn emit_incremental_module_object(
         });
     }
     if let Some(parent) = object_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed creating object store directory: {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed creating object store directory: {}",
+                parent.display()
+            )
+        })?;
     }
-    let _object_lock = acquire_lock_file(&object_path.with_extension("lock"), "incremental object")?;
+    let _object_lock =
+        acquire_lock_file(&object_path.with_extension("lock"), "incremental object")?;
     if object_path.exists() {
         return Ok(IncrementalModuleObjectResult {
             plan: plan.clone(),
@@ -364,7 +383,10 @@ pub(super) fn link_incremental_binary(
         for object in objects {
             cmd.arg(object);
         }
-        cmd.arg(shim_obj_path).arg("-o").arg(output).arg("-lpthread");
+        cmd.arg(shim_obj_path)
+            .arg("-o")
+            .arg(output)
+            .arg("-lpthread");
         apply_target_link_flags(&mut cmd);
         apply_gpu_backend_link_args(&mut cmd, fir);
         apply_manifest_link_args(&mut cmd, manifest);

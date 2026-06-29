@@ -1,6 +1,10 @@
 use crate::*;
 
-pub(crate) fn record_type_error(errors: &mut usize, type_error_details: &mut Vec<String>, detail: String) {
+pub(crate) fn record_type_error(
+    errors: &mut usize,
+    type_error_details: &mut Vec<String>,
+    detail: String,
+) {
     *errors += 1;
     type_error_details.push(detail);
 }
@@ -1216,3 +1220,802 @@ pub(crate) fn eval_bool_expr(
     }
 }
 
+#[derive(Debug)]
+enum TestExecError {
+    Failed(String),
+    TimedOut(String),
+    Unsupported(String),
+}
+
+enum TestExecFlow {
+    Continue,
+    Break,
+    ContinueLoop,
+    Return(Value),
+}
+
+struct TestExecState {
+    max_steps: usize,
+    steps: usize,
+    next_handle: i32,
+    handles: BTreeMap<i32, Value>,
+    events: Vec<TestRunEvent>,
+}
+
+impl TestExecState {
+    fn new(max_steps: usize) -> Self {
+        Self {
+            max_steps,
+            steps: 0,
+            next_handle: 1,
+            handles: BTreeMap::new(),
+            events: Vec::new(),
+        }
+    }
+
+    fn step(&mut self, label: &str) -> Result<(), TestExecError> {
+        self.steps += 1;
+        if self.steps > self.max_steps {
+            return Err(TestExecError::TimedOut(format!(
+                "test execution exceeded step budget while {label}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn record(&mut self, kind: impl Into<String>, detail: impl Into<String>) {
+        self.events.push(TestRunEvent {
+            kind: kind.into(),
+            detail: detail.into(),
+        });
+    }
+}
+
+fn test_exec_function_map<'a>(
+    functions: &'a [TypedFunction],
+) -> HashMap<&'a str, &'a TypedFunction> {
+    functions.iter().map(|f| (f.name.as_str(), f)).collect()
+}
+
+fn resolve_test_function_ref_name(
+    functions: &HashMap<&str, &TypedFunction>,
+    candidate: &str,
+) -> Option<String> {
+    if functions.contains_key(candidate) {
+        return Some(candidate.to_string());
+    }
+    let suffix = format!(".{candidate}");
+    let mut matched: Option<String> = None;
+    for name in functions.keys() {
+        if name.ends_with(&suffix) {
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some((*name).to_string());
+        }
+    }
+    matched
+}
+
+fn expr_contains_runtime_intrinsic(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call { callee, args } => {
+            let (base, _) = split_generic_callee(callee);
+            is_runtime_intrinsic(base) || args.iter().any(expr_contains_runtime_intrinsic)
+        }
+        Expr::Group(inner)
+        | Expr::Await(inner)
+        | Expr::Discard(inner)
+        | Expr::Unary { expr: inner, .. }
+        | Expr::FieldAccess { base: inner, .. } => expr_contains_runtime_intrinsic(inner),
+        Expr::Binary { left, right, .. }
+        | Expr::Index {
+            base: left,
+            index: right,
+        }
+        | Expr::Range {
+            start: left,
+            end: right,
+            ..
+        } => expr_contains_runtime_intrinsic(left) || expr_contains_runtime_intrinsic(right),
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_contains_runtime_intrinsic(condition)
+                || expr_contains_runtime_intrinsic(then_expr)
+                || expr_contains_runtime_intrinsic(else_expr)
+        }
+        Expr::Tuple(items) | Expr::ArrayLiteral(items) => {
+            items.iter().any(expr_contains_runtime_intrinsic)
+        }
+        Expr::ObjectLiteral(entries) => entries
+            .iter()
+            .any(|(_, value)| expr_contains_runtime_intrinsic(value)),
+        Expr::StructInit { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_contains_runtime_intrinsic(value)),
+        Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            payload.iter().any(expr_contains_runtime_intrinsic)
+                || named_payload
+                    .iter()
+                    .any(|(_, value)| expr_contains_runtime_intrinsic(value))
+        }
+        Expr::Match { scrutinee, arms } => {
+            expr_contains_runtime_intrinsic(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(expr_contains_runtime_intrinsic)
+                        || expr_contains_runtime_intrinsic(&arm.value)
+                })
+        }
+        Expr::While { condition, body } => {
+            expr_contains_runtime_intrinsic(condition)
+                || body.iter().any(stmt_contains_runtime_intrinsic)
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().is_some_and(stmt_contains_runtime_intrinsic)
+                || condition
+                    .as_deref()
+                    .is_some_and(expr_contains_runtime_intrinsic)
+                || step.as_deref().is_some_and(stmt_contains_runtime_intrinsic)
+                || body.iter().any(stmt_contains_runtime_intrinsic)
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            expr_contains_runtime_intrinsic(iterable)
+                || body.iter().any(stmt_contains_runtime_intrinsic)
+        }
+        Expr::Loop { body } => body.iter().any(stmt_contains_runtime_intrinsic),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            expr_contains_runtime_intrinsic(try_expr) || expr_contains_runtime_intrinsic(catch_expr)
+        }
+        Expr::UnsafeBlock { body, .. } => body.iter().any(stmt_contains_runtime_intrinsic),
+        Expr::Closure { body, .. } => expr_contains_runtime_intrinsic(body),
+        Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Ident(_)
+        | Expr::Return(_)
+        | Expr::Break(_)
+        | Expr::Continue => false,
+    }
+}
+
+fn stmt_contains_runtime_intrinsic(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Expr(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value) => expr_contains_runtime_intrinsic(value),
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_runtime_intrinsic(condition)
+                || then_body.iter().any(stmt_contains_runtime_intrinsic)
+                || else_body.iter().any(stmt_contains_runtime_intrinsic)
+        }
+        Stmt::While { condition, body } => {
+            expr_contains_runtime_intrinsic(condition)
+                || body.iter().any(stmt_contains_runtime_intrinsic)
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().is_some_and(stmt_contains_runtime_intrinsic)
+                || condition
+                    .as_ref()
+                    .is_some_and(expr_contains_runtime_intrinsic)
+                || step.as_deref().is_some_and(stmt_contains_runtime_intrinsic)
+                || body.iter().any(stmt_contains_runtime_intrinsic)
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_runtime_intrinsic(iterable)
+                || body.iter().any(stmt_contains_runtime_intrinsic)
+        }
+        Stmt::Loop { body } => body.iter().any(stmt_contains_runtime_intrinsic),
+        Stmt::Return(value) | Stmt::Break(value) => {
+            value.as_ref().is_some_and(expr_contains_runtime_intrinsic)
+        }
+        Stmt::Continue => false,
+        Stmt::Match { scrutinee, arms } => {
+            expr_contains_runtime_intrinsic(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(expr_contains_runtime_intrinsic)
+                        || expr_contains_runtime_intrinsic(&arm.value)
+                })
+        }
+    }
+}
+
+fn value_as_i32(value: &Value) -> Option<i32> {
+    match value {
+        Value::I32(v) => Some(*v),
+        Value::Bool(v) => Some(if *v { 1 } else { 0 }),
+        Value::Char(v) => Some(*v as i32),
+        Value::F64(v) => Some(*v as i32),
+        _ => None,
+    }
+}
+
+fn exec_invoke_function(
+    function_name: &str,
+    args: &[Expr],
+    env: &BTreeMap<String, Value>,
+    functions: &HashMap<&str, &TypedFunction>,
+    state: &mut TestExecState,
+) -> Result<Value, TestExecError> {
+    let function = functions.get(function_name).ok_or_else(|| {
+        TestExecError::Unsupported(format!("missing callable function `{function_name}`"))
+    })?;
+    if function.params.len() != args.len() {
+        return Err(TestExecError::Unsupported(format!(
+            "arity mismatch calling `{}`: expected {}, got {}",
+            function.name,
+            function.params.len(),
+            args.len()
+        )));
+    }
+    let mut local = BTreeMap::new();
+    for (arg, param) in args.iter().zip(&function.params) {
+        local.insert(
+            param.name.clone(),
+            exec_test_expr(arg, env, functions, state)?,
+        );
+    }
+    match exec_test_block(&function.body, &mut local, functions, state)? {
+        TestExecFlow::Return(value) => Ok(value),
+        TestExecFlow::Continue | TestExecFlow::Break | TestExecFlow::ContinueLoop => {
+            runtime_default_value(&function.return_type).ok_or_else(|| {
+                TestExecError::Unsupported(format!(
+                    "function `{}` completed without a value for return type `{}`",
+                    function.name, function.return_type
+                ))
+            })
+        }
+    }
+}
+
+fn exec_runtime_intrinsic(
+    callee_name: &str,
+    args: &[Expr],
+    env: &BTreeMap<String, Value>,
+    functions: &HashMap<&str, &TypedFunction>,
+    state: &mut TestExecState,
+) -> Result<Value, TestExecError> {
+    match callee_name {
+        "assert.eq_i32" => {
+            if args.len() != 2 {
+                return Err(TestExecError::Unsupported(
+                    "`assert.eq_i32` expects exactly two arguments".to_string(),
+                ));
+            }
+            let left = exec_test_expr(&args[0], env, functions, state)?;
+            let right = exec_test_expr(&args[1], env, functions, state)?;
+            let lhs = value_as_i32(&left).ok_or_else(|| {
+                TestExecError::Unsupported(
+                    "`assert.eq_i32` left argument is not an integer".to_string(),
+                )
+            })?;
+            let rhs = value_as_i32(&right).ok_or_else(|| {
+                TestExecError::Unsupported(
+                    "`assert.eq_i32` right argument is not an integer".to_string(),
+                )
+            })?;
+            state.record("assertion", format!("assert.eq_i32({lhs}, {rhs})"));
+            if lhs != rhs {
+                return Err(TestExecError::Failed(format!(
+                    "assert.eq_i32 failed: left={lhs} right={rhs}"
+                )));
+            }
+            Ok(Value::I32(0))
+        }
+        "checkpoint" | "yield" | "pulse" | "recv" | "cancel" => {
+            if !args.is_empty() {
+                return Err(TestExecError::Unsupported(format!(
+                    "`{callee_name}` does not accept arguments in the native test runner"
+                )));
+            }
+            state.record("runtime", callee_name.to_string());
+            Ok(Value::I32(0))
+        }
+        "timeout" | "deadline" => {
+            if args.len() != 1 {
+                return Err(TestExecError::Unsupported(format!(
+                    "`{callee_name}` expects exactly one argument"
+                )));
+            }
+            let value = exec_test_expr(&args[0], env, functions, state)?;
+            let ms = value_as_i32(&value).ok_or_else(|| {
+                TestExecError::Unsupported(format!(
+                    "`{callee_name}` requires an integer millisecond value"
+                ))
+            })?;
+            state.record("runtime", format!("{callee_name}({ms})"));
+            Ok(Value::I32(0))
+        }
+        "spawn" | "thread.spawn" => {
+            if args.len() != 1 {
+                return Err(TestExecError::Unsupported(format!(
+                    "`{callee_name}` expects exactly one task function argument"
+                )));
+            }
+            let task_value = exec_test_expr(&args[0], env, functions, state)?;
+            let Value::FnRef(function_name) = task_value else {
+                return Err(TestExecError::Unsupported(format!(
+                    "`{callee_name}` requires a zero-arg function reference"
+                )));
+            };
+            let handle = state.next_handle;
+            state.next_handle += 1;
+            state.record("spawn", format!("{function_name} -> handle:{handle}"));
+            let result = exec_invoke_function(&function_name, &[], env, functions, state)?;
+            state.handles.insert(handle, result);
+            Ok(Value::I32(handle))
+        }
+        "join" | "task_result" => {
+            if args.len() != 1 {
+                return Err(TestExecError::Unsupported(format!(
+                    "`{callee_name}` expects exactly one task handle"
+                )));
+            }
+            let handle_value = exec_test_expr(&args[0], env, functions, state)?;
+            let handle = value_as_i32(&handle_value).ok_or_else(|| {
+                TestExecError::Unsupported(format!(
+                    "`{callee_name}` requires an integer task handle"
+                ))
+            })?;
+            state.record("join", format!("handle:{handle}"));
+            state.handles.get(&handle).cloned().ok_or_else(|| {
+                TestExecError::Failed(format!("join requested unknown task handle `{handle}`"))
+            })
+        }
+        "detach" | "cancel_task" => {
+            if args.len() != 1 {
+                return Err(TestExecError::Unsupported(format!(
+                    "`{callee_name}` expects exactly one task handle"
+                )));
+            }
+            let handle_value = exec_test_expr(&args[0], env, functions, state)?;
+            let handle = value_as_i32(&handle_value).ok_or_else(|| {
+                TestExecError::Unsupported(format!(
+                    "`{callee_name}` requires an integer task handle"
+                ))
+            })?;
+            state.record("runtime", format!("{callee_name}(handle:{handle})"));
+            Ok(Value::I32(0))
+        }
+        other => Err(TestExecError::Unsupported(format!(
+            "runtime intrinsic `{other}` is not supported by the native test runner"
+        ))),
+    }
+}
+
+fn exec_test_expr(
+    expr: &Expr,
+    env: &BTreeMap<String, Value>,
+    functions: &HashMap<&str, &TypedFunction>,
+    state: &mut TestExecState,
+) -> Result<Value, TestExecError> {
+    state.step("evaluating expression")?;
+    match expr {
+        Expr::Int(v) => i32::try_from(*v)
+            .map(Value::I32)
+            .map_err(|_| TestExecError::Unsupported("integer literal out of range".to_string())),
+        Expr::Float { value, .. } => Ok(Value::F64(*value)),
+        Expr::Char(v) => Ok(Value::Char(*v)),
+        Expr::Bool(v) => Ok(Value::Bool(*v)),
+        Expr::Str(v) => Ok(Value::Str(v.clone())),
+        Expr::Ident(name) => env
+            .get(name)
+            .cloned()
+            .or_else(|| resolve_test_function_ref_name(functions, name).map(Value::FnRef))
+            .ok_or_else(|| TestExecError::Unsupported(format!("unknown identifier `{name}`"))),
+        Expr::Group(inner) => exec_test_expr(inner, env, functions, state),
+        Expr::Tuple(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(exec_test_expr(item, env, functions, state)?);
+            }
+            Ok(Value::Tuple(values))
+        }
+        Expr::ArrayLiteral(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(exec_test_expr(item, env, functions, state)?);
+            }
+            Ok(Value::List(values))
+        }
+        Expr::Discard(inner) => {
+            let _ = exec_test_expr(inner, env, functions, state)?;
+            Ok(Value::I32(0))
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            let mut local = env.clone();
+            let _ = exec_test_block(body, &mut local, functions, state)?;
+            Ok(Value::I32(0))
+        }
+        Expr::Call { callee, args } => {
+            let (callee_name, _) = split_generic_callee(callee);
+            if is_runtime_intrinsic(callee_name) {
+                return exec_runtime_intrinsic(callee_name, args, env, functions, state);
+            }
+            let resolved_name =
+                resolve_test_function_ref_name(functions, callee_name).or_else(|| {
+                    match env.get(callee_name) {
+                        Some(Value::FnRef(function)) => Some(function.clone()),
+                        _ => None,
+                    }
+                });
+            let Some(resolved_name) = resolved_name else {
+                if expr_contains_runtime_intrinsic(expr) {
+                    return Err(TestExecError::Unsupported(format!(
+                        "unable to resolve callable `{callee_name}` in test runner"
+                    )));
+                }
+                return eval_expr(expr, env, functions).ok_or_else(|| {
+                    TestExecError::Unsupported(format!(
+                        "expression `{callee_name}` could not be evaluated by the native test runner"
+                    ))
+                });
+            };
+            exec_invoke_function(&resolved_name, args, env, functions, state)
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond = exec_test_expr(condition, env, functions, state)?;
+            if truthy(&cond) {
+                exec_test_expr(then_expr, env, functions, state)
+            } else {
+                exec_test_expr(else_expr, env, functions, state)
+            }
+        }
+        Expr::FieldAccess { .. }
+        | Expr::Unary { .. }
+        | Expr::Binary { .. }
+        | Expr::Match { .. }
+        | Expr::While { .. }
+        | Expr::For { .. }
+        | Expr::ForIn { .. }
+        | Expr::Loop { .. }
+        | Expr::StructInit { .. }
+        | Expr::EnumInit { .. }
+        | Expr::TryCatch { .. }
+        | Expr::Range { .. }
+        | Expr::ObjectLiteral(_)
+        | Expr::Index { .. }
+        | Expr::Await(_)
+        | Expr::Closure { .. } => {
+            if expr_contains_runtime_intrinsic(expr) {
+                return Err(TestExecError::Unsupported(
+                    "complex expressions with embedded runtime intrinsics are not yet supported in the native test runner"
+                        .to_string(),
+                ));
+            }
+            eval_expr(expr, env, functions).ok_or_else(|| {
+                TestExecError::Unsupported(
+                    "expression could not be evaluated by the native test runner".to_string(),
+                )
+            })
+        }
+        Expr::Return(_) | Expr::Break(_) | Expr::Continue => Err(TestExecError::Unsupported(
+            "control-flow expressions are not supported in expression position".to_string(),
+        )),
+    }
+}
+
+fn exec_test_block(
+    body: &[Stmt],
+    env: &mut BTreeMap<String, Value>,
+    functions: &HashMap<&str, &TypedFunction>,
+    state: &mut TestExecState,
+) -> Result<TestExecFlow, TestExecError> {
+    let mut deferred = Vec::<Expr>::new();
+    for stmt in body {
+        state.step("evaluating statement")?;
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                let val = exec_test_expr(value, env, functions, state)?;
+                env.insert(name.clone(), val);
+            }
+            Stmt::LetPattern { pattern, value, .. } => {
+                let val = exec_test_expr(value, env, functions, state)?;
+                let mut bindings = BTreeMap::new();
+                if bind_pattern_values(pattern, &val, &mut bindings) {
+                    for (name, value) in bindings {
+                        env.insert(name, value);
+                    }
+                }
+            }
+            Stmt::Assign { target, value } => {
+                let val = exec_test_expr(value, env, functions, state)?;
+                env.insert(target.clone(), val);
+            }
+            Stmt::CompoundAssign { target, op, value } => {
+                let lhs = env.get(target).cloned().ok_or_else(|| {
+                    TestExecError::Unsupported(format!("unknown assignment target `{target}`"))
+                })?;
+                let rhs = exec_test_expr(value, env, functions, state)?;
+                let next = eval_binary(*op, lhs, rhs).ok_or_else(|| {
+                    TestExecError::Unsupported(format!(
+                        "compound assignment failed for target `{target}`"
+                    ))
+                })?;
+                env.insert(target.clone(), next);
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                let cond = exec_test_expr(condition, env, functions, state)?;
+                let branch = if truthy(&cond) { then_body } else { else_body };
+                match exec_test_block(branch, env, functions, state)? {
+                    TestExecFlow::Continue => {}
+                    flow => {
+                        for expr in deferred.iter().rev() {
+                            let _ = exec_test_expr(expr, env, functions, state);
+                        }
+                        return Ok(flow);
+                    }
+                }
+            }
+            Stmt::While { condition, body } => {
+                while truthy(&exec_test_expr(condition, env, functions, state)?) {
+                    match exec_test_block(body, env, functions, state)? {
+                        TestExecFlow::Continue | TestExecFlow::ContinueLoop => {}
+                        TestExecFlow::Break => break,
+                        TestExecFlow::Return(value) => {
+                            for expr in deferred.iter().rev() {
+                                let _ = exec_test_expr(expr, env, functions, state);
+                            }
+                            return Ok(TestExecFlow::Return(value));
+                        }
+                    }
+                }
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    let _ = exec_test_block(
+                        std::slice::from_ref(init.as_ref()),
+                        env,
+                        functions,
+                        state,
+                    )?;
+                }
+                loop {
+                    if let Some(condition) = condition {
+                        if !truthy(&exec_test_expr(condition, env, functions, state)?) {
+                            break;
+                        }
+                    }
+                    match exec_test_block(body, env, functions, state)? {
+                        TestExecFlow::Continue | TestExecFlow::ContinueLoop => {}
+                        TestExecFlow::Break => break,
+                        TestExecFlow::Return(value) => {
+                            for expr in deferred.iter().rev() {
+                                let _ = exec_test_expr(expr, env, functions, state);
+                            }
+                            return Ok(TestExecFlow::Return(value));
+                        }
+                    }
+                    if let Some(step) = step {
+                        let _ = exec_test_block(
+                            std::slice::from_ref(step.as_ref()),
+                            env,
+                            functions,
+                            state,
+                        )?;
+                    }
+                }
+            }
+            Stmt::ForIn {
+                binding,
+                iterable,
+                body,
+            } => {
+                let range = exec_test_expr(iterable, env, functions, state)?;
+                let Value::Struct { fields, .. } = range else {
+                    return Err(TestExecError::Unsupported(
+                        "for-in currently requires a range-like iterable".to_string(),
+                    ));
+                };
+                let Some(Value::I32(mut current)) = fields.get("start").cloned() else {
+                    return Err(TestExecError::Unsupported(
+                        "for-in iterable missing `start`".to_string(),
+                    ));
+                };
+                let Some(Value::I32(end)) = fields.get("end").cloned() else {
+                    return Err(TestExecError::Unsupported(
+                        "for-in iterable missing `end`".to_string(),
+                    ));
+                };
+                let inclusive = matches!(fields.get("inclusive"), Some(Value::Bool(true)));
+                while if inclusive {
+                    current <= end
+                } else {
+                    current < end
+                } {
+                    env.insert(binding.clone(), Value::I32(current));
+                    match exec_test_block(body, env, functions, state)? {
+                        TestExecFlow::Continue | TestExecFlow::ContinueLoop => {}
+                        TestExecFlow::Break => break,
+                        TestExecFlow::Return(value) => {
+                            for expr in deferred.iter().rev() {
+                                let _ = exec_test_expr(expr, env, functions, state);
+                            }
+                            return Ok(TestExecFlow::Return(value));
+                        }
+                    }
+                    current += 1;
+                }
+            }
+            Stmt::Loop { body } => loop {
+                match exec_test_block(body, env, functions, state)? {
+                    TestExecFlow::Continue | TestExecFlow::ContinueLoop => {}
+                    TestExecFlow::Break => break,
+                    TestExecFlow::Return(value) => {
+                        for expr in deferred.iter().rev() {
+                            let _ = exec_test_expr(expr, env, functions, state);
+                        }
+                        return Ok(TestExecFlow::Return(value));
+                    }
+                }
+            },
+            Stmt::Defer(expr) => deferred.push(expr.clone()),
+            Stmt::Break(value) => {
+                if let Some(value) = value {
+                    let _ = exec_test_expr(value, env, functions, state)?;
+                }
+                for expr in deferred.iter().rev() {
+                    let _ = exec_test_expr(expr, env, functions, state);
+                }
+                return Ok(TestExecFlow::Break);
+            }
+            Stmt::Continue => {
+                for expr in deferred.iter().rev() {
+                    let _ = exec_test_expr(expr, env, functions, state);
+                }
+                return Ok(TestExecFlow::ContinueLoop);
+            }
+            Stmt::Return(Some(expr)) => {
+                let value = exec_test_expr(expr, env, functions, state)?;
+                for expr in deferred.iter().rev() {
+                    let _ = exec_test_expr(expr, env, functions, state);
+                }
+                return Ok(TestExecFlow::Return(value));
+            }
+            Stmt::Return(None) => {
+                for expr in deferred.iter().rev() {
+                    let _ = exec_test_expr(expr, env, functions, state);
+                }
+                return Ok(TestExecFlow::Return(Value::I32(0)));
+            }
+            Stmt::Match { scrutinee, arms } => {
+                let value = exec_test_expr(scrutinee, env, functions, state)?;
+                for arm in arms {
+                    let mut arm_env = env.clone();
+                    let mut bindings = BTreeMap::new();
+                    if !bind_pattern_values(&arm.pattern, &value, &mut bindings) {
+                        continue;
+                    }
+                    for (name, value) in bindings {
+                        arm_env.insert(name, value);
+                    }
+                    let guard_ok = match &arm.guard {
+                        Some(guard) => truthy(&exec_test_expr(guard, &arm_env, functions, state)?),
+                        None => true,
+                    };
+                    if !guard_ok {
+                        continue;
+                    }
+                    if arm.returns {
+                        let out = exec_test_expr(&arm.value, &arm_env, functions, state)?;
+                        for expr in deferred.iter().rev() {
+                            let _ = exec_test_expr(expr, env, functions, state);
+                        }
+                        return Ok(TestExecFlow::Return(out));
+                    }
+                    let _ = exec_test_expr(&arm.value, &arm_env, functions, state)?;
+                    break;
+                }
+            }
+            Stmt::Expr(expr) | Stmt::Requires(expr) | Stmt::Ensures(expr) => {
+                let _ = exec_test_expr(expr, env, functions, state)?;
+            }
+        }
+    }
+    for expr in deferred.iter().rev() {
+        let _ = exec_test_expr(expr, env, functions, state);
+    }
+    Ok(TestExecFlow::Continue)
+}
+
+pub fn execute_tests(
+    functions: &[TypedFunction],
+    tests: &[TestDescriptor],
+    config: &TestRunnerConfig,
+) -> TestSuiteOutcome {
+    let function_map = test_exec_function_map(functions);
+    let runs = tests
+        .iter()
+        .cloned()
+        .map(|descriptor| {
+            let mut state = TestExecState::new(config.max_steps);
+            state.record("test.started", descriptor.name.clone());
+            let status_and_failure = if let Some(function) =
+                function_map.get(descriptor.function.as_str())
+            {
+                let mut env = BTreeMap::new();
+                match exec_test_block(&function.body, &mut env, &function_map, &mut state) {
+                    Ok(_) => (TestStatus::Passed, None),
+                    Err(TestExecError::Failed(message)) => (TestStatus::Failed, Some(message)),
+                    Err(TestExecError::TimedOut(message)) => (TestStatus::TimedOut, Some(message)),
+                    Err(TestExecError::Unsupported(message)) => (TestStatus::Failed, Some(message)),
+                }
+            } else {
+                (
+                    TestStatus::Failed,
+                    Some(format!(
+                        "compiled test function `{}` was not found",
+                        descriptor.function
+                    )),
+                )
+            };
+            let (status, failure) = status_and_failure;
+            match status {
+                TestStatus::Passed => state.record("test.passed", descriptor.name.clone()),
+                TestStatus::Failed => state.record(
+                    "test.failed",
+                    failure.clone().unwrap_or_else(|| descriptor.name.clone()),
+                ),
+                TestStatus::TimedOut => state.record(
+                    "test.timed_out",
+                    failure.clone().unwrap_or_else(|| descriptor.name.clone()),
+                ),
+            }
+            TestRunOutcome {
+                descriptor,
+                status,
+                failure,
+                steps: state.steps,
+                events: state.events,
+            }
+        })
+        .collect();
+    TestSuiteOutcome { runs }
+}

@@ -610,9 +610,9 @@ test "chaos_case" nondet {
 }
 ```
 
-- Test blocks are discovered from parsed module trees and emitted into generated scenario artifacts.
-- Deterministic tests (`test "..." {}`) run with deterministic scheduler semantics under `fz test --det`.
-- `nondet` tests are marked for non-deterministic/chaos exploration flows.
+- Test blocks are discovered from parsed module trees and executed as real compiled test bodies by `fz test`.
+- Deterministic tests (`test "..." {}`) run under `fz test --det`.
+- `nondet` tests run in the non-deterministic/native test surface when `fz test` is invoked without `--det`.
 - Test bodies compile as normal statement blocks and may call project functions/modules.
 - Reporting includes per-test execution summaries when trace/report artifacts are requested.
 
@@ -623,16 +623,16 @@ test "chaos_case" nondet {
 - Async checkpoints and RPC frame decisions are represented as deterministic events.
 - v1 model controls explicit runtime scheduling points and does not claim arbitrary OS-preemptive interleaving coverage.
 
-### Yieldpoint Definitions (Equivalence Contract)
+### Yieldpoint Definitions (Deterministic Trace Contract)
 
-- The following constructs are explicit yield/interleaving points for async equivalence: `await`, `yield()`, `checkpoint()`, `spawn(...)`, `recv()`, `timeout(ms)`, `deadline(ms)`, `cancel()`, `pulse()`.
-- Cross-engine equivalence normalization uses deterministic event categories:
+- The following constructs are explicit yield/interleaving points for deterministic async traces: `await`, `yield()`, `checkpoint()`, `spawn(...)`, `recv()`, `timeout(ms)`, `deadline(ms)`, `cancel()`, `pulse()`.
+- Parity and trace-analysis normalization use deterministic event categories:
   - `thread.schedule`
   - `async.checkpoint`
   - `rpc.frame`
   - `test.event`
   - `test.assert`
-- Normalization rule: engine-specific `async.schedule` is normalized to `async.checkpoint` before equivalence comparison.
+- Normalization rule: engine-specific `async.schedule` is normalized to `async.checkpoint` before parity or trace comparison.
 
 ## Memory Safety And UB Model
 

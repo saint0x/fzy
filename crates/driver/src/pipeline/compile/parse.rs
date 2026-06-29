@@ -75,7 +75,9 @@ pub(crate) fn lower_fir_cached_shared(parsed: &ParsedProgram) -> SharedLoweredPr
     lower_fir_cached_shared_telemetry(parsed).0
 }
 
-pub(crate) fn lower_fir_cached_shared_telemetry(parsed: &ParsedProgram) -> (SharedLoweredProgram, bool) {
+pub(crate) fn lower_fir_cached_shared_telemetry(
+    parsed: &ParsedProgram,
+) -> (SharedLoweredProgram, bool) {
     let module_hash = parsed.module_fingerprint.clone();
     let cache = LOWER_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
     if let Ok(guard) = cache.read() {

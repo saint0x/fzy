@@ -164,18 +164,18 @@ fn llvm_cast_scalar_to_i64(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> LlvmValue
     }
 }
 
-#[path = "llvm/simd.rs"]
-mod simd;
 #[path = "llvm/agg.rs"]
 mod agg;
-#[path = "llvm/linear.rs"]
-mod linear;
-#[path = "llvm/expr.rs"]
-mod expr;
-#[path = "llvm/ty.rs"]
-mod ty;
 #[path = "llvm/emit.rs"]
 mod emit;
+#[path = "llvm/expr.rs"]
+mod expr;
+#[path = "llvm/linear.rs"]
+mod linear;
+#[path = "llvm/simd.rs"]
+mod simd;
+#[path = "llvm/ty.rs"]
+mod ty;
 
 pub(super) use self::agg::*;
 pub(super) use self::emit::*;

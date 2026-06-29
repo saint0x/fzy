@@ -129,14 +129,14 @@ pub(crate) fn clif_emit_simd_intrinsic(
 
     let vector_args = match op {
         "_add" | "_sub" | "_mul" | "_min" | "_max" | "_and" | "_or" | "_xor"
-        | "_saturating_add" | "_saturating_sub" | "_eq" | "_ne" | "_lt" | "_le" | "_gt"
-        | "_ge" => 2,
+        | "_saturating_add" | "_saturating_sub" | "_eq" | "_ne" | "_lt" | "_le" | "_gt" | "_ge" => {
+            2
+        }
         "_select" => 3,
         "_shuffle" => 2,
         "_shl" | "_shr" | "_not" | "_as_u32x4" | "_as_i32x4" | "_bitcast_f32x4"
-        | "_bitcast_i32x4" | "_bitcast_u32x4" | "_reduce_add" | "_reduce_min"
-        | "_reduce_max" | "_any" | "_all" | "_none" | "_bitmask" | "_lane0" | "_lane1"
-        | "_lane2" | "_lane3" => 1,
+        | "_bitcast_i32x4" | "_bitcast_u32x4" | "_reduce_add" | "_reduce_min" | "_reduce_max"
+        | "_any" | "_all" | "_none" | "_bitmask" | "_lane0" | "_lane1" | "_lane2" | "_lane3" => 1,
         _ => args.len(),
     };
     let mut lowered = Vec::with_capacity(vector_args);
@@ -145,11 +145,10 @@ pub(crate) fn clif_emit_simd_intrinsic(
     }
 
     match op {
-        "_add" | "_sub" | "_mul" | "_min" | "_max" | "_and" | "_or" | "_xor" | "_not"
-        | "_shl" | "_shr" | "_eq" | "_ne" | "_lt" | "_le" | "_gt" | "_ge" | "_select"
-        | "_shuffle" | "_saturating_add" | "_saturating_sub" | "_reduce_add"
-        | "_reduce_min" | "_reduce_max" | "_any" | "_all" | "_none" | "_bitmask"
-        | "_lane0" | "_lane1" | "_lane2" | "_lane3" => {}
+        "_add" | "_sub" | "_mul" | "_min" | "_max" | "_and" | "_or" | "_xor" | "_not" | "_shl"
+        | "_shr" | "_eq" | "_ne" | "_lt" | "_le" | "_gt" | "_ge" | "_select" | "_shuffle"
+        | "_saturating_add" | "_saturating_sub" | "_reduce_add" | "_reduce_min" | "_reduce_max"
+        | "_any" | "_all" | "_none" | "_bitmask" | "_lane0" | "_lane1" | "_lane2" | "_lane3" => {}
         "_as_u32x4" | "_as_i32x4" => {
             return Ok(ClifValue {
                 value: lowered[0].value,

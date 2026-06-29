@@ -1,5 +1,5 @@
-use super::*;
 use super::template::{extract_terminal_return_expr, substitute_pattern_source_template};
+use super::*;
 
 pub(crate) fn resolve_pattern_source_expr(
     expr: &ast::Expr,
@@ -413,11 +413,9 @@ fn eval_resolved_scalar_expr(
                     continue;
                 }
                 let mut guard_values = known_values.clone();
-                if let Ok(binding_stmts) = bindings_for_match_arm_pattern(
-                    &arm.pattern,
-                    &resolved_scrutinee,
-                    variant_tags,
-                ) {
+                if let Ok(binding_stmts) =
+                    bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee, variant_tags)
+                {
                     for stmt in binding_stmts {
                         if let ast::Stmt::Let { name, value, .. } = stmt {
                             guard_values.insert(name, value);
@@ -578,11 +576,9 @@ fn resolve_inner(
                     continue;
                 }
                 let mut arm_values = known_values.clone();
-                if let Ok(binding_stmts) = bindings_for_match_arm_pattern(
-                    &arm.pattern,
-                    &resolved_scrutinee,
-                    variant_tags,
-                ) {
+                if let Ok(binding_stmts) =
+                    bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee, variant_tags)
+                {
                     for stmt in binding_stmts {
                         if let ast::Stmt::Let { name, value, .. } = stmt {
                             arm_values.insert(name, value);

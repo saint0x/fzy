@@ -1,6 +1,8 @@
 use super::*;
 
-pub(crate) fn collect_task_transfer_events(function: &hir::TypedFunction) -> Vec<serde_json::Value> {
+pub(crate) fn collect_task_transfer_events(
+    function: &hir::TypedFunction,
+) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
     collect_task_transfer_events_from_stmts(&function.name, &function.body, &mut out);
     out

@@ -1,11 +1,11 @@
-#[path = "fs/time.rs"]
-mod time;
 #[path = "fs/file.rs"]
 mod file;
-#[path = "fs/store.rs"]
-mod store;
 #[path = "fs/path.rs"]
 mod path;
+#[path = "fs/store.rs"]
+mod store;
+#[path = "fs/time.rs"]
+mod time;
 
 pub(super) fn section() -> String {
     let mut out = String::new();

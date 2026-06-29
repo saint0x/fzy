@@ -13,6 +13,14 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def read_tree(root: Path) -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(root.rglob("*.rs"))
+        if path.is_file()
+    )
+
+
 def load_matrix(path: Path) -> dict[str, str]:
     rows: dict[str, str] = {}
     row_re = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*(implemented|partial|missing)\s*\|")
@@ -25,14 +33,10 @@ def load_matrix(path: Path) -> dict[str, str]:
 
 def main() -> int:
     matrix = load_matrix(DOC)
-    parser_src = read_text(ROOT / "crates" / "parser" / "src" / "lib.rs")
-    ast_src = read_text(ROOT / "crates" / "ast" / "src" / "lib.rs")
-    hir_src = read_text(ROOT / "crates" / "hir" / "src" / "lib.rs")
-    driver_pipeline_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline.rs")
-    clif_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline" / "clif_support.rs")
-    llvm_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline" / "llvm_support.rs")
-    tests_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline" / "tests.rs")
-    pipeline_src = "\n".join([driver_pipeline_src, clif_src, llvm_src, tests_src])
+    parser_src = read_tree(ROOT / "crates" / "parser" / "src")
+    ast_src = read_tree(ROOT / "crates" / "ast" / "src")
+    hir_src = read_tree(ROOT / "crates" / "hir" / "src")
+    pipeline_src = read_tree(ROOT / "crates" / "driver" / "src" / "pipeline")
 
     has_use_alias = (
         "fn parse_use_tree(" in parser_src

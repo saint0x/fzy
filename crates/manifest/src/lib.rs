@@ -60,10 +60,6 @@ pub struct Link {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Dependency {
-    Framework {
-        #[serde(default)]
-        package: Option<String>,
-    },
     Path {
         path: String,
     },
@@ -75,6 +71,10 @@ pub enum Dependency {
     Git {
         git: String,
         rev: String,
+    },
+    Framework {
+        #[serde(default)]
+        package: Option<String>,
     },
 }
 
@@ -406,6 +406,30 @@ mod tests {
         assert!(matches!(
             manifest.deps.get("fzbounds"),
             Some(super::Dependency::Framework { .. })
+        ));
+    }
+
+    #[test]
+    fn loads_path_dependency_without_falling_back_to_framework_shorthand() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [deps]
+            util={path="deps/util"}
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        manifest
+            .validate()
+            .expect("manifest should pass validation");
+        assert!(matches!(
+            manifest.deps.get("util"),
+            Some(super::Dependency::Path { path }) if path == "deps/util"
         ));
     }
 

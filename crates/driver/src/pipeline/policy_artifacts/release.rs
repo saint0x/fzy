@@ -1,8 +1,16 @@
 fn release_policy_error_classes() -> &'static [(&'static str, &'static str, &'static [&'static str])]
 {
     &[
-        ("transport", "boundary and IO failures at runtime or service edges", &["Io"]),
-        ("parse", "invalid input and decode failures", &["InvalidInput"]),
+        (
+            "transport",
+            "boundary and IO failures at runtime or service edges",
+            &["Io"],
+        ),
+        (
+            "parse",
+            "invalid input and decode failures",
+            &["InvalidInput"],
+        ),
         ("timeout", "deadline and wait exhaustion", &["Timeout"]),
         (
             "policy",
@@ -25,7 +33,10 @@ fn release_policy_benchmark_lanes() -> &'static [(&'static str, &'static str)] {
         ("proc_spawn_wait", "process spawn and wait"),
         ("stream_reading", "stream reading throughput"),
         ("task_group_execution", "task-group execution"),
-        ("compiler_parse_lower_build", "compiler parse, lower, and build time"),
+        (
+            "compiler_parse_lower_build",
+            "compiler parse, lower, and build time",
+        ),
         ("native_binary_size", "native binary size"),
     ]
 }

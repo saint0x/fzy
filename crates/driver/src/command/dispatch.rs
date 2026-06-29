@@ -134,51 +134,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 return render_scenario_run_result(format, run, strict_verify);
             }
             if host_backends && deterministic {
-                let bridge_plan = prepare_host_backed_bridge(
-                    &path,
-                    NonScenarioPlanRequest {
-                        strict_verify,
-                        safe_profile,
-                        scheduler: Some("fifo".to_string()),
-                        seed,
-                        filter: None,
-                        deterministic: true,
-                        record: None,
-                        rich_artifacts: true,
-                    },
-                    "native-run",
-                )?;
-                let config = scenario_config_with_backends(true)?;
-                let run = fzscenario::run_scenario(
-                    &config,
-                    fzscenario::ScenarioPath::new(bridge_plan.scenario_path.clone()),
-                    &fzscenario::RunOptions {
-                        det: deterministic,
-                        seed,
-                        timeout: None,
-                        reporter: scenario_reporter(format),
-                        record_trace_to: record.clone(),
-                        filter: None,
-                        jobs: None,
-                        fail_fast: false,
-                        record_collision: fzscenario::RecordCollisionPolicy::Append,
-                        profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
-                        proc_backend: config.proc_backend,
-                        fs_backend: config.fs_backend,
-                        http_backend: config.http_backend,
-                        memory: scenario_memory_options(&config),
-                    },
-                )
-                .map_err(scenario_error)?;
-                return render_host_bridge_run_result(
-                    format,
-                    path.as_path(),
-                    bridge_plan.scenario_path.as_path(),
-                    bridge_plan.trace_path.as_path(),
-                    record.as_deref(),
-                    run,
-                    strict_verify,
-                    deterministic,
+                bail!(
+                    "`fz run <native-source> --det --host-backends` no longer routes through placeholder scenarios; use a `.fozzy.json` scenario for host-backed deterministic execution"
                 );
             }
             let unsafe_docs =
@@ -285,17 +242,6 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                                 "report": artifacts.report_path.as_ref().map(|path| path.display().to_string()),
                                 "timeline": artifacts.timeline_path.as_ref().map(|path| path.display().to_string()),
                                 "manifest": artifacts.manifest_path.display().to_string(),
-                                "explore": artifacts.explore_path.as_ref().map(|path| path.display().to_string()),
-                                "shrink": artifacts.shrink_path.as_ref().map(|path| path.display().to_string()),
-                                "scenariosIndex": artifacts.scenarios_index_path.as_ref().map(|path| path.display().to_string()),
-                                "primaryScenario": artifacts
-                                    .primary_scenario_path
-                                    .as_ref()
-                                    .map(|path| path.display().to_string()),
-                                "goalTrace": artifacts
-                                    .goal_trace_path
-                                    .as_ref()
-                                    .map(|path| path.display().to_string()),
                             })
                         }),
                     })
@@ -452,9 +398,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "unsafeDocs": unsafe_docs,
                         "routing": {
                             "mode": routing_mode,
-                            "reason": if host_backends && deterministic {
-                                "host-backed deterministic run routed through the scenario bridge"
-                            } else if host_backends {
+                            "reason": if host_backends {
                                 "host-backed native live run"
                             } else {
                                 "native run"
@@ -516,51 +460,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 return render_scenario_run_result(format, run, strict_verify);
             }
             if host_backends {
-                let bridge_plan = prepare_host_backed_bridge(
-                    &path,
-                    NonScenarioPlanRequest {
-                        strict_verify,
-                        safe_profile,
-                        scheduler: scheduler.clone(),
-                        seed,
-                        filter: filter.as_deref(),
-                        deterministic: true,
-                        record: None,
-                        rich_artifacts: true,
-                    },
-                    "native-test",
-                )?;
-                let config = scenario_config_with_backends(true)?;
-                let globs = vec![bridge_plan.scenario_path.display().to_string()];
-                let run = fzscenario::run_tests(
-                    &config,
-                    &globs,
-                    &fzscenario::RunOptions {
-                        det: deterministic,
-                        seed,
-                        timeout: None,
-                        reporter: scenario_reporter(format),
-                        record_trace_to: record.clone(),
-                        filter: None,
-                        jobs: None,
-                        fail_fast: false,
-                        record_collision: fzscenario::RecordCollisionPolicy::Append,
-                        profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
-                        proc_backend: config.proc_backend,
-                        fs_backend: config.fs_backend,
-                        http_backend: config.http_backend,
-                        memory: scenario_memory_options(&config),
-                    },
-                )
-                .map_err(scenario_error)?;
-                return render_host_bridge_test_result(
-                    format,
-                    path.as_path(),
-                    bridge_plan.scenario_path.as_path(),
-                    bridge_plan.trace_path.as_path(),
-                    record.as_deref(),
-                    run,
-                    strict_verify,
+                bail!(
+                    "`fz test <native-source>` no longer routes through placeholder host-backed scenarios; use `.fozzy.json` scenarios for host-backed execution"
                 );
             }
             let unsafe_docs =
@@ -624,8 +525,18 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 ),
             ]);
             match format {
-                Format::Text => Ok(message),
-                Format::Json => Ok(serde_json::json!({
+                Format::Text => {
+                    if test_plan.failed_tests > 0 {
+                        return Err(CommandFailure {
+                            exit_code: 1,
+                            output: message,
+                        }
+                        .into());
+                    }
+                    Ok(message)
+                }
+                Format::Json => {
+                    let payload = serde_json::json!({
                     "module": test_plan.module,
                     "deterministic": deterministic,
                     "strictVerify": strict_verify,
@@ -656,6 +567,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "discoveredTestNames": test_plan.discovered_test_names,
                     "selectedTestNames": test_plan.selected_test_names,
                     "deterministicTestNames": test_plan.deterministic_test_names,
+                    "nondeterministicTestNames": test_plan.nondeterministic_test_names,
+                    "passedTests": test_plan.passed_tests,
+                    "failedTests": test_plan.failed_tests,
                     "coverageRatio": test_plan.coverage_ratio,
                     "telemetry": {
                         "parseMs": test_plan.telemetry.parse_ms,
@@ -674,21 +588,18 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                             "report": artifacts.report_path.as_ref().map(|path| path.display().to_string()),
                             "timeline": artifacts.timeline_path.as_ref().map(|path| path.display().to_string()),
                             "manifest": artifacts.manifest_path.display().to_string(),
-                            "explore": artifacts.explore_path.as_ref().map(|path| path.display().to_string()),
-                            "shrink": artifacts.shrink_path.as_ref().map(|path| path.display().to_string()),
-                            "scenariosIndex": artifacts.scenarios_index_path.as_ref().map(|path| path.display().to_string()),
-                            "primaryScenario": artifacts
-                                .primary_scenario_path
-                                .as_ref()
-                                .map(|path| path.display().to_string()),
-                            "goalTrace": artifacts
-                                .goal_trace_path
-                                .as_ref()
-                                .map(|path| path.display().to_string()),
                         })
                     }),
-                })
-                .to_string()),
+                    });
+                    if test_plan.failed_tests > 0 {
+                        return Err(CommandFailure {
+                            exit_code: 1,
+                            output: payload.to_string(),
+                        }
+                        .into());
+                    }
+                    Ok(payload.to_string())
+                }
             }
         }
         Command::Fmt { targets, check } => fmt_command(&targets, check, format),
@@ -940,7 +851,11 @@ pub fn run_with_metadata(command: Command, format: Format) -> Result<CommandResu
     })
 }
 
-pub(super) fn infer_success_exit_code(command: &Command, output: &str, format: Format) -> Option<i32> {
+pub(super) fn infer_success_exit_code(
+    command: &Command,
+    output: &str,
+    format: Format,
+) -> Option<i32> {
     match command {
         Command::Build { .. } => output_contains_status_error(output, format).then_some(1),
         Command::DoctorProject { .. }
@@ -1141,7 +1056,11 @@ pub(super) fn collect_pgo_profile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(inputs)
 }
 
-pub(super) fn pgo_merge_command(path: &Path, output: Option<&Path>, format: Format) -> Result<String> {
+pub(super) fn pgo_merge_command(
+    path: &Path,
+    output: Option<&Path>,
+    format: Format,
+) -> Result<String> {
     let inputs = collect_pgo_profile_inputs(path)?;
     if inputs.is_empty() {
         bail!(

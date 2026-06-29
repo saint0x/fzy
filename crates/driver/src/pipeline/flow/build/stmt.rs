@@ -68,7 +68,8 @@ impl ControlFlowBuilder {
             &self.pattern_source_functions,
             &self.variant_tags,
         ) {
-            self.known_pattern_values.insert(target.to_string(), resolved);
+            self.known_pattern_values
+                .insert(target.to_string(), resolved);
         } else {
             self.known_pattern_values.remove(target);
         }
@@ -140,9 +141,7 @@ impl ControlFlowBuilder {
             current,
             ControlFlowTerminator::Jump {
                 target: active.break_target,
-                edge: ControlFlowEdge::Break {
-                    loop_id: active.id,
-                },
+                edge: ControlFlowEdge::Break { loop_id: active.id },
             },
         )?;
         Ok(None)
@@ -162,9 +161,7 @@ impl ControlFlowBuilder {
             current,
             ControlFlowTerminator::Jump {
                 target: active.continue_target,
-                edge: ControlFlowEdge::Continue {
-                    loop_id: active.id,
-                },
+                edge: ControlFlowEdge::Continue { loop_id: active.id },
             },
         )?;
         Ok(None)

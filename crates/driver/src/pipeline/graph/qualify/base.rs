@@ -11,15 +11,21 @@ pub(crate) fn parse_and_qualify_module(
         )
     })?;
     let mut ast = discovered_module.ast.clone();
-    let root_module_aliases =
-        super::alias::visible_root_module_aliases(&discovered_module.root_namespace_prefix, discovered);
+    let root_module_aliases = super::alias::visible_root_module_aliases(
+        &discovered_module.root_namespace_prefix,
+        discovered,
+    );
     super::alias::expand_wildcard_imports(
         &mut ast,
         &discovered_module.namespace,
         &root_module_aliases,
         discovered,
     )?;
-    super::walk::qualify_module_symbols(&mut ast, &discovered_module.namespace, &root_module_aliases);
+    super::walk::qualify_module_symbols(
+        &mut ast,
+        &discovered_module.namespace,
+        &root_module_aliases,
+    );
     ast.modules.clear();
     Ok((
         module_path.to_path_buf(),

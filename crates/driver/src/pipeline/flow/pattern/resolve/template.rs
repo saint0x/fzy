@@ -61,18 +61,18 @@ pub(super) fn substitute_pattern_source_template(
                 })
                 .collect(),
         },
-        ast::Expr::Group(inner) => ast::Expr::Group(Box::new(
-            substitute_pattern_source_template(inner, bindings),
-        )),
+        ast::Expr::Group(inner) => ast::Expr::Group(Box::new(substitute_pattern_source_template(
+            inner, bindings,
+        ))),
         ast::Expr::Tuple(items) => ast::Expr::Tuple(
             items
                 .iter()
                 .map(|item| substitute_pattern_source_template(item, bindings))
                 .collect(),
         ),
-        ast::Expr::Await(inner) => ast::Expr::Await(Box::new(
-            substitute_pattern_source_template(inner, bindings),
-        )),
+        ast::Expr::Await(inner) => ast::Expr::Await(Box::new(substitute_pattern_source_template(
+            inner, bindings,
+        ))),
         ast::Expr::Discard(inner) => ast::Expr::Discard(Box::new(
             substitute_pattern_source_template(inner, bindings),
         )),

@@ -1,13 +1,13 @@
-#[path = "io/sys.rs"]
-mod sys;
-#[path = "io/json.rs"]
-mod json;
-#[path = "io/http.rs"]
-mod http;
 #[path = "io/body.rs"]
 mod body;
+#[path = "io/http.rs"]
+mod http;
+#[path = "io/json.rs"]
+mod json;
 #[path = "io/proc.rs"]
 mod proc;
+#[path = "io/sys.rs"]
+mod sys;
 
 pub(super) fn section() -> String {
     let mut out = String::new();

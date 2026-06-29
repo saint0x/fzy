@@ -1,13 +1,13 @@
 #[path = "proc/env.rs"]
 mod env;
-#[path = "proc/spawn.rs"]
-mod spawn;
-#[path = "proc/run.rs"]
-mod run;
-#[path = "proc/task.rs"]
-mod task;
 #[path = "proc/host.rs"]
 mod host;
+#[path = "proc/run.rs"]
+mod run;
+#[path = "proc/spawn.rs"]
+mod spawn;
+#[path = "proc/task.rs"]
+mod task;
 
 pub(super) fn runtime_shim_section_proc() -> String {
     let mut out = String::new();

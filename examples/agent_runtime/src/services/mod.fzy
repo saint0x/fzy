@@ -70,17 +70,17 @@ fn plan_json(workspace_id: str, user: str, request: str) -> str {
     let payload = map.new()
     discard map.set(payload, "request", json.str(request))
     discard map.set(payload, "mode", json.str(mode))
-    discard map.set(payload, "session", json.raw(session))
-    discard map.set(payload, "tools", json.raw(model.tool_catalog_json()))
-    discard map.set(payload, "parallel_budget", json.raw(str.from_i32(runtime.parallel_budget())))
-    discard map.set(payload, "auth_ok", json.raw(if auth_ok == 1 { "true" } else { "false" }))
+    discard map.set(payload, "session", session)
+    discard map.set(payload, "tools", model.tool_catalog_json())
+    discard map.set(payload, "parallel_budget", str.from_i32(runtime.parallel_budget()))
+    discard map.set(payload, "auth_ok", if auth_ok == 1 { "true" } else { "false" })
     return json.object(payload)
 }
 
 fn append_audit(event: str, payload_json: str) -> i32 {
     discard fs.mkdir("tmp")
     let line = str.concat(
-        json_obj3("event", json.str(event), "status", json.str("ok"), "payload", json.raw(payload_json)),
+        json_obj3("event", json.str(event), "status", json.str("ok"), "payload", payload_json),
         "\n",
     )
     discard storage.atomic_append(audit_path(), line)

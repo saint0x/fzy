@@ -18,7 +18,10 @@ pub(crate) fn collect_task_group_policy_stmt(
                 "task.group_join" | "task.group_join_all" | "task.group_cancel"
             ) {
                 if let Some(ast::Expr::Ident(name)) = args.first() {
-                    terminal.entry(name.clone()).or_default().push(callee.clone());
+                    terminal
+                        .entry(name.clone())
+                        .or_default()
+                        .push(callee.clone());
                 }
             }
             if let Some(summary) = terminal_param_summaries.get(callee) {

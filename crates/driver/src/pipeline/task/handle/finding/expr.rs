@@ -24,9 +24,15 @@ pub(crate) fn collect_task_handle_finding_expr(
                                 help: "Consume a task handle exactly once with `join`, `detach`, or `cancel_task`, and remove the later terminal operation."
                                     .to_string(),
                             });
-                            terminal.entry(name.clone()).or_default().push(callee.clone());
+                            terminal
+                                .entry(name.clone())
+                                .or_default()
+                                .push(callee.clone());
                         } else {
-                            terminal.entry(name.clone()).or_default().push(callee.clone());
+                            terminal
+                                .entry(name.clone())
+                                .or_default()
+                                .push(callee.clone());
                         }
                     }
                     "task_result" => {

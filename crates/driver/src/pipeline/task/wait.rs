@@ -34,7 +34,10 @@ pub(crate) fn runtime_wait_surface(callee: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn runtime_wait_policy(callee: &str, timeout_active: bool) -> Option<(&'static str, bool)> {
+pub(crate) fn runtime_wait_policy(
+    callee: &str,
+    timeout_active: bool,
+) -> Option<(&'static str, bool)> {
     match callee {
         "proc.wait" => Some(("explicit_timeout_arg", true)),
         "http.poll_next" => Some(("intrinsic_poll_timeout", true)),
@@ -61,7 +64,9 @@ pub(crate) fn runtime_wait_policy(callee: &str, timeout_active: bool) -> Option<
     }
 }
 
-pub(crate) fn collect_async_runtime_wait_policies(function: &hir::TypedFunction) -> Vec<serde_json::Value> {
+pub(crate) fn collect_async_runtime_wait_policies(
+    function: &hir::TypedFunction,
+) -> Vec<serde_json::Value> {
     let mut policies = Vec::<serde_json::Value>::new();
     let mut timeout_active = false;
     for stmt in &function.body {

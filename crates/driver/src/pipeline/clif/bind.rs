@@ -400,4 +400,3 @@ pub(crate) fn clif_emit_let_pattern(
     }
     Ok(())
 }
-

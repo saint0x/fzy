@@ -582,8 +582,9 @@ mod tests {
             },
         )
         .expect_err("distributed-only run should be rejected");
-        assert!(err
-            .to_string()
-            .contains("matched only distributed scenario(s)"));
+        assert!(
+            err.to_string()
+                .contains("matched only distributed scenario(s)")
+        );
     }
 }

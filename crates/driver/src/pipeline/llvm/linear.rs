@@ -545,4 +545,3 @@ pub(crate) fn llvm_emit_linear_stmts(
     }
     Ok(false)
 }
-

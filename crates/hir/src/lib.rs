@@ -24,6 +24,60 @@ pub struct TypedFunction {
     pub required_capabilities: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestMode {
+    Deterministic,
+    Nondeterministic,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestDescriptor {
+    pub id: String,
+    pub name: String,
+    pub function: String,
+    pub mode: TestMode,
+    pub module: Option<String>,
+    pub required_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestStatus {
+    Passed,
+    Failed,
+    TimedOut,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestRunEvent {
+    pub kind: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestRunOutcome {
+    pub descriptor: TestDescriptor,
+    pub status: TestStatus,
+    pub failure: Option<String>,
+    pub steps: usize,
+    pub events: Vec<TestRunEvent>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TestRunnerConfig {
+    pub max_steps: usize,
+}
+
+impl Default for TestRunnerConfig {
+    fn default() -> Self {
+        Self { max_steps: 250_000 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TestSuiteOutcome {
+    pub runs: Vec<TestRunOutcome>,
+}
+
 #[derive(Debug, Clone)]
 struct PendingTypedFunction {
     name: String,
@@ -468,11 +522,13 @@ pub(crate) use self::lower_and_capabilities::*;
 pub(crate) use self::ownership::*;
 pub(crate) use self::provenance_and_contracts::*;
 
+pub use self::eval_and_patterns::execute_tests;
 pub use self::generics_intrinsics::{is_runtime_intrinsic, runtime_intrinsic_names};
 pub use self::linearity_execution::{
     runtime_handle_contract, runtime_handle_contracts, RuntimeHandleContract,
 };
 pub use self::lower_and_capabilities::lower;
+pub use self::lower_and_capabilities::test_symbol_name;
 pub use self::ownership::count_module_owned_return_transfers;
 
 #[cfg(test)]

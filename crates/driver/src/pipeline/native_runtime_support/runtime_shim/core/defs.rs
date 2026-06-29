@@ -1,13 +1,13 @@
-#[path = "defs/consts.rs"]
-mod consts;
-#[path = "defs/strings.rs"]
-mod strings;
 #[path = "defs/alloc.rs"]
 mod alloc;
-#[path = "defs/vec.rs"]
-mod vec;
+#[path = "defs/consts.rs"]
+mod consts;
 #[path = "defs/store.rs"]
 mod store;
+#[path = "defs/strings.rs"]
+mod strings;
+#[path = "defs/vec.rs"]
+mod vec;
 
 pub(super) fn section() -> String {
     let mut out = String::new();

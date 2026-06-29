@@ -249,4 +249,3 @@ pub(crate) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Res
     ctx.code.push_str(&format!("{ok_label}:\n"));
     Ok(value)
 }
-

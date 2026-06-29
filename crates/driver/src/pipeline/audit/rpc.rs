@@ -1,6 +1,9 @@
 use super::*;
 
-pub(crate) fn build_rpc_safety_json(module: &ast::Module, fir: &fir::FirModule) -> serde_json::Value {
+pub(crate) fn build_rpc_safety_json(
+    module: &ast::Module,
+    fir: &fir::FirModule,
+) -> serde_json::Value {
     let rpc_methods = fir
         .typed_functions
         .iter()

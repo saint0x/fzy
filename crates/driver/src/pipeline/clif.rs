@@ -598,18 +598,18 @@ fn clif_emit_borrowed_str_ptr_arg(
     })
 }
 
-#[path = "clif/simd.rs"]
-mod simd;
-#[path = "clif/array.rs"]
-mod array;
 #[path = "clif/agg.rs"]
 mod agg;
+#[path = "clif/array.rs"]
+mod array;
 #[path = "clif/bind.rs"]
 mod bind;
-#[path = "clif/linear.rs"]
-mod linear;
 #[path = "clif/expr.rs"]
 mod expr;
+#[path = "clif/linear.rs"]
+mod linear;
+#[path = "clif/simd.rs"]
+mod simd;
 #[path = "clif/ty.rs"]
 mod ty;
 

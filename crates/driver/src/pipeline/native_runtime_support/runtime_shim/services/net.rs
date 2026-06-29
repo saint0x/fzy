@@ -1,13 +1,13 @@
 #[path = "net/bind.rs"]
 mod bind;
-#[path = "net/read.rs"]
-mod read;
 #[path = "net/meta.rs"]
 mod meta;
-#[path = "net/ws.rs"]
-mod ws;
+#[path = "net/read.rs"]
+mod read;
 #[path = "net/route.rs"]
 mod route;
+#[path = "net/ws.rs"]
+mod ws;
 
 pub(super) fn section() -> String {
     let mut out = String::new();

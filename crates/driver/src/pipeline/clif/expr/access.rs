@@ -172,11 +172,10 @@ pub(super) fn clif_emit_index_expr(
             let len_const = builder
                 .ins()
                 .iconst(default_int_clif_type(), binding.len as i64);
-            let nonneg = builder.ins().icmp(
-                IntCC::SignedGreaterThanOrEqual,
-                index_value.value,
-                zero,
-            );
+            let nonneg =
+                builder
+                    .ins()
+                    .icmp(IntCC::SignedGreaterThanOrEqual, index_value.value, zero);
             let below_len = builder
                 .ins()
                 .icmp(IntCC::SignedLessThan, index_value.value, len_const);
@@ -267,14 +266,14 @@ pub(super) fn clif_emit_index_expr(
 
                 let zero = builder.ins().iconst(default_int_clif_type(), 0);
                 let len_const = builder.ins().iconst(default_int_clif_type(), *len as i64);
-                let nonneg = builder.ins().icmp(
-                    IntCC::SignedGreaterThanOrEqual,
-                    index_value.value,
-                    zero,
-                );
-                let below_len = builder
-                    .ins()
-                    .icmp(IntCC::SignedLessThan, index_value.value, len_const);
+                let nonneg =
+                    builder
+                        .ins()
+                        .icmp(IntCC::SignedGreaterThanOrEqual, index_value.value, zero);
+                let below_len =
+                    builder
+                        .ins()
+                        .icmp(IntCC::SignedLessThan, index_value.value, len_const);
                 let in_range = builder.ins().band(nonneg, below_len);
                 builder.ins().brif(in_range, in_block, &[], out_block, &[]);
 

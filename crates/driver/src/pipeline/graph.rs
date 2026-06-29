@@ -77,14 +77,14 @@ impl ParsedProgram {
         self.qualified_modules.as_ref()
     }
 }
-#[path = "graph/load.rs"]
-mod load;
-#[path = "graph/qualify.rs"]
-mod qualify;
 #[path = "graph/canon.rs"]
 mod canon;
 #[path = "graph/diag.rs"]
 mod diag;
+#[path = "graph/load.rs"]
+mod load;
+#[path = "graph/qualify.rs"]
+mod qualify;
 #[path = "graph/stdlib.rs"]
 mod stdlib;
 
@@ -92,5 +92,5 @@ pub(super) use self::canon::*;
 pub(super) use self::diag::*;
 pub(super) use self::load::*;
 pub(super) use self::qualify::*;
-pub(super) use self::stdlib::*;
 pub(crate) use self::stdlib::embedded_core_stdlib_module_source;
+pub(super) use self::stdlib::*;

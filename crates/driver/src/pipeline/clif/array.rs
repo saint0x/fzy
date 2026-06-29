@@ -224,7 +224,10 @@ pub(crate) fn clif_emit_array_argument_parts(
     }
 }
 
-pub(crate) fn clif_vec_element_type(expr: &ast::Expr, ctx: &ClifLoweringCtx<'_>) -> Option<&'static str> {
+pub(crate) fn clif_vec_element_type(
+    expr: &ast::Expr,
+    ctx: &ClifLoweringCtx<'_>,
+) -> Option<&'static str> {
     match expr {
         ast::Expr::Ident(name) => match ctx.local_types.get(name) {
             Some(ast::Type::Vec(inner)) => match inner.as_ref() {
@@ -487,4 +490,3 @@ pub(crate) fn clif_emit_index_assign(
     }
     bail!("native backend cannot lower indexed assignment target")
 }
-

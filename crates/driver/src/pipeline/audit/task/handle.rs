@@ -103,7 +103,9 @@ fn collect_task_handle_terminal_param_expr(
                             param.name == *name && param.ty.to_string() == "TaskHandle"
                         })
                     {
-                        terminal_params.entry(index).or_insert_with(|| callee.clone());
+                        terminal_params
+                            .entry(index)
+                            .or_insert_with(|| callee.clone());
                     }
                 }
             }

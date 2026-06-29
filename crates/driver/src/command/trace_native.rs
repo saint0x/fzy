@@ -469,12 +469,22 @@ pub(super) fn resolve_replay_target(target: &Path) -> Result<PathBuf> {
             manifest_path.display()
         )
     })?;
+    let schema_version = manifest
+        .get("schemaVersion")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
 
     if let Some(goal_trace) = manifest.get("goalTrace").and_then(|v| v.as_str()) {
         let path = PathBuf::from(goal_trace);
         if path.exists() {
             return Ok(path);
         }
+    }
+    if schema_version == "fozzylang.test_manifest.v1" {
+        bail!(
+            "native test manifests do not support scenario replay/ci/shrink; use the recorded native trace/report directly: {}",
+            manifest_path.display()
+        );
     }
     let Some(primary_scenario) = manifest.get("primaryScenario").and_then(|v| v.as_str()) else {
         bail!(

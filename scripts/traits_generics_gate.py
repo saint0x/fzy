@@ -3,9 +3,17 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PARSER = ROOT / "crates/parser/src/lib.rs"
-HIR = ROOT / "crates/hir/src/lib.rs"
+PARSER = ROOT / "crates/parser/src"
+HIR = ROOT / "crates/hir/src"
 DOC = ROOT / "docs/traits-generics-contract-v1.md"
+
+
+def read_tree(root: pathlib.Path) -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(root.rglob("*.rs"))
+        if path.is_file()
+    )
 
 missing = []
 
@@ -28,7 +36,7 @@ else:
         if marker not in doc:
             missing.append(f"contract doc missing marker: {marker}")
 
-parser_src = PARSER.read_text(encoding="utf-8")
+parser_src = read_tree(PARSER)
 for marker in [
     "expected associated const name",
     "expected associated type name",
@@ -40,7 +48,7 @@ for marker in [
     if marker not in parser_src:
         missing.append(f"parser missing production trait/generic marker: {marker}")
 
-hir_src = HIR.read_text(encoding="utf-8")
+hir_src = read_tree(HIR)
 for marker in [
     "resolve_method_call_target",
     "overlapping impls for trait",

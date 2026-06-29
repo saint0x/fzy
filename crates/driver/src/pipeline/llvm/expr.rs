@@ -1,12 +1,12 @@
-use super::*;
 use super::super::clif::variant_tag_for_key;
+use super::*;
 
-#[path = "expr/cond.rs"]
-mod cond;
 #[path = "expr/binary.rs"]
 mod binary;
 #[path = "expr/complex.rs"]
 mod complex;
+#[path = "expr/cond.rs"]
+mod cond;
 #[path = "expr/simple.rs"]
 mod simple;
 

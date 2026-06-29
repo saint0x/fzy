@@ -75,7 +75,10 @@ pub(super) fn validate_plan_claim_accuracy() -> Result<PlanClaimGate> {
     Ok(analyze_plan_claim_accuracy(&plan_text, &corpus))
 }
 
-pub(super) fn analyze_plan_claim_accuracy(plan_text: &str, corpus: &[(String, String)]) -> PlanClaimGate {
+pub(super) fn analyze_plan_claim_accuracy(
+    plan_text: &str,
+    corpus: &[(String, String)],
+) -> PlanClaimGate {
     let mut completed = 0usize;
     let mut checked = 0usize;
     let mut claims = Vec::<(String, Vec<String>)>::new();
@@ -382,7 +385,9 @@ pub(super) struct ExecutableRuntimeResult {
     stderr: String,
 }
 
-pub(super) fn executable_runtime_result(artifact: &BuildArtifact) -> Result<ExecutableRuntimeResult> {
+pub(super) fn executable_runtime_result(
+    artifact: &BuildArtifact,
+) -> Result<ExecutableRuntimeResult> {
     let output = artifact
         .output
         .as_deref()

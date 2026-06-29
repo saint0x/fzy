@@ -60,8 +60,7 @@ pub(crate) fn ensure_native_runtime_shim(
     let runtime_shim_path = build_dir.join(format!("fz_native_runtime_{tag}.c"));
     let rendered =
         render_native_runtime_shim(string_literals, task_symbols, async_exports, sync_exports);
-    write_atomic_text_file(&runtime_shim_path, &rendered)
-    .with_context(|| {
+    write_atomic_text_file(&runtime_shim_path, &rendered).with_context(|| {
         format!(
             "failed writing native runtime shim source: {}",
             runtime_shim_path.display()

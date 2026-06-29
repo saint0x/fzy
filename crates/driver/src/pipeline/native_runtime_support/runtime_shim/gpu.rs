@@ -1,7 +1,7 @@
-#[path = "gpu/defs.rs"]
-mod defs;
 #[path = "gpu/buf.rs"]
 mod buf;
+#[path = "gpu/defs.rs"]
+mod defs;
 #[path = "gpu/launch.rs"]
 mod launch;
 

@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use formatter::{format_source, is_fzy_source_path};
-use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -33,16 +32,14 @@ use self::interop::{
     generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
     HeaderArtifact,
 };
-use self::non_scenario::{
-    prepare_host_backed_bridge, run_non_scenario_test_plan_with_root_guidance,
-};
+use self::non_scenario::run_non_scenario_test_plan_with_root_guidance;
 use self::source::{
     discover_nested_project_roots, discover_project_roots, load_resolved_module_set,
     resolve_source, ResolvedModuleSource,
 };
 use self::trace_native::{
-    convert_fozzy_trace_to_native, ensure_goal_trace_from_scenario, native_explore,
-    render_trace_native_artifacts, resolve_replay_target,
+    convert_fozzy_trace_to_native, native_explore, render_trace_native_artifacts,
+    resolve_replay_target,
 };
 
 #[cfg(test)]

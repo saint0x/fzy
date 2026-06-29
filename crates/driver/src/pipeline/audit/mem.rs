@@ -423,4 +423,3 @@ pub(crate) fn count_awaits_in_expr(expr: &ast::Expr) -> usize {
         | ast::Expr::Ident(_) => 0,
     }
 }
-

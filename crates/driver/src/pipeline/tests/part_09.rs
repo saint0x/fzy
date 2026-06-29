@@ -1,5 +1,5 @@
-use super::*;
 use super::super::llvm::lower_llvm_ir;
+use super::*;
 
 #[test]
 fn llvm_array_literal_return_values_round_trip_through_named_locals() {

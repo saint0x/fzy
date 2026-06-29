@@ -1,7 +1,7 @@
-use super::*;
-use super::dispatch::{NativeRunOutcome, RunBounds};
 #[cfg(test)]
 use super::dispatch::ScenarioRunRouting;
+use super::dispatch::{NativeRunOutcome, RunBounds};
+use super::*;
 
 pub(super) fn run_native_binary_with_bounds(
     binary: &Path,
@@ -139,7 +139,10 @@ pub(super) fn probe_http_ok(url: &str) -> Result<bool> {
 }
 
 #[cfg(test)]
-pub(super) fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> ScenarioRunRouting {
+pub(super) fn scenario_run_routing(
+    deterministic_requested: bool,
+    host_backends: bool,
+) -> ScenarioRunRouting {
     if deterministic_requested && host_backends {
         return ScenarioRunRouting {
             deterministic_applied: true,
@@ -300,7 +303,10 @@ pub(super) fn ensure_init_target_ready(
     Ok(())
 }
 
-pub(super) fn init_collision_paths(root: &Path, template: &fzscenario::InitTemplate) -> Vec<PathBuf> {
+pub(super) fn init_collision_paths(
+    root: &Path,
+    template: &fzscenario::InitTemplate,
+) -> Vec<PathBuf> {
     let mut paths = vec![
         root.join("fozzy.toml"),
         root.join("src"),

@@ -51,7 +51,11 @@ pub(crate) fn llvm_emit_simd_ptr_memory(
     };
     let is_aligned = op.contains("_aligned_");
     let align = if is_aligned {
-        if kind == "mask32x4" { 4 } else { 16 }
+        if kind == "mask32x4" {
+            4
+        } else {
+            16
+        }
     } else {
         1
     };
@@ -266,7 +270,11 @@ pub(crate) fn llvm_emit_simd_saturating_int_binop(
                 .push_str(&format!("  {lhs_i64} = sext i32 {lhs_lane} to i64\n"));
             ctx.code
                 .push_str(&format!("  {rhs_i64} = sext i32 {rhs_lane} to i64\n"));
-            let wide_op = if op == "_saturating_add" { "add" } else { "sub" };
+            let wide_op = if op == "_saturating_add" {
+                "add"
+            } else {
+                "sub"
+            };
             ctx.code
                 .push_str(&format!("  {wide} = {wide_op} i64 {lhs_i64}, {rhs_i64}\n"));
             ctx.code

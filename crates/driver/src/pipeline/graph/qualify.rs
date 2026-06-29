@@ -1,13 +1,13 @@
 use super::*;
 
-#[path = "qualify/base.rs"]
-mod base;
 #[path = "qualify/alias.rs"]
 mod alias;
-#[path = "qualify/walk.rs"]
-mod walk;
+#[path = "qualify/base.rs"]
+mod base;
 #[path = "qualify/text.rs"]
 mod text;
+#[path = "qualify/walk.rs"]
+mod walk;
 
 pub(crate) fn parse_and_qualify_module(
     module_path: &Path,

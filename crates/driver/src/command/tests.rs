@@ -118,11 +118,11 @@ mod tests {
             "async_c_export_surface"
         );
 
-        let equivalence =
-            equivalence_command(&source, 4242, Format::Json).expect("equivalence should run");
-        let equivalence_json: serde_json::Value =
-            serde_json::from_str(&equivalence).expect("equivalence json should parse");
-        assert_eq!(equivalence_json["ok"], true);
+        let equivalence = equivalence_command(&source, 4242, Format::Json)
+            .expect_err("equivalence should be retired");
+        assert!(equivalence
+            .to_string()
+            .contains("generated placeholder scenarios"));
     }
 
     #[test]
@@ -2013,7 +2013,7 @@ mod tests {
         .expect("test command should succeed");
         assert!(output.contains("\"scheduler\":\"coverage_guided\""));
         assert!(output.contains("\"executedTasks\":3"));
-        assert!(output.contains("\"executionOrder\":[0,2,1]"));
+        assert!(output.contains("\"executionOrder\":[0,1,2]"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -4421,7 +4421,7 @@ fn main() -> i32 {
         let source = std::env::temp_dir().join(format!("fozzylang-term-args-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "use core.process;\nuse core.term;\n\nfn main() -> i32 {\n    let current = process.current()\n    let tty = term.status()\n    let style = term.transcript_style(4)\n    discard term.transcript_write(style, \"argc\", str.from_i32(current.argc))\n    discard term.transcript_write(style, \"cmd\", current.command)\n    discard term.transcript_write(style, \"mode\", process.argv_or(1, \"\"))\n    discard term.eprint_line(str.concat(\"flag=\", process.argv_or(2, \"\")))\n    return tty.stdout_is_tty - tty.stdin_is_tty\n}\n",
+            "use core.process;\nuse core.term;\n\nfn main() -> i32 {\n    let current = process.current()\n    let tty = term.status()\n    let style = term.transcript_style(4)\n    discard term.transcript_write(style, \"argc\", str.from_i32(current.argc))\n    discard term.transcript_write(style, \"cmd\", current.command)\n    discard term.transcript_write(style, \"mode\", process.argv_or(1, \"\"))\n    discard term.transcript_write(style, \"stdin\", str.from_i32(tty.stdin_is_tty))\n    discard term.transcript_write(style, \"stdout\", str.from_i32(tty.stdout_is_tty))\n    discard term.eprint_line(str.concat(\"flag=\", process.argv_or(2, \"\")))\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -4446,6 +4446,8 @@ fn main() -> i32 {
         assert!(output.contains("\"exitCode\":0"));
         assert!(output.contains("argc 3"), "output was: {output}");
         assert!(output.contains("mode serve"), "output was: {output}");
+        assert!(output.contains("stdin"), "output was: {output}");
+        assert!(output.contains("stdout"), "output was: {output}");
         assert!(output.contains("flag=--json"), "output was: {output}");
         assert!(output.contains("\"stdout\":\""), "output was: {output}");
         assert!(output.contains("\"stderr\":\""), "output was: {output}");
@@ -5185,7 +5187,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn native_run_host_backends_keeps_deterministic_bridge_mode() {
+    fn native_run_host_backends_rejects_deterministic_bridge_mode() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -5211,15 +5213,16 @@ fn main() -> i32 {
             },
             Format::Json,
         )
-        .expect("native host-backed deterministic run should use the scenario bridge");
-        assert!(error.contains("\"routing\":\"host-backed-scenario-bridge\""));
-        assert!(error.contains("\"deterministicRequested\":true"));
+        .expect_err("native host-backed deterministic run should be rejected");
+        assert!(error
+            .to_string()
+            .contains("no longer routes through placeholder scenarios"));
 
         let _ = std::fs::remove_file(source);
     }
 
     #[test]
-    fn native_run_project_root_host_backends_keeps_deterministic_bridge_mode() {
+    fn native_run_project_root_host_backends_rejects_deterministic_bridge_mode() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -5237,7 +5240,7 @@ fn main() -> i32 {
         )
         .expect("main source should be written");
 
-        let output = run(
+        let error = run(
             Command::Run {
                 path: root.clone(),
                 args: Vec::new(),
@@ -5254,15 +5257,16 @@ fn main() -> i32 {
             },
             Format::Json,
         )
-        .expect("project-root host-backed deterministic run should use the scenario bridge");
-        assert!(output.contains("\"routing\":\"host-backed-scenario-bridge\""));
-        assert!(output.contains("\"deterministicRequested\":true"));
+        .expect_err("project-root host-backed deterministic run should be rejected");
+        assert!(error
+            .to_string()
+            .contains("no longer routes through placeholder scenarios"));
 
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn native_test_host_backends_materializes_requested_record_path() {
+    fn native_test_host_backends_is_rejected_for_native_sources() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -5277,7 +5281,7 @@ fn main() -> i32 {
         .expect("source should be written");
         let _ = std::fs::remove_file(&record);
 
-        let output = run(
+        let error = run(
             Command::Test {
                 path: source.clone(),
                 deterministic: true,
@@ -5293,13 +5297,13 @@ fn main() -> i32 {
             },
             Format::Json,
         )
-        .expect("host-backed native test should materialize requested record path");
-        assert!(output.contains("\"bridge\""));
-        assert!(record.exists(), "requested record path should exist");
-        let verify = fzscenario::verify_trace_file(&record).expect("trace should verify");
+        .expect_err("host-backed native test path should be rejected");
+        assert!(error
+            .to_string()
+            .contains("placeholder host-backed scenarios"));
         assert!(
-            verify.ok,
-            "recorded trace should round-trip through current CLI"
+            !record.exists(),
+            "requested record path should not be materialized"
         );
 
         let _ = std::fs::remove_file(source);
@@ -5321,7 +5325,7 @@ fn main() -> i32 {
         .expect("source should be written");
         let _ = std::fs::remove_file(&record);
 
-        let output = run(
+        let error = run(
             Command::Run {
                 path: source.clone(),
                 args: Vec::new(),
@@ -5338,21 +5342,17 @@ fn main() -> i32 {
             },
             Format::Json,
         )
-        .expect("host-backed native run should succeed");
-        let payload: serde_json::Value =
-            serde_json::from_str(&output).expect("host-backed run json should parse");
-        assert_eq!(
-            payload["bridge"]["recordedTrace"].as_str(),
-            Some(record.to_string_lossy().as_ref())
+        .expect_err("host-backed native run should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("no longer routes through placeholder scenarios"),
+            "unexpected error: {error}"
         );
         assert!(
-            payload["bridge"]["prepareTrace"]
-                .as_str()
-                .is_some_and(|path| path != record.to_string_lossy()),
-            "prepare trace should refer to the bridge preflight artifact"
+            !record.exists(),
+            "legacy bridge trace should not be materialized"
         );
-        let verify = fzscenario::verify_trace_file(&record).expect("trace should verify");
-        assert!(verify.ok, "recorded trace should verify");
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(record);
@@ -5757,11 +5757,11 @@ fn main() -> i32 {
             Format::Json,
         )
         .expect("test command should succeed");
-        assert!(output.contains("\"artifacts\""));
-        let trace_text = std::fs::read_to_string(&trace).expect("goal trace should be written");
-        assert!(trace_text.contains(&format!("\"format\":\"{FOZZY_TRACE_FORMAT}\"")));
-        assert!(trace_text.contains(&format!("\"version\":{FOZZY_TRACE_VERSION}")));
-        assert!(trace_text.contains("\"events\":["));
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("test command should emit json");
+        let artifacts = payload["artifacts"]
+            .as_object()
+            .expect("native test run should publish artifact paths");
 
         let stem = trace
             .file_stem()
@@ -5773,18 +5773,55 @@ fn main() -> i32 {
             .expect("trace should have parent")
             .to_path_buf();
         let native_trace = base.join(format!("{stem}.native.trace.json"));
+        assert_eq!(
+            artifacts.get("trace").and_then(|value| value.as_str()),
+            Some(native_trace.to_string_lossy().as_ref())
+        );
         let native_trace_text =
             std::fs::read_to_string(&native_trace).expect("native trace should be written");
-        assert!(native_trace_text.contains("\"schemaVersion\": \"fozzylang.thread_trace.v0\""));
-        assert!(native_trace_text.contains("\"capability\": \"thread\""));
-        assert!(native_trace_text.contains("\"scheduler\": \"random\""));
+        let native_trace_payload: serde_json::Value =
+            serde_json::from_str(&native_trace_text).expect("native trace should be valid json");
+        assert_eq!(
+            native_trace_payload["schemaVersion"].as_str(),
+            Some("fozzylang.test_trace.v1")
+        );
+        assert_eq!(native_trace_payload["discoveredTests"].as_u64(), Some(2));
+        assert_eq!(native_trace_payload["executedTests"].as_u64(), Some(2));
+        assert_eq!(native_trace_payload["scheduler"].as_str(), Some("random"));
+        assert!(
+            !trace.exists(),
+            "legacy goal trace path should not be materialized"
+        );
+        assert_eq!(
+            artifacts.get("timeline").and_then(|value| value.as_str()),
+            Some(
+                base.join(format!("{stem}.timeline.json"))
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            artifacts.get("report").and_then(|value| value.as_str()),
+            Some(
+                base.join(format!("{stem}.report.json"))
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            artifacts.get("manifest").and_then(|value| value.as_str()),
+            Some(
+                base.join(format!("{stem}.manifest.json"))
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
         assert!(base.join(format!("{stem}.timeline.json")).exists());
         assert!(base.join(format!("{stem}.report.json")).exists());
         assert!(base.join(format!("{stem}.manifest.json")).exists());
-        assert!(base.join(format!("{stem}.explore.json")).exists());
-        assert!(base.join(format!("{stem}.shrink.json")).exists());
-        assert!(base.join(format!("{stem}.scenarios.json")).exists());
-        assert!(base.join(format!("{stem}.scenarios")).exists());
+        assert!(!base.join(format!("{stem}.explore.json")).exists());
+        assert!(!base.join(format!("{stem}.shrink.json")).exists());
+        assert!(!base.join(format!("{stem}.scenarios.json")).exists());
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
@@ -5795,7 +5832,6 @@ fn main() -> i32 {
         let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
     }
 
     #[test]
@@ -5815,17 +5851,16 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn non_scenario_test_record_writes_async_schedule_artifacts() {
+    fn native_test_record_writes_test_artifacts_from_real_test_bodies() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let source = std::env::temp_dir().join(format!("fozzylang-test-async-record-{suffix}.fzy"));
-        let trace =
-            std::env::temp_dir().join(format!("fozzylang-test-async-record-{suffix}.trace.json"));
+        let source = std::env::temp_dir().join(format!("fozzylang-test-record-{suffix}.fzy"));
+        let trace = std::env::temp_dir().join(format!("fozzylang-test-record-{suffix}.trace.json"));
         std::fs::write(
             &source,
-            "use core.thread;\nasync fn worker() -> i32 {\n    return 0\n}\ntest \"a\" {}\nfn main() -> i32 {\n    return 0\n}\n",
+            "use core.thread;\nfn worker() -> i32 {\n    checkpoint()\n    return 7\n}\ntest \"flow\" {\n    let handle = spawn(worker)\n    let result = join(handle)\n    timeout(10)\n    cancel()\n    assert.eq_i32(result, 7)\n}\nfn main() -> i32 {\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -5848,18 +5883,12 @@ fn main() -> i32 {
         .expect("test command should succeed");
         let output_json: serde_json::Value =
             serde_json::from_str(&output).expect("output should be valid json");
+        assert_eq!(output_json["passedTests"].as_u64(), Some(1));
         assert!(
             output_json["asyncCheckpointCount"]
                 .as_u64()
                 .expect("checkpoint count should be numeric")
-                >= 1
-        );
-        assert!(
-            output_json["asyncExecution"]
-                .as_array()
-                .expect("async execution should be an array")
-                .len()
-                >= 1
+                >= 2
         );
 
         let stem = trace
@@ -5871,557 +5900,72 @@ fn main() -> i32 {
             .parent()
             .expect("trace should have parent")
             .to_path_buf();
+        let native_trace_path = base.join(format!("{stem}.native.trace.json"));
         let native_trace_text =
-            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
-                .expect("native trace should be readable");
-        assert!(native_trace_text.contains("\"asyncSchedule\": ["));
-        let timeline = std::fs::read_to_string(base.join(format!("{stem}.timeline.json")))
-            .expect("timeline should be readable");
-        assert!(timeline.contains("\"decision\": \"async.schedule\""));
+            std::fs::read_to_string(&native_trace_path).expect("native trace should be readable");
+        let native_trace: serde_json::Value =
+            serde_json::from_str(&native_trace_text).expect("native trace should parse");
+        assert_eq!(
+            native_trace["schemaVersion"].as_str(),
+            Some("fozzylang.test_trace.v1")
+        );
+        assert_eq!(
+            native_trace["asyncSchedule"].as_array().map(Vec::len),
+            Some(1)
+        );
+        let tests = native_trace["tests"]
+            .as_array()
+            .expect("tests array should be present");
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0]["status"].as_str(), Some("passed"));
+        let event_details = tests[0]["events"]
+            .as_array()
+            .expect("events should be present")
+            .iter()
+            .filter_map(|event| event["detail"].as_str())
+            .collect::<Vec<_>>();
+        assert!(event_details.contains(&"checkpoint"));
+        assert!(event_details.contains(&"timeout(10)"));
+        assert!(event_details.contains(&"cancel"));
+        assert!(event_details
+            .iter()
+            .any(|detail| detail.contains("worker -> handle:")));
+        assert!(event_details
+            .iter()
+            .any(|detail| detail.contains("handle:1")));
 
-        let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(trace);
-        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
-    }
-
-    #[test]
-    fn non_scenario_test_record_writes_rpc_frame_artifacts() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let source = std::env::temp_dir().join(format!("fozzylang-test-rpc-record-{suffix}.fzy"));
-        let trace =
-            std::env::temp_dir().join(format!("fozzylang-test-rpc-record-{suffix}.trace.json"));
-        std::fs::write(
-            &source,
-            "use core.thread;\nuse core.http;\nrpc Ping(req: i32) -> i32;\nrpc Chat(req: i32) -> i32;\nfn main() -> i32 {\n    Ping(0)\n    Chat(0)\n    timeout(10)\n    cancel()\n    return 0\n}\n",
-        )
-        .expect("source should be written");
-
-        let output = run(
-            Command::Test {
-                path: source.clone(),
-                deterministic: true,
-                strict_verify: false,
-                safe_profile: false,
-                seed: Some(8),
-                record: Some(trace.clone()),
-                host_backends: false,
-                backend: None,
-                scheduler: Some("random".to_string()),
-                rich_artifacts: true,
-                filter: None,
-            },
-            Format::Json,
-        )
-        .expect("test command should succeed");
-        assert!(output.contains("\"rpcFrameCount\":4"));
-        assert!(output.contains("\"rpcValidationErrors\":0"));
-
-        let stem = trace
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .expect("trace should have a stem")
-            .to_string();
-        let base = trace
-            .parent()
-            .expect("trace should have parent")
-            .to_path_buf();
-        let native_trace_text =
-            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
-                .expect("native trace should be written");
-        assert!(native_trace_text.contains("\"rpcFrames\": ["));
-        assert!(native_trace_text.contains("\"event\": \"rpc_send\""));
-        assert!(!native_trace_text.contains("\"event\": \"rpc_recv\""));
-        assert!(native_trace_text.contains("\"event\": \"rpc_deadline\""));
-        assert!(native_trace_text.contains("\"event\": \"rpc_cancel\""));
-        let timeline = std::fs::read_to_string(base.join(format!("{stem}.timeline.json")))
-            .expect("timeline should be readable");
-        assert!(timeline.contains("\"decision\": \"rpc.frame\""));
         let report = std::fs::read_to_string(base.join(format!("{stem}.report.json")))
             .expect("report should be readable");
-        assert!(report.contains("\"kind\": \"rpc_deadline\""));
-        assert!(report.contains("\"kind\": \"rpc_cancel\""));
-        assert!(report.contains("\"rpcValidation\""));
-        assert!(report.contains("\"threadFindings\""));
-        assert!(report.contains("\"failureClasses\""));
-        assert!(report.contains("\"id\": \"rpc_timeout\""));
-        let explore = std::fs::read_to_string(base.join(format!("{stem}.explore.json")))
-            .expect("explore should be readable");
-        assert!(explore.contains("\"schemaVersion\": \"fozzylang.explore.v0\""));
-        assert!(explore.contains("\"rpcFramePermutations\""));
-        assert!(explore.contains("\"scenarioPriorities\""));
-        let shrink = std::fs::read_to_string(base.join(format!("{stem}.shrink.json")))
-            .expect("shrink should be readable");
-        assert!(shrink.contains("\"schemaVersion\": \"fozzylang.shrink.v0\""));
-        assert!(shrink.contains("\"kind\": \"rpc_methods\""));
-        assert!(shrink.contains("\"minimalRpcRepro\""));
-        assert!(shrink.contains("\"scenarioPriorities\""));
-        let scenarios_index = std::fs::read_to_string(base.join(format!("{stem}.scenarios.json")))
-            .expect("scenarios index should be readable");
-        assert!(scenarios_index.contains("\"schemaVersion\": \"fozzylang.scenarios.v0\""));
-        assert!(scenarios_index.contains(".fozzy.json"));
+        assert!(report.contains("\"schemaVersion\": \"fozzylang.test_report.v1\""));
+        assert!(report.contains("\"runtimeEventCount\""));
+        let timeline = std::fs::read_to_string(base.join(format!("{stem}.timeline.json")))
+            .expect("timeline should be readable");
+        assert!(timeline.contains("\"schemaVersion\": \"fozzylang.test_timeline.v1\""));
+        assert!(timeline.contains("\"test\": \"flow\""));
+        let manifest = std::fs::read_to_string(base.join(format!("{stem}.manifest.json")))
+            .expect("manifest should be readable");
+        assert!(manifest.contains("\"schemaVersion\": \"fozzylang.test_manifest.v1\""));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
-        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(native_trace_path);
         let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
     }
 
     #[test]
-    fn non_scenario_test_record_writes_gpu_runtime_events() {
+    fn native_test_record_report_includes_real_thread_findings() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let source = std::env::temp_dir().join(format!("fozzylang-test-gpu-record-{suffix}.fzy"));
+        let source = std::env::temp_dir().join(format!("fozzylang-test-finding-{suffix}.fzy"));
         let trace =
-            std::env::temp_dir().join(format!("fozzylang-test-gpu-record-{suffix}.trace.json"));
+            std::env::temp_dir().join(format!("fozzylang-test-finding-{suffix}.trace.json"));
         std::fs::write(
             &source,
-            "use core.gpu;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\ntest \"gpu trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 4)\n    defer gpu.free(output)\n    let first = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    gpu.wait(first)\n    let second = gpu.launch3(copy, 2, 32, gpu.slice(output, 0, 4), gpu.slice(input, 0, 4), 4)\n    gpu.wait(second)\n    return 0\n}\n",
-        )
-        .expect("source should be written");
-
-        let output = run(
-            Command::Test {
-                path: source.clone(),
-                deterministic: true,
-                strict_verify: false,
-                safe_profile: false,
-                seed: Some(13),
-                record: Some(trace.clone()),
-                host_backends: false,
-                backend: None,
-                scheduler: Some("fifo".to_string()),
-                rich_artifacts: true,
-                filter: None,
-            },
-            Format::Json,
-        )
-        .expect("test command should succeed");
-        assert!(output.contains("\"runtimeEventCount\":"));
-
-        let stem = trace
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .expect("trace should have a stem")
-            .to_string();
-        let base = trace
-            .parent()
-            .expect("trace should have parent")
-            .to_path_buf();
-        let native_trace_text =
-            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
-                .expect("native trace should be written");
-        let native_trace: serde_json::Value =
-            serde_json::from_str(&native_trace_text).expect("native trace should parse");
-        let runtime_events = native_trace["runtimeEvents"]
-            .as_array()
-            .expect("runtimeEvents should be an array");
-        let launch_events = runtime_events
-            .iter()
-            .filter(|event| event["kind"].as_str() == Some("gpu.kernel_launch"))
-            .collect::<Vec<_>>();
-        assert_eq!(launch_events.len(), 2);
-        assert_eq!(
-            launch_events[0]["details"]["kernelName"].as_str(),
-            Some("copy")
-        );
-        assert_eq!(launch_events[0]["details"]["grid"].as_i64(), Some(1));
-        assert_eq!(launch_events[0]["details"]["block"].as_i64(), Some(64));
-        assert_eq!(
-            launch_events[0]["details"]["paramLayout"].as_str(),
-            Some("slice_f32_ro,slice_f32_wo,i32")
-        );
-        assert_eq!(launch_events[1]["details"]["grid"].as_i64(), Some(2));
-        assert_eq!(launch_events[1]["details"]["block"].as_i64(), Some(32));
-        let causal_links = native_trace["causalLinks"]
-            .as_array()
-            .expect("causalLinks should be array");
-        assert!(causal_links
-            .iter()
-            .any(|link| { link["relation"].as_str() == Some("gpu.buffer.lifetime_end") }));
-        assert!(causal_links
-            .iter()
-            .any(|link| { link["relation"].as_str() == Some("gpu.event.complete") }));
-
-        let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(trace);
-        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
-    }
-
-    #[test]
-    fn non_scenario_test_record_writes_gpu_upload_runtime_events() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let source =
-            std::env::temp_dir().join(format!("fozzylang-test-gpu-upload-record-{suffix}.fzy"));
-        let trace = std::env::temp_dir().join(format!(
-            "fozzylang-test-gpu-upload-record-{suffix}.trace.json"
-        ));
-        std::fs::write(
-            &source,
-            "use core.gpu;\nuse core.simd;\ntest \"gpu upload trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let buf: GpuBuffer<f32> = gpu.upload_f32(dev, values)\n    let window: GpuSlice<f32> = gpu.slice(buf, 1, 2)\n    discard window\n    gpu.free(buf)\n    return 0\n}\n",
-        )
-        .expect("source should be written");
-
-        let output = run(
-            Command::Test {
-                path: source.clone(),
-                deterministic: true,
-                strict_verify: false,
-                safe_profile: false,
-                seed: Some(17),
-                record: Some(trace.clone()),
-                host_backends: false,
-                backend: None,
-                scheduler: Some("fifo".to_string()),
-                rich_artifacts: true,
-                filter: None,
-            },
-            Format::Json,
-        )
-        .expect("test command should succeed");
-        assert!(output.contains("\"runtimeEventCount\":"));
-
-        let stem = trace
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .expect("trace should have a stem")
-            .to_string();
-        let base = trace
-            .parent()
-            .expect("trace should have parent")
-            .to_path_buf();
-        let native_trace_text =
-            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
-                .expect("native trace should be written");
-        assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.upload\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.slice\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.free\""));
-
-        let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(trace);
-        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
-    }
-
-    #[test]
-    fn non_scenario_test_record_writes_gpu_download_runtime_events() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let source =
-            std::env::temp_dir().join(format!("fozzylang-test-gpu-download-record-{suffix}.fzy"));
-        let trace = std::env::temp_dir().join(format!(
-            "fozzylang-test-gpu-download-record-{suffix}.trace.json"
-        ));
-        std::fs::write(
-            &source,
-            "use core.gpu;\nuse core.simd;\ntest \"gpu download trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let buf: GpuBuffer<f32> = gpu.upload_f32(dev, values)\n    let downloaded: Vec<f32> = gpu.download_f32(buf)\n    gpu.free(buf)\n    if downloaded[0] != values[0] {\n        return 11\n    }\n    if downloaded[3] != values[3] {\n        return 12\n    }\n    return 0\n}\n",
-        )
-        .expect("source should be written");
-
-        let output = run(
-            Command::Test {
-                path: source.clone(),
-                deterministic: true,
-                strict_verify: false,
-                safe_profile: false,
-                seed: Some(23),
-                record: Some(trace.clone()),
-                host_backends: false,
-                backend: None,
-                scheduler: Some("fifo".to_string()),
-                rich_artifacts: true,
-                filter: None,
-            },
-            Format::Json,
-        )
-        .expect("test command should succeed");
-        assert!(output.contains("\"runtimeEventCount\":"));
-
-        let stem = trace
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .expect("trace should have a stem")
-            .to_string();
-        let base = trace
-            .parent()
-            .expect("trace should have parent")
-            .to_path_buf();
-        let native_trace_text =
-            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
-                .expect("native trace should be written");
-        assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.upload\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.download\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.free\""));
-
-        let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(trace);
-        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
-    }
-
-    #[test]
-    fn non_scenario_test_record_writes_gpu_async_runtime_events() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let source =
-            std::env::temp_dir().join(format!("fozzylang-test-gpu-async-record-{suffix}.fzy"));
-        let trace = std::env::temp_dir().join(format!(
-            "fozzylang-test-gpu-async-record-{suffix}.trace.json"
-        ));
-        std::fs::write(
-            &source,
-            "use core.gpu;\nuse core.thread;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\ntest \"gpu async trace\" {}\nasync host fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 4)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    await gpu.wait_async(event)\n    return 0\n}\n",
-        )
-        .expect("source should be written");
-
-        let output = run(
-            Command::Test {
-                path: source.clone(),
-                deterministic: true,
-                strict_verify: false,
-                safe_profile: false,
-                seed: Some(19),
-                record: Some(trace.clone()),
-                host_backends: false,
-                backend: None,
-                scheduler: Some("fifo".to_string()),
-                rich_artifacts: true,
-                filter: None,
-            },
-            Format::Json,
-        )
-        .expect("test command should succeed");
-        assert!(output.contains("\"runtimeEventCount\":"));
-
-        let stem = trace
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .expect("trace should have a stem")
-            .to_string();
-        let base = trace
-            .parent()
-            .expect("trace should have parent")
-            .to_path_buf();
-        let native_trace_text =
-            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
-                .expect("native trace should be written");
-        assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.slice\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_launch\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.event_wait\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_complete\""));
-
-        let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(trace);
-        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
-    }
-
-    #[test]
-    fn non_scenario_trace_records_gpu_error_events() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let source =
-            std::env::temp_dir().join(format!("fozzylang-test-gpu-error-record-{suffix}.fzy"));
-        let trace = std::env::temp_dir().join(format!(
-            "fozzylang-test-gpu-error-record-{suffix}.trace.json"
-        ));
-        std::fs::write(
-            &source,
-            "use core.gpu;\ntest \"gpu error trace\" {}\nhost fn flush(event: GpuEvent) -> void {\n    gpu.wait(event)\n}\nhost fn main() -> i32 {\n    return 0\n}\n",
-        )
-        .expect("source should be written");
-
-        run(
-            Command::Test {
-                path: source.clone(),
-                deterministic: true,
-                strict_verify: false,
-                safe_profile: false,
-                seed: Some(29),
-                record: Some(trace.clone()),
-                host_backends: false,
-                backend: None,
-                scheduler: Some("fifo".to_string()),
-                rich_artifacts: true,
-                filter: None,
-            },
-            Format::Json,
-        )
-        .expect("test command should succeed");
-
-        let stem = trace
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .expect("trace should have a stem")
-            .to_string();
-        let base = trace
-            .parent()
-            .expect("trace should have parent")
-            .to_path_buf();
-        let native_trace_text =
-            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
-                .expect("native trace should be written");
-        let native_trace: serde_json::Value =
-            serde_json::from_str(&native_trace_text).expect("native trace should parse");
-        let error_event = native_trace["runtimeEvents"]
-            .as_array()
-            .expect("runtimeEvents should be an array")
-            .iter()
-            .find(|event| event["kind"].as_str() == Some("gpu.error"))
-            .expect("gpu.error event should be present");
-        assert_eq!(
-            error_event["details"]["detail"]["reason"].as_str(),
-            Some("unknown_event_binding")
-        );
-
-        let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(trace);
-        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
-    }
-
-    #[test]
-    fn non_scenario_test_record_preserves_rpc_frame_order() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let source = std::env::temp_dir().join(format!("fozzylang-test-rpc-order-{suffix}.fzy"));
-        let trace =
-            std::env::temp_dir().join(format!("fozzylang-test-rpc-order-{suffix}.trace.json"));
-        std::fs::write(
-            &source,
-            "use core.thread;\nrpc Ping(req: i32) -> i32;\nrpc Pong(req: i32) -> i32;\nfn main() -> i32 {\n    Ping(0)\n    Pong(0)\n    timeout(10)\n    cancel()\n    return 0\n}\n",
-        )
-        .expect("source should be written");
-
-        run(
-            Command::Test {
-                path: source.clone(),
-                deterministic: true,
-                strict_verify: false,
-                safe_profile: false,
-                seed: Some(12),
-                record: Some(trace.clone()),
-                host_backends: false,
-                backend: None,
-                scheduler: Some("fifo".to_string()),
-                rich_artifacts: true,
-                filter: None,
-            },
-            Format::Json,
-        )
-        .expect("test command should succeed");
-
-        let stem = trace
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .expect("trace should have a stem")
-            .to_string();
-        let base = trace
-            .parent()
-            .expect("trace should have parent")
-            .to_path_buf();
-        let native_trace_text =
-            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
-                .expect("native trace should be readable");
-        let native_trace: serde_json::Value =
-            serde_json::from_str(&native_trace_text).expect("native trace should parse");
-        let events = native_trace["rpcFrames"]
-            .as_array()
-            .expect("rpcFrames should be array")
-            .iter()
-            .filter_map(|frame| frame["event"].as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            events,
-            vec!["rpc_send", "rpc_send", "rpc_deadline", "rpc_cancel"]
-        );
-
-        let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(trace);
-        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
-    }
-
-    #[test]
-    fn non_scenario_trace_includes_unsafe_site_accounting() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let source = std::env::temp_dir().join(format!("fozzylang-test-unsafe-trace-{suffix}.fzy"));
-        let trace =
-            std::env::temp_dir().join(format!("fozzylang-test-unsafe-trace-{suffix}.trace.json"));
-        std::fs::write(
-            &source,
-            "fn lang_id(v: i32) -> i32 {\n    return v\n}\nunsafe fn lang_unsafe_id(v: i32) -> i32 {\n    return v\n}\nfn main() -> i32 {\n    let routed = lang_id(7)\n    discard lang_unsafe_id\n    unsafe {\n        discard lang_id(routed)\n    }\n    return routed\n}\n",
+            "unsafe fn lang_unsafe_id(v: i32) -> i32 {\n    return v\n}\ntest \"ok\" {\n    assert.eq_i32(1, 1)\n}\nfn main() -> i32 {\n    discard lang_unsafe_id\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -6454,6 +5998,7 @@ fn main() -> i32 {
             .to_path_buf();
         let report = std::fs::read_to_string(base.join(format!("{stem}.report.json")))
             .expect("report should be readable");
+        assert!(report.contains("\"threadFindings\""));
         assert!(report.contains("\"kind\": \"unsafe_site_accounting\""));
         assert!(report.contains("\"contractHash\""));
 
@@ -6463,10 +6008,6 @@ fn main() -> i32 {
         let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
-        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
-        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
     }
 
     #[test]
@@ -6527,6 +6068,79 @@ fn main() -> i32 {
         .expect("test command should succeed");
         assert!(output.contains("\"selectedTests\":1"));
         assert!(output.contains("\"selectedTestNames\":[\"alpha\"]"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_test_executes_body_and_reports_assertion_failure() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-test-failure-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "test \"boom\" {\n    assert.eq_i32(2, 5)\n}\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let error = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(1),
+                record: None,
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: false,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect_err("test command should fail when assertion fails");
+        let rendered = error.to_string();
+        assert!(rendered.contains("exit code 1"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn nondet_tests_execute_on_non_deterministic_runs() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-test-nondet-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "test \"chaos\" nondet {\n    assert.eq_i32(1, 1)\n}\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(1),
+                record: None,
+                host_backends: false,
+                backend: None,
+                scheduler: None,
+                rich_artifacts: false,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        assert!(output.contains("\"selectedTests\":1"));
+        assert!(output.contains("\"nondeterministicTestNames\":[\"chaos\"]"));
+        assert!(output.contains("\"passedTests\":1"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -6741,7 +6355,7 @@ fn main() -> i32 {
         let source = std::env::temp_dir().join(format!("fozzylang-async-workload-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "use core.thread;\nuse core.http;\nrpc Ping(req: i32) -> i32;\nasync fn worker() -> i32 {\n    return 0\n}\ntest \"flow\" {}\nfn main() -> i32 {\n    spawn(worker)\n    Ping(0)\n    return 0\n}\n",
+            "use core.thread;\nasync fn worker() -> i32 {\n    checkpoint()\n    return 0\n}\ntest \"flow\" {\n    let handle = spawn(worker)\n    let result = join(handle)\n    assert.eq_i32(result, 0)\n}\nfn main() -> i32 {\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -6764,12 +6378,7 @@ fn main() -> i32 {
         .expect("test command should succeed");
         let output_json: serde_json::Value =
             serde_json::from_str(&output).expect("output should be valid json");
-        assert!(
-            output_json["executedTasks"]
-                .as_u64()
-                .expect("executed task count should be numeric")
-                >= 4
-        );
+        assert_eq!(output_json["executedTasks"].as_u64(), Some(1));
         assert!(
             output_json["asyncCheckpointCount"]
                 .as_u64()
@@ -6803,6 +6412,37 @@ fn main() -> i32 {
 
         let resolved = resolve_replay_target(&manifest).expect("target should resolve");
         assert_eq!(resolved, goal_trace);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn resolve_replay_target_rejects_native_test_manifest() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("fozzylang-replay-native-test-{suffix}"));
+        std::fs::create_dir_all(&base).expect("base dir should be created");
+        let trace = base.join("trace.native.trace.json");
+        let manifest = base.join("trace.manifest.json");
+        std::fs::write(&trace, "{\"schemaVersion\":\"fozzylang.test_trace.v1\"}")
+            .expect("trace should be written");
+        std::fs::write(
+            &manifest,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.test_manifest.v1",
+                "trace": trace.display().to_string()
+            })
+            .to_string(),
+        )
+        .expect("manifest should be written");
+
+        let error = resolve_replay_target(&manifest)
+            .expect_err("native test manifest should not resolve to replay target");
+        assert!(error
+            .to_string()
+            .contains("do not support scenario replay/ci/shrink"));
 
         let _ = std::fs::remove_dir_all(base);
     }

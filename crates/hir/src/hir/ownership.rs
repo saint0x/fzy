@@ -979,7 +979,10 @@ pub(crate) fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> 
     violations
 }
 
-pub(crate) fn resolve_unsafe_callee(unsafe_functions: &BTreeSet<String>, callee: &str) -> Option<String> {
+pub(crate) fn resolve_unsafe_callee(
+    unsafe_functions: &BTreeSet<String>,
+    callee: &str,
+) -> Option<String> {
     if unsafe_functions.contains(callee) {
         return Some(callee.to_string());
     }
@@ -2402,7 +2405,10 @@ pub(crate) fn is_owned_return_transfer_expr(expr: &Expr) -> bool {
     expr_identity_name(expr).is_some() || is_alloc_expr(expr)
 }
 
-pub(crate) fn intersect_identity_sets(left: BTreeSet<String>, right: BTreeSet<String>) -> BTreeSet<String> {
+pub(crate) fn intersect_identity_sets(
+    left: BTreeSet<String>,
+    right: BTreeSet<String>,
+) -> BTreeSet<String> {
     left.intersection(&right).cloned().collect()
 }
 
@@ -2762,7 +2768,10 @@ pub(crate) fn supports_index_base_type(ty: &Type) -> bool {
     }
 }
 
-pub(crate) fn binding_partial_move_root_type<'a>(function: &'a TypedFunction, name: &str) -> Option<&'a Type> {
+pub(crate) fn binding_partial_move_root_type<'a>(
+    function: &'a TypedFunction,
+    name: &str,
+) -> Option<&'a Type> {
     function.local_types.get(name).or_else(|| {
         function
             .params

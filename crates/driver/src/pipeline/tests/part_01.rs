@@ -1,10 +1,8 @@
+use super::{compile_file, verify_file, BuildProfile};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use super::{
-    compile_file, verify_file, BuildProfile,
-};
 
 pub(super) fn run_native_exit(exe: &Path) -> i32 {
     Command::new(exe)

@@ -76,7 +76,7 @@ pub(super) fn resolve_project_validation_source_path(
         prefer_lib_target,
     )? {
         return Ok(ResolvedSource {
-            source_path: resolved.source_path,
+            source_path: canonical_input,
             project_root,
             manifest_fingerprint: Some(manifest_fingerprint(&manifest)?),
             manifest: Some(manifest),

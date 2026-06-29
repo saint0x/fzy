@@ -306,7 +306,9 @@ pub(crate) fn collect_native_data_ops_from_stmt(
     }
 }
 
-pub(crate) fn collect_native_data_ops_for_function(function: &hir::TypedFunction) -> Vec<NativeDataOp> {
+pub(crate) fn collect_native_data_ops_for_function(
+    function: &hir::TypedFunction,
+) -> Vec<NativeDataOp> {
     let mut out = Vec::new();
     let mut array_lengths = HashMap::<String, usize>::new();
     let mut const_strings = HashMap::<String, String>::new();
@@ -316,4 +318,3 @@ pub(crate) fn collect_native_data_ops_for_function(function: &hir::TypedFunction
     }
     out
 }
-

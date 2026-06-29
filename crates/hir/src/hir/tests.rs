@@ -2,7 +2,7 @@
 mod tests {
     use std::path::Path;
 
-    use crate::{lower, split_generic_callee};
+    use crate::{lower, split_generic_callee, test_symbol_name};
 
     #[test]
     fn lowers_trait_bounds_and_generic_specializations() {
@@ -4511,20 +4511,24 @@ mod tests {
     }
 
     #[test]
-    fn test_blocks_do_not_infer_production_thread_capabilities() {
+    fn test_blocks_participate_in_capability_inference() {
         let module =
             parser::parse("test \"det\" {\n    checkpoint()\n}\n", "tests_only").expect("parse");
         let typed = lower(&module);
         assert!(
-            typed.inferred_capabilities.is_empty(),
-            "unexpected inferred capabilities: {:?}",
+            typed
+                .inferred_capabilities
+                .iter()
+                .any(|cap| cap == "thread"),
+            "expected thread capability inference, got {:?}",
             typed.inferred_capabilities
         );
         assert!(typed
             .function_capability_requirements
             .iter()
-            .all(|requirement| {
-                requirement.function.starts_with("test::") && requirement.required.is_empty()
+            .any(|requirement| {
+                requirement.function == test_symbol_name("det")
+                    && requirement.required.iter().any(|cap| cap == "thread")
             }));
     }
 }

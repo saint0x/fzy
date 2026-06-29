@@ -603,4 +603,3 @@ pub(crate) fn clif_emit_linear_stmts(
     }
     Ok(false)
 }
-

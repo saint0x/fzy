@@ -1,13 +1,13 @@
-#[path = "http/text.rs"]
-mod text;
 #[path = "http/json.rs"]
 mod json;
-#[path = "http/stream.rs"]
-mod stream;
 #[path = "http/post.rs"]
 mod post;
 #[path = "http/read.rs"]
 mod read;
+#[path = "http/stream.rs"]
+mod stream;
+#[path = "http/text.rs"]
+mod text;
 
 pub(super) fn runtime_shim_section_http() -> String {
     let mut out = String::new();

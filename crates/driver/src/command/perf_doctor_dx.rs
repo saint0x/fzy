@@ -369,7 +369,11 @@ pub(super) fn doctor_project_command(path: &Path, strict: bool, format: Format) 
     }
 }
 
-pub(super) fn devloop_command(path: &Path, backend: Option<&str>, format: Format) -> Result<String> {
+pub(super) fn devloop_command(
+    path: &Path,
+    backend: Option<&str>,
+    format: Format,
+) -> Result<String> {
     let verify = verify_file_with_root_guidance(path)?;
     let compile = compile_file_with_backend_with_root_guidance(path, BuildProfile::Dev, backend)?;
     let plan = run_non_scenario_test_plan_with_root_guidance(
@@ -425,24 +429,6 @@ pub(super) fn devloop_command(path: &Path, backend: Option<&str>, format: Format
         })
         .to_string()),
     }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct SemanticsOutcome {
-    pub(super) mode: String,
-    #[serde(rename = "exitClass")]
-    pub(super) exit_class: String,
-    #[serde(rename = "eventKinds")]
-    pub(super) event_kinds: Vec<String>,
-    pub(super) invariants: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct FozzyTestSummary {
-    #[serde(rename = "exitClass")]
-    pub(super) exit_class: String,
-    pub(super) passed: u64,
-    pub(super) failed: u64,
 }
 
 pub(super) fn spec_doc_path() -> PathBuf {

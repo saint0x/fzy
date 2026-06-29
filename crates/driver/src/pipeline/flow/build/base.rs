@@ -145,8 +145,13 @@ impl ControlFlowBuilder {
                     step,
                     body,
                 } => {
-                    let Some(next) =
-                        self.lower_for_stmt(current, init.as_deref(), condition.as_ref(), step.as_deref(), body)?
+                    let Some(next) = self.lower_for_stmt(
+                        current,
+                        init.as_deref(),
+                        condition.as_ref(),
+                        step.as_deref(),
+                        body,
+                    )?
                     else {
                         return Ok(None);
                     };

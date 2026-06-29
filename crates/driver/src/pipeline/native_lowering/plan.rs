@@ -91,4 +91,3 @@ pub(crate) fn native_mangle_symbol(name: &str) -> String {
         })
         .collect()
 }
-

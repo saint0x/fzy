@@ -1,6 +1,9 @@
 use super::*;
 
-pub(crate) fn compute_forced_main_return(fir: &fir::FirModule, enforce_contract_checks: bool) -> Option<i32> {
+pub(crate) fn compute_forced_main_return(
+    fir: &fir::FirModule,
+    enforce_contract_checks: bool,
+) -> Option<i32> {
     if !enforce_contract_checks {
         return None;
     }
@@ -88,7 +91,9 @@ pub(crate) fn compile_time_contract_diagnostics(
     diagnostics
 }
 
-pub(crate) fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::Diagnostic> {
+pub(crate) fn strict_async_contract_diagnostics(
+    fir: &fir::FirModule,
+) -> Vec<diagnostics::Diagnostic> {
     let task_group_terminal_param_summaries = fir
         .typed_functions
         .iter()
@@ -161,7 +166,9 @@ pub(crate) fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<dia
     diagnostics
 }
 
-pub(crate) fn strict_memory_phase_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::Diagnostic> {
+pub(crate) fn strict_memory_phase_contract_diagnostics(
+    fir: &fir::FirModule,
+) -> Vec<diagnostics::Diagnostic> {
     let summaries = build_freeze_phase_summaries(fir);
     collect_freeze_phase_findings(fir, &summaries)
         .into_iter()
@@ -526,4 +533,3 @@ pub(crate) fn eval_contract_const_bool(expr: &ast::Expr) -> Option<bool> {
         _ => eval_const_i32_expr(expr, &empty_const_strings).map(|value| value != 0),
     }
 }
-

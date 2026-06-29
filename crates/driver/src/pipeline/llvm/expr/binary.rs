@@ -22,7 +22,11 @@ pub(crate) fn llvm_emit_binary_expr(
             let lhs = llvm_cast_value(ctx, lhs, &result_ty)?;
             let rhs = llvm_cast_value(ctx, rhs_raw, &result_ty)?;
             let out = ctx.value();
-            let op = if llvm_is_float_ty(&result_ty) { "fadd" } else { "add" };
+            let op = if llvm_is_float_ty(&result_ty) {
+                "fadd"
+            } else {
+                "add"
+            };
             ctx.code.push_str(&format!(
                 "  {out} = {op} {} {}, {}\n",
                 result_ty, lhs.value, rhs.value
@@ -47,7 +51,11 @@ pub(crate) fn llvm_emit_binary_expr(
             let lhs = llvm_cast_value(ctx, lhs, &result_ty)?;
             let rhs = llvm_cast_value(ctx, rhs_raw, &result_ty)?;
             let out = ctx.value();
-            let op = if llvm_is_float_ty(&result_ty) { "fsub" } else { "sub" };
+            let op = if llvm_is_float_ty(&result_ty) {
+                "fsub"
+            } else {
+                "sub"
+            };
             ctx.code.push_str(&format!(
                 "  {out} = {op} {} {}, {}\n",
                 result_ty, lhs.value, rhs.value
@@ -72,7 +80,11 @@ pub(crate) fn llvm_emit_binary_expr(
             let lhs = llvm_cast_value(ctx, lhs, &result_ty)?;
             let rhs = llvm_cast_value(ctx, rhs_raw, &result_ty)?;
             let out = ctx.value();
-            let op = if llvm_is_float_ty(&result_ty) { "fmul" } else { "mul" };
+            let op = if llvm_is_float_ty(&result_ty) {
+                "fmul"
+            } else {
+                "mul"
+            };
             ctx.code.push_str(&format!(
                 "  {out} = {op} {} {}, {}\n",
                 result_ty, lhs.value, rhs.value
@@ -97,7 +109,11 @@ pub(crate) fn llvm_emit_binary_expr(
             let lhs = llvm_cast_value(ctx, lhs, &result_ty)?;
             let rhs = llvm_cast_value(ctx, rhs_raw, &result_ty)?;
             let out = ctx.value();
-            let op = if llvm_is_float_ty(&result_ty) { "fdiv" } else { "sdiv" };
+            let op = if llvm_is_float_ty(&result_ty) {
+                "fdiv"
+            } else {
+                "sdiv"
+            };
             ctx.code.push_str(&format!(
                 "  {out} = {op} {} {}, {}\n",
                 result_ty, lhs.value, rhs.value
@@ -196,7 +212,8 @@ pub(crate) fn llvm_emit_binary_expr(
                         "  br i1 {lhs_pred}, label %{rhs_label}, label %{short_label}\n"
                     ));
                     ctx.code.push_str(&format!("{short_label}:\n"));
-                    ctx.code.push_str(&format!("  store i8 0, ptr {result_slot}\n"));
+                    ctx.code
+                        .push_str(&format!("  store i8 0, ptr {result_slot}\n"));
                     ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                 }
                 ast::BinaryOp::Or => {
@@ -204,7 +221,8 @@ pub(crate) fn llvm_emit_binary_expr(
                         "  br i1 {lhs_pred}, label %{short_label}, label %{rhs_label}\n"
                     ));
                     ctx.code.push_str(&format!("{short_label}:\n"));
-                    ctx.code.push_str(&format!("  store i8 1, ptr {result_slot}\n"));
+                    ctx.code
+                        .push_str(&format!("  store i8 1, ptr {result_slot}\n"));
                     ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                 }
                 _ => unreachable!(),

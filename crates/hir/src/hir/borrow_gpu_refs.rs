@@ -2719,7 +2719,11 @@ pub(crate) fn ref_used_after_await(body: &[Stmt], name: &str, _mutable: bool) ->
     body_uses_ident_after_await(body, name, &mut seen_await)
 }
 
-pub(crate) fn body_uses_ident_after_await(body: &[Stmt], name: &str, seen_await: &mut bool) -> bool {
+pub(crate) fn body_uses_ident_after_await(
+    body: &[Stmt],
+    name: &str,
+    seen_await: &mut bool,
+) -> bool {
     for stmt in body {
         if *seen_await && stmt_uses_ident(stmt, name) {
             return true;
@@ -3004,4 +3008,3 @@ pub(crate) fn expr_uses_ident_after_await(expr: &Expr, name: &str, seen_await: &
         Expr::Int(_) | Expr::Float { .. } | Expr::Char(_) | Expr::Bool(_) | Expr::Str(_) => false,
     }
 }
-

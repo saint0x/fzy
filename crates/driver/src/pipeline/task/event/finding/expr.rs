@@ -29,7 +29,10 @@ pub(crate) fn collect_gpu_event_finding_expr(
                                 .to_string(),
                         });
                     }
-                    terminal.entry(name.clone()).or_default().push(callee.clone());
+                    terminal
+                        .entry(name.clone())
+                        .or_default()
+                        .push(callee.clone());
                     wait_bounds.entry(name.clone()).or_default().push(
                         runtime_wait_policy(callee, *timeout_active)
                             .is_some_and(|(_, bounded)| bounded),
@@ -39,7 +42,9 @@ pub(crate) fn collect_gpu_event_finding_expr(
             if let Some(summary) = terminal_param_summaries.get(callee) {
                 for (index, terminal_name) in summary {
                     if let Some(ast::Expr::Ident(name)) = args.get(*index) {
-                        started.entry(name.clone()).or_insert_with(|| "unknown".to_string());
+                        started
+                            .entry(name.clone())
+                            .or_insert_with(|| "unknown".to_string());
                         if let Some(previous) = terminal.get(name).and_then(|ops| ops.last()) {
                             findings.push(GpuEventFinding {
                                 function: function.name.clone(),
@@ -56,7 +61,10 @@ pub(crate) fn collect_gpu_event_finding_expr(
                             .entry(name.clone())
                             .or_default()
                             .push(format!("{terminal_name} via {callee}"));
-                        wait_bounds.entry(name.clone()).or_default().push(*timeout_active);
+                        wait_bounds
+                            .entry(name.clone())
+                            .or_default()
+                            .push(*timeout_active);
                     }
                 }
             }

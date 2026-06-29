@@ -19,12 +19,12 @@ pub(super) struct NativeRuntimeImportContract {
     pub(super) blocking_behavior: &'static str,
 }
 
-#[path = "native_runtime_tables/runtime.rs"]
-mod runtime;
-#[path = "native_runtime_tables/data.rs"]
-mod data;
 #[path = "native_runtime_tables/contract.rs"]
 mod contract;
+#[path = "native_runtime_tables/data.rs"]
+mod data;
+#[path = "native_runtime_tables/runtime.rs"]
+mod runtime;
 
 pub(super) use self::contract::*;
 pub(super) use self::data::*;

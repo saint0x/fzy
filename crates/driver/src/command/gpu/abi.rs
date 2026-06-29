@@ -258,4 +258,3 @@ pub(crate) fn normalize_abi_export_contract(
         .or_insert(serde_json::Value::Null);
     serde_json::Value::Object(normalized)
 }
-

@@ -1368,9 +1368,6 @@ pub(crate) fn build_call_graph(module: &Module) -> Vec<(String, String)> {
 pub(crate) fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
     let mut caps = BTreeSet::new();
     for function in functions {
-        if function.is_test {
-            continue;
-        }
         if function.is_async {
             caps.insert("thread".to_string());
         }

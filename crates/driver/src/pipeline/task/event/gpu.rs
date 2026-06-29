@@ -312,7 +312,10 @@ pub(crate) fn collect_gpu_event_effects_from_expr(
             }
             if let Some(ast::Expr::Ident(name)) = args.first() {
                 if matches!(callee.as_str(), "gpu.wait" | "gpu.wait_async") {
-                    terminal.entry(name.clone()).or_default().push(callee.clone());
+                    terminal
+                        .entry(name.clone())
+                        .or_default()
+                        .push(callee.clone());
                     wait_bounds.entry(name.clone()).or_default().push(
                         runtime_wait_policy(callee, *timeout_active)
                             .is_some_and(|(_, bounded)| bounded),

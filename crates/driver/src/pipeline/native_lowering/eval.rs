@@ -1,8 +1,8 @@
-use super::*;
 use super::super::llvm::{
     llvm_emit_array_literal_value, llvm_emit_binary_expr, llvm_emit_complex_expr,
     llvm_emit_simple_expr, llvm_float_literal, LlvmFuncCtx, LlvmValue,
 };
+use super::*;
 
 pub(crate) fn llvm_emit_expr(
     expr: &ast::Expr,
@@ -187,7 +187,10 @@ pub(crate) fn eval_const_string_call(
     }
 }
 
-pub(crate) fn eval_const_i32_expr(expr: &ast::Expr, const_strings: &HashMap<String, String>) -> Option<i32> {
+pub(crate) fn eval_const_i32_expr(
+    expr: &ast::Expr,
+    const_strings: &HashMap<String, String>,
+) -> Option<i32> {
     match expr {
         ast::Expr::Int(value) => i32::try_from(*value).ok(),
         ast::Expr::Bool(value) => Some(if *value { 1 } else { 0 }),

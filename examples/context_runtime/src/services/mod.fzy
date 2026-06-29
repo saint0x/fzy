@@ -45,7 +45,7 @@ fn selected_memory_json(request: str, workspace_id: str, session_id: str) -> str
         let raw = list.get(items, idx)
         let parsed = json.parse(raw)
         if model.score_memory(parsed, request, workspace_id, session_id) >= 90 {
-            discard list.push(selected, json.raw(raw))
+            discard list.push(selected, raw)
         }
         idx += 1
     }
@@ -76,9 +76,9 @@ fn frame_json(workspace_id: str, session_id: str, request: str) -> str {
     let selected = selected_memory_json(request, workspace_id, session_id)
     let payload = map.new()
     discard map.set(payload, "system_instructions", json.str("Assemble answers from selected memory before expanding tool work"))
-    discard map.set(payload, "selected_memory", json.raw(selected))
-    discard map.set(payload, "planner", json.raw(planner_json(selected, request)))
-    discard map.set(payload, "protocol", json.raw(protocol_json(request)))
+    discard map.set(payload, "selected_memory", selected)
+    discard map.set(payload, "planner", planner_json(selected, request))
+    discard map.set(payload, "protocol", protocol_json(request))
     discard map.set(payload, "user_request", json.str(request))
     return json.object(payload)
 }

@@ -1544,11 +1544,6 @@ pub(crate) fn compute_function_capabilities(
     let mut calls = BTreeMap::<String, BTreeSet<String>>::new();
 
     for function in functions {
-        if function.is_test {
-            local.insert(function.name.clone(), BTreeSet::new());
-            calls.insert(function.name.clone(), BTreeSet::new());
-            continue;
-        }
         let mut local_caps = BTreeSet::<String>::new();
         let mut local_calls = BTreeSet::<String>::new();
         collect_function_caps_and_calls(function, &mut local_caps, &mut local_calls);

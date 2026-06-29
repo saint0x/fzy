@@ -74,16 +74,16 @@ pub(super) fn emit_native_artifact(
 ) -> Result<PathBuf> {
     let backend = resolve_native_backend(profile, backend_override)?;
     match backend.as_str() {
-        "llvm" => ll::emit_native_artifact_llvm(fir, project_root, artifact_stem, profile, manifest),
-        "cranelift" => {
-            crane::emit_native_artifact_cranelift(
-                fir,
-                project_root,
-                artifact_stem,
-                profile,
-                manifest,
-            )
+        "llvm" => {
+            ll::emit_native_artifact_llvm(fir, project_root, artifact_stem, profile, manifest)
         }
+        "cranelift" => crane::emit_native_artifact_cranelift(
+            fir,
+            project_root,
+            artifact_stem,
+            profile,
+            manifest,
+        ),
         other => Err(anyhow!(
             "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
             other
@@ -101,16 +101,16 @@ pub(super) fn emit_native_libraries(
 ) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
     let backend = resolve_native_backend(profile, backend_override)?;
     match backend.as_str() {
-        "llvm" => ll::emit_native_libraries_llvm(fir, project_root, artifact_stem, profile, manifest),
-        "cranelift" => {
-            crane::emit_native_libraries_cranelift(
-                fir,
-                project_root,
-                artifact_stem,
-                profile,
-                manifest,
-            )
+        "llvm" => {
+            ll::emit_native_libraries_llvm(fir, project_root, artifact_stem, profile, manifest)
         }
+        "cranelift" => crane::emit_native_libraries_cranelift(
+            fir,
+            project_root,
+            artifact_stem,
+            profile,
+            manifest,
+        ),
         other => Err(anyhow!(
             "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
             other

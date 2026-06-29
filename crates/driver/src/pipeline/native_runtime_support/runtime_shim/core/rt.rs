@@ -1,13 +1,13 @@
 #[path = "rt/hash.rs"]
 mod hash;
-#[path = "rt/spawn.rs"]
-mod spawn;
 #[path = "rt/json.rs"]
 mod json;
 #[path = "rt/list.rs"]
 mod list;
 #[path = "rt/map.rs"]
 mod map;
+#[path = "rt/spawn.rs"]
+mod spawn;
 
 pub(super) fn section() -> String {
     let mut out = String::new();
