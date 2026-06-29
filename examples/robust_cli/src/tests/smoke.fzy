@@ -24,7 +24,7 @@ test "det_scan" {
 test "chaos_cli" nondet {
     spawn(runtime.worker.run);
     spawn(runtime.scheduler.tick);
-    for i in 0..3 {
+    for i in 0.. 3 {
         if i == 1 {
             checkpoint();
             continue;
@@ -35,13 +35,13 @@ test "chaos_cli" nondet {
     cancel();
 }
 test "det_language_surface" {
-    for n in 0..4 {
+    for n in 0.. 4 {
         discard n;
     }
     let mask: i32 = (~ 7)^ 3;
     let selected: fn(i32) -> i32 = lang_id;
     discard selected;
-    let routed: i32 = mask% 5;
+    let routed: i32 = mask % 5;
     let ok: bool = !(routed == 0);
     discard lang_id(routed);
     if ok {

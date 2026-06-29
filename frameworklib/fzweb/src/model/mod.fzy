@@ -1,11 +1,9 @@
 fn service_name() -> str {
     return "fzweb"
 }
-
 fn service_version() -> str {
     return "0.1"
 }
-
 fn route_count() -> i32 {
     return 12
 }

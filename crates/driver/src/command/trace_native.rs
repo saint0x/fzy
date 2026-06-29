@@ -118,10 +118,16 @@ fn native_test_manifest_for_target(target: &Path) -> Result<Option<PathBuf>> {
             .join(format!("{prefix}.manifest.json"));
         if manifest.exists() {
             let text = std::fs::read_to_string(&manifest).with_context(|| {
-                format!("failed reading native test manifest: {}", manifest.display())
+                format!(
+                    "failed reading native test manifest: {}",
+                    manifest.display()
+                )
             })?;
             let value: serde_json::Value = serde_json::from_str(&text).with_context(|| {
-                format!("failed parsing native test manifest: {}", manifest.display())
+                format!(
+                    "failed parsing native test manifest: {}",
+                    manifest.display()
+                )
             })?;
             if value
                 .get("schemaVersion")
@@ -146,10 +152,18 @@ fn load_native_test_manifest(target: &Path) -> Result<(PathBuf, NativeTestManife
             target.display()
         )
     })?;
-    let text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("failed reading native test manifest: {}", manifest_path.display()))?;
-    let manifest: NativeTestManifest = serde_json::from_str(&text)
-        .with_context(|| format!("failed parsing native test manifest: {}", manifest_path.display()))?;
+    let text = std::fs::read_to_string(&manifest_path).with_context(|| {
+        format!(
+            "failed reading native test manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: NativeTestManifest = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "failed parsing native test manifest: {}",
+            manifest_path.display()
+        )
+    })?;
     if manifest.schema_version != "fozzylang.test_manifest.v1" {
         bail!(
             "unsupported native test manifest schema `{}` in {}",
@@ -179,11 +193,27 @@ fn load_native_test_artifacts(
         .with_context(|| format!("failed parsing native test trace: {}", trace_path.display()))?;
     let report_path = PathBuf::from(&manifest.report);
     ensure_exists(&report_path)?;
-    let report_text = std::fs::read_to_string(&report_path)
-        .with_context(|| format!("failed reading native test report: {}", report_path.display()))?;
-    let report: NativeTestReportPayload = serde_json::from_str(&report_text)
-        .with_context(|| format!("failed parsing native test report: {}", report_path.display()))?;
-    Ok((manifest_path, manifest, trace_path, trace, report_path, report))
+    let report_text = std::fs::read_to_string(&report_path).with_context(|| {
+        format!(
+            "failed reading native test report: {}",
+            report_path.display()
+        )
+    })?;
+    let report: NativeTestReportPayload =
+        serde_json::from_str(&report_text).with_context(|| {
+            format!(
+                "failed parsing native test report: {}",
+                report_path.display()
+            )
+        })?;
+    Ok((
+        manifest_path,
+        manifest,
+        trace_path,
+        trace,
+        report_path,
+        report,
+    ))
 }
 
 pub(super) fn verify_native_test_artifacts(target: &Path) -> Result<serde_json::Value> {
@@ -223,7 +253,8 @@ pub(super) fn verify_native_test_artifacts(target: &Path) -> Result<serde_json::
     });
     checks.push(NativeArtifactCheck {
         name: "executed_tests_match".to_string(),
-        ok: trace.executed_tests == trace.tests.len() && trace.executed_tests == report.executed_tests,
+        ok: trace.executed_tests == trace.tests.len()
+            && trace.executed_tests == report.executed_tests,
         detail: format!(
             "trace.executed={} tests.len={} report.executed={}",
             trace.executed_tests,
@@ -233,7 +264,8 @@ pub(super) fn verify_native_test_artifacts(target: &Path) -> Result<serde_json::
     });
     checks.push(NativeArtifactCheck {
         name: "discovered_tests_match".to_string(),
-        ok: trace.discovered_tests == report.discovered_tests && trace.discovered_tests >= trace.executed_tests,
+        ok: trace.discovered_tests == report.discovered_tests
+            && trace.discovered_tests >= trace.executed_tests,
         detail: format!(
             "trace.discovered={} report.discovered={} executed={}",
             trace.discovered_tests, report.discovered_tests, trace.executed_tests
@@ -277,7 +309,11 @@ pub(super) fn verify_native_test_artifacts(target: &Path) -> Result<serde_json::
     checks.push(NativeArtifactCheck {
         name: "selected_test_names_match".to_string(),
         ok: manifest.selected_test_names
-            == trace.tests.iter().map(|run| run.name.clone()).collect::<Vec<_>>(),
+            == trace
+                .tests
+                .iter()
+                .map(|run| run.name.clone())
+                .collect::<Vec<_>>(),
         detail: format!("selected={}", manifest.selected_test_names.join(",")),
     });
     checks.push(NativeArtifactCheck {
@@ -349,12 +385,19 @@ fn compare_native_test_plan_against_recorded(
         NativeArtifactCheck {
             name: "selected_tests_match".to_string(),
             ok: recorded_names == replayed_names,
-            detail: format!("recorded={} replayed={}", recorded_names.join(","), replayed_names.join(",")),
+            detail: format!(
+                "recorded={} replayed={}",
+                recorded_names.join(","),
+                replayed_names.join(",")
+            ),
         },
         NativeArtifactCheck {
             name: "scheduler_match".to_string(),
             ok: manifest.scheduler == plan.scheduler,
-            detail: format!("recorded={} replayed={}", manifest.scheduler, plan.scheduler),
+            detail: format!(
+                "recorded={} replayed={}",
+                manifest.scheduler, plan.scheduler
+            ),
         },
         NativeArtifactCheck {
             name: "passed_failed_match".to_string(),
@@ -459,8 +502,14 @@ pub(super) fn ci_native_test_artifacts(
     let replay_output = replay_native_test_artifacts(target, false, Format::Json)?;
     let replay: serde_json::Value =
         serde_json::from_str(&replay_output).context("failed parsing native test replay report")?;
-    let verify_ok = verify.get("ok").and_then(|value| value.as_bool()).unwrap_or(false);
-    let replay_ok = replay.get("ok").and_then(|value| value.as_bool()).unwrap_or(false);
+    let verify_ok = verify
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let replay_ok = replay
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let ok = verify_ok && replay_ok;
     let rendered = render_value_output(
         format,

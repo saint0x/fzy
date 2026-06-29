@@ -2,7 +2,6 @@ fn boot() -> i32 {
     discard api.touch()
     return services.boot()
 }
-
 fn surface_score() -> i32 {
-    return (model.route_count() * 11) + services.metrics_score() + str.len(model.service_name())
+    return(model.route_count() * 11) + services.metrics_score() + str.len(model.service_name())
 }

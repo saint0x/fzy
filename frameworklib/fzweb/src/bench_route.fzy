@@ -1,29 +1,27 @@
 mod support;
-
 const ITERATIONS: i32 = 12000000
-
 fn workload() -> i32 {
     let methods = ["GET", "POST", "GET", "PUT", "PATCH", "DELETE", "GET"]
     let paths = ["/", "/echo", "/search", "/v1/items/abc", "/v1/items/abc", "/v1/items/abc", "/openapi.json"]
-
     let mut i = 0
     let mut mi = 0
     let mut pi = 0
     let mut acc = 0
-
-    while i < ITERATIONS {
-        let score = support.route_kernel_score(methods[mi], paths[pi])
+    while i<ITERATIONS {
+        let score = support.route_kernel_score(methods [mi], paths [pi])
         acc = (acc + score + (i % 13)) % 251
-        mi += 1
-        if mi == 7 { mi = 0 }
-        pi += 1
-        if pi == 7 { pi = 0 }
-        i += 1
+        mi +=  1
+        if mi == 7 {
+            mi = 0
+        }
+        pi +=  1
+        if pi == 7 {
+            pi = 0
+        }
+        i +=  1
     }
-
     return acc
 }
-
 fn main() -> i32 {
     return workload()
 }

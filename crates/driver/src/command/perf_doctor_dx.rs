@@ -187,7 +187,8 @@ pub(super) fn doctor_project_command(path: &Path, strict: bool, format: Format) 
                 name: "manifest-validate".to_string(),
                 status: "error".to_string(),
                 detail: format!("{} is not a compiler manifest", manifest_path.display()),
-                fix: "point doctor at a Fozzy project root or add a valid [package] manifest".to_string(),
+                fix: "point doctor at a Fozzy project root or add a valid [package] manifest"
+                    .to_string(),
             });
             errors += 1;
             None
@@ -196,17 +197,17 @@ pub(super) fn doctor_project_command(path: &Path, strict: bool, format: Format) 
                 .map_err(anyhow::Error::from)
                 .and_then(|loaded| loaded.validate().map(|_| loaded).map_err(|e| anyhow!(e)))
             {
-            Ok(parsed) => Some(parsed),
-            Err(err) => {
-                checks.push(DoctorCheck {
-                    name: "manifest-validate".to_string(),
-                    status: "error".to_string(),
-                    detail: err.to_string(),
-                    fix: "fix fozzy.toml to satisfy manifest schema".to_string(),
-                });
-                errors += 1;
-                None
-            }
+                Ok(parsed) => Some(parsed),
+                Err(err) => {
+                    checks.push(DoctorCheck {
+                        name: "manifest-validate".to_string(),
+                        status: "error".to_string(),
+                        detail: err.to_string(),
+                        fix: "fix fozzy.toml to satisfy manifest schema".to_string(),
+                    });
+                    errors += 1;
+                    None
+                }
             }
         }
     };

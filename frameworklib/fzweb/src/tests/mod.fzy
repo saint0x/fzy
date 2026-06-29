@@ -4,7 +4,6 @@ test "det_surface_score" {
         checkpoint()
     }
 }
-
 test "det_reference_contract" {
     if model.service_name() == "fzweb" && model.route_count() == 12 && str.contains(services.metrics_text(), "fzweb_requests_total") == 1 {
         checkpoint()

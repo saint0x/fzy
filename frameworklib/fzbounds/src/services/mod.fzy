@@ -4,15 +4,12 @@ use regions;
 use arena;
 use containers;
 use integration;
-
 fn json_i32(value: i32) -> str {
     return str.from_i32(value)
 }
-
 fn base_surface_score() -> i32 {
     return str.len(metrics_text()) + budget.surface_score() + runtime.surface_score()
 }
-
 fn doctor_json() -> str {
     let payload = map.new()
     discard map.set(payload, "framework", json.str("fzbounds"))
@@ -23,7 +20,6 @@ fn doctor_json() -> str {
     discard map.set(payload, "integrations", "[\"fzweb\",\"fzjobs\",\"fzauth\",\"fzrealtime\"]")
     return json.object(payload)
 }
-
 fn strict_demo_json() -> str {
     let mut state = runtime.make(budget.default_budget(), runtime.mode_strict())
     state = runtime.allocate(state, 2048, "boot", "warm")
@@ -34,7 +30,6 @@ fn strict_demo_json() -> str {
     discard map.set(payload, "runtime", runtime.inspection_json(state))
     return json.object(payload)
 }
-
 fn audit_demo_json() -> str {
     let small = budget.make(4096, 8, 8, 8, 8, 8, 8, 8, 8, 8)
     let mut state = runtime.make(small, runtime.mode_audit())
@@ -46,13 +41,11 @@ fn audit_demo_json() -> str {
     discard map.set(payload, "runtime", runtime.inspection_json(state))
     return json.object(payload)
 }
-
 fn inspect_json() -> str {
     let mut state = runtime.make(budget.production_budget(), runtime.mode_strict())
     state = runtime.allocate(state, 8192, "boot", "service_boot")
     state = runtime.freeze(state)
     state = runtime.allocate(state, 3072, "request", "request_region")
-
     let payload = map.new()
     discard map.set(payload, "framework", json.str("fzbounds"))
     discard map.set(payload, "runtime", runtime.inspection_json(state))
@@ -68,7 +61,6 @@ fn inspect_json() -> str {
     discard map.set(payload, "arena_profile", integration.arena_bootstrap_json())
     return json.object(payload)
 }
-
 fn metrics_text() -> str {
     let mut state = runtime.make(budget.default_budget(), runtime.mode_strict())
     state = runtime.allocate(state, 2048, "boot", "warm")
@@ -81,7 +73,6 @@ fn metrics_text() -> str {
     let line4 = str.concat("bounds_allocations_total ", json.get_str(runtime_json, "allocations_total"))
     return str.concat(line1, "\n", line2, "\n", line3, "\n", line4)
 }
-
 fn surface_score() -> i32 {
     return str.len(doctor_json()) + base_surface_score()
 }

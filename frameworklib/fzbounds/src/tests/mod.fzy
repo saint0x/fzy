@@ -1,19 +1,17 @@
 use services;
-
 test "det_surface_score" {
     let score = services.surface_score()
     if score > 0 {
         checkpoint()
     }
 }
-
 test "det_reference_contract" {
     let doctor = services.doctor_json()
     let inspect = services.inspect_json()
     let metrics = services.metrics_text()
     if str.contains(doctor, "\"framework\":\"fzbounds\"") == 1 &&
-        str.contains(inspect, "\"request_region\"") == 1 &&
-        str.contains(metrics, "bounds_overflow_total") == 1 {
+    str.contains(inspect, "\"request_region\"") == 1 &&
+    str.contains(metrics, "bounds_overflow_total") == 1 {
         checkpoint()
     }
 }

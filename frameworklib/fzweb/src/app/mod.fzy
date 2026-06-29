@@ -1,7 +1,5 @@
 use core.http;
-
 use request;
-
 struct App {
     service_name: str,
     service_version: str,
@@ -10,7 +8,6 @@ struct App {
     routes: ListHandle,
     middleware: ListHandle,
 }
-
 struct Route {
     route_id: i32,
     name: str,
@@ -21,7 +18,6 @@ struct Route {
     skip_rate: i32,
     require_json: i32,
 }
-
 struct RouteDecision {
     route_id: i32,
     route_name: str,
@@ -32,32 +28,78 @@ struct RouteDecision {
     skip_rate: i32,
     require_json: i32,
 }
-
-fn route_root_id() -> i32 { return 1 }
-fn route_healthz_id() -> i32 { return 2 }
-fn route_readyz_id() -> i32 { return 3 }
-fn route_metrics_id() -> i32 { return 4 }
-fn route_inspect_id() -> i32 { return 5 }
-fn route_search_id() -> i32 { return 6 }
-fn route_echo_post_id() -> i32 { return 7 }
-fn route_echo_name_id() -> i32 { return 8 }
-fn route_bind_id() -> i32 { return 9 }
-fn route_openapi_id() -> i32 { return 10 }
-fn route_static_id() -> i32 { return 11 }
-fn route_items_list_id() -> i32 { return 12 }
-fn route_item_get_id() -> i32 { return 13 }
-fn route_item_put_id() -> i32 { return 14 }
-fn route_item_patch_id() -> i32 { return 15 }
-fn route_item_delete_id() -> i32 { return 16 }
-fn route_version_id() -> i32 { return 17 }
-fn route_cookie_set_id() -> i32 { return 18 }
-fn route_session_login_id() -> i32 { return 19 }
-fn route_session_me_id() -> i32 { return 20 }
-fn route_upload_multipart_id() -> i32 { return 21 }
-fn route_events_id() -> i32 { return 22 }
-fn route_ws_echo_id() -> i32 { return 23 }
-fn route_not_found_id() -> i32 { return 404 }
-
+fn route_root_id() -> i32 {
+    return 1
+}
+fn route_healthz_id() -> i32 {
+    return 2
+}
+fn route_readyz_id() -> i32 {
+    return 3
+}
+fn route_metrics_id() -> i32 {
+    return 4
+}
+fn route_inspect_id() -> i32 {
+    return 5
+}
+fn route_search_id() -> i32 {
+    return 6
+}
+fn route_echo_post_id() -> i32 {
+    return 7
+}
+fn route_echo_name_id() -> i32 {
+    return 8
+}
+fn route_bind_id() -> i32 {
+    return 9
+}
+fn route_openapi_id() -> i32 {
+    return 10
+}
+fn route_static_id() -> i32 {
+    return 11
+}
+fn route_items_list_id() -> i32 {
+    return 12
+}
+fn route_item_get_id() -> i32 {
+    return 13
+}
+fn route_item_put_id() -> i32 {
+    return 14
+}
+fn route_item_patch_id() -> i32 {
+    return 15
+}
+fn route_item_delete_id() -> i32 {
+    return 16
+}
+fn route_version_id() -> i32 {
+    return 17
+}
+fn route_cookie_set_id() -> i32 {
+    return 18
+}
+fn route_session_login_id() -> i32 {
+    return 19
+}
+fn route_session_me_id() -> i32 {
+    return 20
+}
+fn route_upload_multipart_id() -> i32 {
+    return 21
+}
+fn route_events_id() -> i32 {
+    return 22
+}
+fn route_ws_echo_id() -> i32 {
+    return 23
+}
+fn route_not_found_id() -> i32 {
+    return 404
+}
 fn make(service_name: str, service_version: str, store_path: str, session_secret: str) -> App {
     return App {
         service_name: service_name,
@@ -68,17 +110,7 @@ fn make(service_name: str, service_version: str, store_path: str, session_secret
         middleware: list.new(),
     }
 }
-
-fn route(
-    route_id: i32,
-    name: str,
-    method: str,
-    path: str,
-    group: str,
-    public_route: i32,
-    skip_rate: i32,
-    require_json: i32,
-) -> Route {
+fn route(route_id: i32, name: str, method: str, path: str, group: str, public_route: i32, skip_rate: i32, require_json: i32,) -> Route {
     return Route {
         route_id: route_id,
         name: name,
@@ -90,7 +122,6 @@ fn route(
         require_json: require_json,
     }
 }
-
 fn route_catalog_json(item: Route) -> str {
     let payload = map.new()
     discard map.set(payload, "route_id", json.str(str.from_i32(item.route_id)))
@@ -103,21 +134,10 @@ fn route_catalog_json(item: Route) -> str {
     discard map.set(payload, "require_json", json.str(str.from_i32(item.require_json)))
     return json.object(payload)
 }
-
 fn route_from_json(raw: str) -> Route {
     let payload = json.parse(raw)
-    return route(
-        request.parse_i32(json.get_str(payload, "route_id")),
-        json.get_str(payload, "name"),
-        json.get_str(payload, "method"),
-        json.get_str(payload, "path"),
-        json.get_str(payload, "group"),
-        request.parse_i32(json.get_str(payload, "public_route")),
-        request.parse_i32(json.get_str(payload, "skip_rate")),
-        request.parse_i32(json.get_str(payload, "require_json")),
-    )
+    return route(request.parse_i32(json.get_str(payload, "route_id")), json.get_str(payload, "name"), json.get_str(payload, "method"), json.get_str(payload, "path"), json.get_str(payload, "group"), request.parse_i32(json.get_str(payload, "public_route")), request.parse_i32(json.get_str(payload, "skip_rate")), request.parse_i32(json.get_str(payload, "require_json")),)
 }
-
 fn route_decision(item: Route, method_allowed: i32) -> RouteDecision {
     return RouteDecision {
         route_id: item.route_id,
@@ -130,7 +150,6 @@ fn route_decision(item: Route, method_allowed: i32) -> RouteDecision {
         require_json: item.require_json,
     }
 }
-
 fn not_found() -> RouteDecision {
     return RouteDecision {
         route_id: route_not_found_id(),
@@ -143,101 +162,155 @@ fn not_found() -> RouteDecision {
         require_json: 0,
     }
 }
-
 fn add_route(app: App, item: Route) -> App {
     discard list.push(app.routes, route_catalog_json(item))
     return app
 }
-
 fn use_middleware(app: App, name: str) -> App {
     discard list.push(app.middleware, name)
     return app
 }
-
 fn has_middleware(app: App, name: str) -> i32 {
     let mut idx = 0
-    while idx < list.len(app.middleware) {
+    while idx<list.len(app.middleware) {
         if list.get(app.middleware, idx) == name {
             return 1
         }
-        idx += 1
+        idx +=  1
     }
     return 0
 }
-
 fn route_count(app: App) -> i32 {
     return list.len(app.routes)
 }
-
 fn route_at(app: App, index: i32) -> Route {
     return route_from_json(list.get(app.routes, index))
 }
-
 fn select(app: App, conn: HttpHandle) -> RouteDecision {
     let mut idx = 0
-    while idx < list.len(app.routes) {
+    while idx<list.len(app.routes) {
         let item = route_at(app, idx)
-        if route.match(conn, item.method, item.path) == 1 {
+        if route.match (conn, item.method, item.path) == 1 {
             return route_decision(item, 1)
         }
-        idx += 1
+        idx +=  1
     }
-
     idx = 0
-    while idx < list.len(app.routes) {
+    while idx<list.len(app.routes) {
         let item = route_at(app, idx)
-        if route.match(conn, "", item.path) == 1 {
+        if route.match (conn, "", item.path) == 1 {
             return route_decision(item, 0)
         }
-        idx += 1
+        idx +=  1
     }
     return not_found()
 }
-
 fn route_name(route_id: i32) -> str {
-    if route_id == route_root_id() { return "root" }
-    if route_id == route_healthz_id() { return "healthz" }
-    if route_id == route_readyz_id() { return "readyz" }
-    if route_id == route_metrics_id() { return "metrics" }
-    if route_id == route_inspect_id() { return "inspect" }
-    if route_id == route_search_id() { return "search" }
-    if route_id == route_echo_post_id() { return "echo_post" }
-    if route_id == route_echo_name_id() { return "echo_name" }
-    if route_id == route_bind_id() { return "bind" }
-    if route_id == route_openapi_id() { return "openapi" }
-    if route_id == route_static_id() { return "static" }
-    if route_id == route_items_list_id() { return "items_list" }
-    if route_id == route_item_get_id() { return "item_get" }
-    if route_id == route_item_put_id() { return "item_put" }
-    if route_id == route_item_patch_id() { return "item_patch" }
-    if route_id == route_item_delete_id() { return "item_delete" }
-    if route_id == route_version_id() { return "version" }
-    if route_id == route_cookie_set_id() { return "cookie_set" }
-    if route_id == route_session_login_id() { return "session_login" }
-    if route_id == route_session_me_id() { return "session_me" }
-    if route_id == route_upload_multipart_id() { return "upload_multipart" }
-    if route_id == route_events_id() { return "events" }
-    if route_id == route_ws_echo_id() { return "ws_echo" }
+    if route_id == route_root_id() {
+        return "root"
+    }
+    if route_id == route_healthz_id() {
+        return "healthz"
+    }
+    if route_id == route_readyz_id() {
+        return "readyz"
+    }
+    if route_id == route_metrics_id() {
+        return "metrics"
+    }
+    if route_id == route_inspect_id() {
+        return "inspect"
+    }
+    if route_id == route_search_id() {
+        return "search"
+    }
+    if route_id == route_echo_post_id() {
+        return "echo_post"
+    }
+    if route_id == route_echo_name_id() {
+        return "echo_name"
+    }
+    if route_id == route_bind_id() {
+        return "bind"
+    }
+    if route_id == route_openapi_id() {
+        return "openapi"
+    }
+    if route_id == route_static_id() {
+        return "static"
+    }
+    if route_id == route_items_list_id() {
+        return "items_list"
+    }
+    if route_id == route_item_get_id() {
+        return "item_get"
+    }
+    if route_id == route_item_put_id() {
+        return "item_put"
+    }
+    if route_id == route_item_patch_id() {
+        return "item_patch"
+    }
+    if route_id == route_item_delete_id() {
+        return "item_delete"
+    }
+    if route_id == route_version_id() {
+        return "version"
+    }
+    if route_id == route_cookie_set_id() {
+        return "cookie_set"
+    }
+    if route_id == route_session_login_id() {
+        return "session_login"
+    }
+    if route_id == route_session_me_id() {
+        return "session_me"
+    }
+    if route_id == route_upload_multipart_id() {
+        return "upload_multipart"
+    }
+    if route_id == route_events_id() {
+        return "events"
+    }
+    if route_id == route_ws_echo_id() {
+        return "ws_echo"
+    }
     return "not_found"
 }
-
 fn route_group(route_id: i32) -> str {
-    if route_id == route_echo_name_id() { return "/v1" }
-    if route_id == route_items_list_id() { return "/v1" }
-    if route_id == route_item_get_id() { return "/v1" }
-    if route_id == route_item_put_id() { return "/v1" }
-    if route_id == route_item_patch_id() { return "/v1" }
-    if route_id == route_item_delete_id() { return "/v1" }
-    if route_id == route_session_login_id() { return "/session" }
-    if route_id == route_session_me_id() { return "/session" }
-    if route_id == route_cookie_set_id() { return "/cookies" }
+    if route_id == route_echo_name_id() {
+        return "/v1"
+    }
+    if route_id == route_items_list_id() {
+        return "/v1"
+    }
+    if route_id == route_item_get_id() {
+        return "/v1"
+    }
+    if route_id == route_item_put_id() {
+        return "/v1"
+    }
+    if route_id == route_item_patch_id() {
+        return "/v1"
+    }
+    if route_id == route_item_delete_id() {
+        return "/v1"
+    }
+    if route_id == route_session_login_id() {
+        return "/session"
+    }
+    if route_id == route_session_me_id() {
+        return "/session"
+    }
+    if route_id == route_cookie_set_id() {
+        return "/cookies"
+    }
     return "/"
 }
-
 fn openapi_json(app: App) -> str {
     let routes = list.new()
     let mut idx = 0
-    while idx < list.len(app.routes) {
+    while idx<list.len(app.routes) {
         let item = route_at(app, idx)
         let route_json = map.new()
         discard map.set(route_json, "route_id", json.str(str.from_i32(item.route_id)))
@@ -245,11 +318,26 @@ fn openapi_json(app: App) -> str {
         discard map.set(route_json, "method", json.str(item.method))
         discard map.set(route_json, "path", json.str(item.path))
         discard map.set(route_json, "group", json.str(item.group))
-        discard map.set(route_json, "public", json.str(if item.public_route == 1 { "true" } else { "false" }))
-        discard map.set(route_json, "json_body", json.str(if item.require_json == 1 { "true" } else { "false" }))
-        discard map.set(route_json, "rate_limited", json.str(if item.skip_rate == 1 { "false" } else { "true" }))
+        discard map.set(route_json, "public", json.str(if item.public_route == 1 {
+            "true"
+        } else {
+            "false"
+        }
+        ))
+        discard map.set(route_json, "json_body", json.str(if item.require_json == 1 {
+            "true"
+        } else {
+            "false"
+        }
+        ))
+        discard map.set(route_json, "rate_limited", json.str(if item.skip_rate == 1 {
+            "false"
+        } else {
+            "true"
+        }
+        ))
         discard list.push(routes, json.object(route_json))
-        idx += 1
+        idx +=  1
     }
     let info = map.new()
     discard map.set(info, "title", json.str(app.service_name))

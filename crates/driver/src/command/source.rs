@@ -92,7 +92,11 @@ pub(super) fn resolve_source(path: &Path) -> Result<ResolvedSource> {
             };
             bail!(guidance);
         }
-        Err(error) if error.to_string().contains("no valid compiler manifest found") => {
+        Err(error)
+            if error
+                .to_string()
+                .contains("no valid compiler manifest found") =>
+        {
             let guidance = format!(
                 "directory `{}` is not a Fozzy project root ({} is scenario/runtime config, not a compiler manifest). run the command against a real project root or a `.fzy` file explicitly",
                 path.display(),
@@ -136,7 +140,10 @@ fn load_cached_project_manifest(path: &Path) -> Result<manifest::Manifest> {
     let manifest_text = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("failed reading manifest: {}", manifest_path.display()))?;
     if !manifest::looks_like_compiler_manifest(&manifest_text) {
-        bail!("no valid compiler manifest found at {}", manifest_path.display());
+        bail!(
+            "no valid compiler manifest found at {}",
+            manifest_path.display()
+        );
     }
     let mut manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
     manifest.infer_default_targets(path);
@@ -537,9 +544,7 @@ mod tests {
         .expect("scenario config should be written");
 
         let error = resolve_source(&root).expect_err("scenario config dir must not resolve");
-        assert!(error
-            .to_string()
-            .contains("is not a Fozzy project root"));
+        assert!(error.to_string().contains("is not a Fozzy project root"));
 
         let _ = std::fs::remove_dir_all(root);
     }

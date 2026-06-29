@@ -249,6 +249,65 @@ mod tests {
     }
 
     #[test]
+    fn formatter_preserves_newline_delimited_control_flow() {
+        let file_name = format!(
+            "fozzylang-fmt-control-flow-{}.fzy",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "test \"det_surface_score\" {\n    let score = runtime.surface_score()\n    if score > 0 {\n        checkpoint()\n    }\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let _ = format_source_file(&path).expect("formatter should run");
+        let content = std::fs::read_to_string(&path).expect("formatted file should be readable");
+        assert!(content.contains("let score = runtime.surface_score()\n    if score > 0"));
+        parser::parse(&content, "main").expect("formatted file should parse");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn formatter_preserves_logical_and_operator() {
+        let file_name = format!(
+            "fozzylang-fmt-logical-and-{}.fzy",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "test \"det_reference_contract\" {\n    if model.service_name() == \"fzweb\" && model.route_count() == 12 {\n        checkpoint()\n    }\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let _ = format_source_file(&path).expect("formatter should run");
+        let content = std::fs::read_to_string(&path).expect("formatted file should be readable");
+        assert!(content.contains("&&"));
+        assert!(!content.contains("& &"));
+        parser::parse(&content, "main").expect("formatted file should parse");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn formatter_round_trips_trait_generic_fixture() {
+        let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/trait_generic/main.fzy");
+        let source = std::fs::read_to_string(&source_path).expect("fixture source should be read");
+        let formatted = format_source(&source);
+        parser::parse(&formatted, "main").expect("formatted fixture should parse");
+        assert!(formatted.contains("fn id<T: Show>(v: T) -> T"));
+    }
+
+    #[test]
     fn audit_unsafe_uses_semantic_calls_not_lexical_substrings() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -6420,8 +6479,10 @@ fn main() -> i32 {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let source = std::env::temp_dir().join(format!("fozzylang-native-test-verify-{suffix}.fzy"));
-        let trace = std::env::temp_dir().join(format!("fozzylang-native-test-verify-{suffix}.trace.json"));
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-native-test-verify-{suffix}.fzy"));
+        let trace =
+            std::env::temp_dir().join(format!("fozzylang-native-test-verify-{suffix}.trace.json"));
         std::fs::write(
             &source,
             "test \"ok\" {\n    assert.eq_i32(1, 1)\n}\nfn main() -> i32 {\n    return 0\n}\n",
@@ -6449,7 +6510,10 @@ fn main() -> i32 {
             .expect("trace should have parent")
             .join(format!(
                 "{}.manifest.json",
-                trace.file_stem().and_then(|value| value.to_str()).expect("stem")
+                trace
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .expect("stem")
             ));
         let output = run(
             Command::TraceVerify {
@@ -6462,7 +6526,10 @@ fn main() -> i32 {
         assert!(output.contains("\"schemaVersion\":\"fozzylang.native_test_trace_verify.v1\""));
         assert!(output.contains("\"ok\":true"));
 
-        let stem = trace.file_stem().and_then(|value| value.to_str()).expect("stem");
+        let stem = trace
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("stem");
         let base = trace.parent().expect("parent");
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
@@ -6477,8 +6544,10 @@ fn main() -> i32 {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let source = std::env::temp_dir().join(format!("fozzylang-native-test-replay-{suffix}.fzy"));
-        let trace = std::env::temp_dir().join(format!("fozzylang-native-test-replay-{suffix}.trace.json"));
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-native-test-replay-{suffix}.fzy"));
+        let trace =
+            std::env::temp_dir().join(format!("fozzylang-native-test-replay-{suffix}.trace.json"));
         std::fs::write(
             &source,
             "use core.thread;\nfn worker() -> i32 {\n    checkpoint()\n    return 3\n}\ntest \"ok\" {\n    let handle = spawn(worker)\n    let result = join(handle)\n    assert.eq_i32(result, 3)\n}\nfn main() -> i32 {\n    return 0\n}\n",
@@ -6501,7 +6570,10 @@ fn main() -> i32 {
             Format::Json,
         )
         .expect("test command should succeed");
-        let stem = trace.file_stem().and_then(|value| value.to_str()).expect("stem");
+        let stem = trace
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("stem");
         let base = trace.parent().expect("parent");
         let manifest = base.join(format!("{stem}.manifest.json"));
 

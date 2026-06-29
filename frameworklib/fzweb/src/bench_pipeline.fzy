@@ -1,9 +1,7 @@
 mod middleware;
 mod request;
 mod support;
-
 const ITERATIONS: i32 = 8000000
-
 fn workload() -> i32 {
     let cfg = support.server_config()
     let policy = support.policy_from_config(cfg)
@@ -11,19 +9,16 @@ fn workload() -> i32 {
     let mut metrics = support.metrics_new()
     let mut i = 0
     let mut acc = 0
-
-    while i < ITERATIONS {
+    while i<ITERATIONS {
         rate = middleware.rate_refill(policy, rate, i)
         let valid = request.parse_i32("42")
         let route = support.route_kernel_score("GET", "/version")
         metrics = support.metrics_record(metrics, 200)
         acc = (acc + valid + route + metrics.ok_responses + rate.tokens) % 251
-        i += 1
+        i +=  1
     }
-
     return acc
 }
-
 fn main() -> i32 {
     return workload()
 }

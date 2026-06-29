@@ -174,6 +174,8 @@ echo "[gate] full command-surface checks"
 
 echo "[gate] tooling DX strict smokes"
 RUSTFLAGS="-D warnings" cargo check -p driver --all-targets >/dev/null
+cargo test -p formatter -- --nocapture >/dev/null
+cargo test -p driver formatter -- --nocapture >/dev/null
 "${FZ_CMD[@]}" fmt examples/fullstack/src examples/robust_cli/src --check >/dev/null
 "${FZ_CMD[@]}" doc gen examples/fullstack/src --format markdown --out "$ARTIFACT_DIR/fullstack.api.md" >/dev/null
 test -s "$ARTIFACT_DIR/fullstack.api.md"

@@ -2,25 +2,21 @@ use core.http;
 use core.security;
 use core.storage;
 use core.time;
-
 use cookies;
 use persistence;
 use request;
-
 struct SessionConfig {
     store_path: str,
     secret: str,
     cookie_name: str,
     ttl_seconds: i32,
 }
-
 struct SessionRecord {
     id: str,
     user: str,
     issued_ms: i32,
     expires_ms: i32,
 }
-
 fn config(store_path: str, secret: str, cookie_name: str, ttl_seconds: i32) -> SessionConfig {
     return SessionConfig {
         store_path: store_path,
@@ -29,7 +25,6 @@ fn config(store_path: str, secret: str, cookie_name: str, ttl_seconds: i32) -> S
         ttl_seconds: ttl_seconds,
     }
 }
-
 fn record(id: str, user: str, issued_ms: i32, expires_ms: i32) -> SessionRecord {
     return SessionRecord {
         id: id,
@@ -38,11 +33,9 @@ fn record(id: str, user: str, issued_ms: i32, expires_ms: i32) -> SessionRecord 
         expires_ms: expires_ms,
     }
 }
-
 fn store(cfg: SessionConfig) -> persistence.Store {
     return persistence.open(cfg.store_path)
 }
-
 fn encode(rec: SessionRecord) -> str {
     let payload = map.new()
     discard map.set(payload, "id", json.str(rec.id))
@@ -51,35 +44,25 @@ fn encode(rec: SessionRecord) -> str {
     discard map.set(payload, "expires_ms", json.str(str.from_i32(rec.expires_ms)))
     return json.object(payload)
 }
-
 fn decode(raw: str) -> SessionRecord {
     if raw == "" {
         return record("", "", 0, 0)
     }
     let payload = json.parse(raw)
-    return record(
-        json.get_str(payload, "id"),
-        json.get_str(payload, "user"),
-        request.parse_i32(json.get_str(payload, "issued_ms")),
-        request.parse_i32(json.get_str(payload, "expires_ms")),
-    )
+    return record(json.get_str(payload, "id"), json.get_str(payload, "user"), request.parse_i32(json.get_str(payload, "issued_ms")), request.parse_i32(json.get_str(payload, "expires_ms")),)
 }
-
 fn issue_id() -> str {
     return security.opaque_token(24)
 }
-
 fn create(cfg: SessionConfig, user: str) -> SessionRecord {
     let issued = time.monotonic_ms()
     let rec = record(issue_id(), user, issued, issued + (cfg.ttl_seconds * 1000))
     discard persistence.put_json(store(cfg), "session", rec.id, encode(rec))
     return rec
 }
-
 fn load(cfg: SessionConfig, session_id: str) -> SessionRecord {
     return decode(persistence.get(store(cfg), "session", session_id))
 }
-
 fn valid(rec: SessionRecord) -> i32 {
     if rec.id == "" || rec.user == "" {
         return 0
@@ -89,7 +72,6 @@ fn valid(rec: SessionRecord) -> i32 {
     }
     return 1
 }
-
 fn from_request(conn: HttpHandle, cfg: SessionConfig) -> SessionRecord {
     let raw = cookies.cookie_value(request.header(conn, "cookie"), cfg.cookie_name)
     let session_id = raw
@@ -102,20 +84,9 @@ fn from_request(conn: HttpHandle, cfg: SessionConfig) -> SessionRecord {
     }
     return record("", "", 0, 0)
 }
-
 fn attach(conn: HttpHandle, cfg: SessionConfig, rec: SessionRecord) -> i32 {
-    return cookies.set_cookie(
-        conn,
-        cfg.cookie_name,
-        rec.id,
-        "/",
-        cfg.ttl_seconds,
-        1,
-        1,
-        "Lax",
-    )
+    return cookies.set_cookie(conn, cfg.cookie_name, rec.id, "/", cfg.ttl_seconds, 1, 1, "Lax",)
 }
-
 fn clear(conn: HttpHandle, cfg: SessionConfig) -> i32 {
     return cookies.clear_cookie(conn, cfg.cookie_name, "/")
 }

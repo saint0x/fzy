@@ -2,7 +2,6 @@ use core.http;
 use core.log;
 use core.time;
 use core.thread;
-
 use app;
 use cookies;
 use middleware;
@@ -13,7 +12,6 @@ use response;
 use sessions;
 use streaming;
 use webcore;
-
 struct ServerConfig {
     service_name: str,
     service_version: str,
@@ -32,7 +30,6 @@ struct ServerConfig {
     rate_refill_ms: i32,
     max_requests: i32,
 }
-
 struct MetricsState {
     total_requests: i32,
     ok_responses: i32,
@@ -41,20 +38,17 @@ struct MetricsState {
     unauthorized: i32,
     rate_limited: i32,
 }
-
 struct HandleOutcome {
     status: i32,
     rate: middleware.RateState,
     metrics: MetricsState,
 }
-
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let m = map.new()
     discard map.set(m, k1, v1)
     discard map.set(m, k2, v2)
     return log.fields(m)
 }
-
 fn bool_env(key: str, fallback: i32) -> i32 {
     let raw = str.lower_ascii(str.trim(env.get(key)))
     if raw == "" {
@@ -74,22 +68,20 @@ fn bool_env(key: str, fallback: i32) -> i32 {
     }
     return 0
 }
-
 fn i32_env(key: str, fallback: i32, min_value: i32, max_value: i32) -> i32 {
     let raw = str.trim(env.get(key))
     if raw == "" {
         return fallback
     }
     let mut value = request.parse_i32(raw)
-    if value < min_value {
+    if value<min_value {
         value = min_value
     }
-    if value > max_value {
+    if value>max_value {
         value = max_value
     }
     return value
 }
-
 fn text_env(key: str, fallback: str) -> str {
     let raw = env.get(key)
     if raw == "" {
@@ -97,7 +89,6 @@ fn text_env(key: str, fallback: str) -> str {
     }
     return raw
 }
-
 fn server_config() -> ServerConfig {
     return ServerConfig {
         service_name: text_env("FZWEB_SERVICE_NAME", "fzweb"),
@@ -118,22 +109,9 @@ fn server_config() -> ServerConfig {
         max_requests: i32_env("FZWEB_MAX_REQUESTS", 2000000000, 1, 2000000000),
     }
 }
-
 fn policy_from_config(cfg: ServerConfig) -> middleware.Policy {
-    return middleware.policy(
-        cfg.timeout_ms,
-        cfg.max_body_bytes,
-        cfg.require_auth,
-        cfg.auth_token,
-        cfg.enable_cors,
-        cfg.enable_request_log,
-        cfg.require_json_body,
-        cfg.enable_rate_limit,
-        cfg.rate_capacity,
-        cfg.rate_refill_ms,
-    )
+    return middleware.policy(cfg.timeout_ms, cfg.max_body_bytes, cfg.require_auth, cfg.auth_token, cfg.enable_cors, cfg.enable_request_log, cfg.require_json_body, cfg.enable_rate_limit, cfg.rate_capacity, cfg.rate_refill_ms,)
 }
-
 fn metrics_new() -> MetricsState {
     return MetricsState {
         total_requests: 0,
@@ -144,30 +122,27 @@ fn metrics_new() -> MetricsState {
         rate_limited: 0,
     }
 }
-
 fn metrics_record(metrics: MetricsState, status: i32) -> MetricsState {
     let mut ok = metrics.ok_responses
     let mut client = metrics.client_errors
     let mut server = metrics.server_errors
     let mut unauthorized = metrics.unauthorized
     let mut rate_limited = metrics.rate_limited
-
     if status >= 200 && status < 300 {
-        ok += 1
+        ok +=  1
     }
     if status >= 400 && status < 500 {
-        client += 1
+        client +=  1
     }
     if status >= 500 {
-        server += 1
+        server +=  1
     }
     if status == 401 {
-        unauthorized += 1
+        unauthorized +=  1
     }
     if status == 429 {
-        rate_limited += 1
+        rate_limited +=  1
     }
-
     return MetricsState {
         total_requests: metrics.total_requests + 1,
         ok_responses: ok,
@@ -177,11 +152,9 @@ fn metrics_record(metrics: MetricsState, status: i32) -> MetricsState {
         rate_limited: rate_limited,
     }
 }
-
 fn gate_body(reason: str) -> str {
     return response.error_body(response.api_error(400, reason, reason, ""))
 }
-
 fn safe_static_name(name: str) -> str {
     if name == "" {
         return "index.txt"
@@ -194,11 +167,9 @@ fn safe_static_name(name: str) -> str {
     }
     return name
 }
-
 fn static_body(name: str) -> str {
     return str.concat("static asset: ", safe_static_name(name))
 }
-
 fn metrics_text(metrics: MetricsState, started_ms: i32) -> str {
     let uptime_ms = time.monotonic_ms() - started_ms
     let line1 = str.concat("fzweb_requests_total ", str.from_i32(metrics.total_requests))
@@ -210,28 +181,25 @@ fn metrics_text(metrics: MetricsState, started_ms: i32) -> str {
     let line7 = str.concat("fzweb_uptime_ms ", str.from_i32(uptime_ms))
     return str.concat(line1, "\n", line2, "\n", line3, "\n", line4, "\n", line5, "\n", line6, "\n", line7)
 }
-
 fn route_kernel_score(method: str, path: str) -> i32 {
     let mut score = (str.len(method) * 17) + (str.len(path) * 19)
     if method == "GET" {
-        score += 11
+        score +=  11
     }
     if method == "POST" {
-        score += 13
+        score +=  13
     }
     if path == "/healthz" {
-        score += 23
+        score +=  23
     }
     if str.starts_with(path, "/static/") == 1 {
-        score += 29
+        score +=  29
     }
     return score % 251
 }
-
 fn session_config(cfg: ServerConfig) -> sessions.SessionConfig {
     return sessions.config(cfg.store_path, cfg.session_secret, "fzweb_session", 3600)
 }
-
 fn default_app(cfg: ServerConfig) -> app.App {
     let mut web = app.make(cfg.service_name, cfg.service_version, cfg.store_path, cfg.session_secret)
     web = app.use_middleware(web, "security_headers")
@@ -240,7 +208,6 @@ fn default_app(cfg: ServerConfig) -> app.App {
     web = app.use_middleware(web, "auth")
     web = app.use_middleware(web, "json")
     web = app.use_middleware(web, "rate_limit")
-
     web = app.add_route(web, app.route(app.route_root_id(), "root", "GET", "/", "/", 1, 1, 0))
     web = app.add_route(web, app.route(app.route_healthz_id(), "healthz", "GET", "/healthz", "/", 1, 1, 0))
     web = app.add_route(web, app.route(app.route_readyz_id(), "readyz", "GET", "/readyz", "/", 1, 1, 0))
@@ -266,7 +233,6 @@ fn default_app(cfg: ServerConfig) -> app.App {
     web = app.add_route(web, app.route(app.route_ws_echo_id(), "ws_echo", "GET", "/ws", "/", 1, 1, 0))
     return web
 }
-
 fn outcome(rate: middleware.RateState, metrics: MetricsState, status: i32) -> HandleOutcome {
     return HandleOutcome {
         status: status,
@@ -274,67 +240,38 @@ fn outcome(rate: middleware.RateState, metrics: MetricsState, status: i32) -> Ha
         metrics: metrics_record(metrics, status),
     }
 }
-
-fn emit_outcome(
-    conn: HttpHandle,
-    plan: response.ResponsePlan,
-    rate: middleware.RateState,
-    metrics: MetricsState,
-) -> HandleOutcome {
+fn emit_outcome(conn: HttpHandle, plan: response.ResponsePlan, rate: middleware.RateState, metrics: MetricsState,) -> HandleOutcome {
     discard response.emit(conn, plan)
     return outcome(rate, metrics, plan.status)
 }
-
 fn request_error_plan(err: request.RequestError) -> response.ResponsePlan {
     return response.error_plan(response.request_error(err))
 }
-
 fn item_version(conn: HttpHandle) -> request.IntResult {
     return request.query_i32(conn, "version", 1, 1, 1000000)
 }
-
 fn handle_root(ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
     return response.json_plan(200, response.service_json(cfg.service_name, cfg.service_version, ctx.request_id))
 }
-
 fn handle_healthz() -> response.ResponsePlan {
     return response.text(200, "ok")
 }
-
 fn handle_readyz() -> response.ResponsePlan {
     return response.text(200, "ready")
 }
-
 fn handle_metrics(metrics: MetricsState, started_ms: i32) -> response.ResponsePlan {
     return response.bytes(200, "text/plain; version=0.0.4; charset=utf-8", metrics_text(metrics, started_ms))
 }
-
 fn handle_inspect(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
-    return response.json_plan(
-        200,
-        response.inspect_json(
-            ctx.request_id,
-            request.method(conn),
-            request.path(conn),
-            request.remote(conn),
-            request.accept(conn),
-            request.content_type(conn),
-            ctx.route_name,
-        ),
-    )
+    return response.json_plan(200, response.inspect_json(ctx.request_id, request.method(conn), request.path(conn), request.remote(conn), request.accept(conn), request.content_type(conn), ctx.route_name,),)
 }
-
 fn handle_search(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
     let limit = request.query_i32(conn, "limit", 10, 1, 1000)
     if limit.ok == 0 {
         return request_error_plan(limit.err)
     }
-    return response.json_plan(
-        200,
-        response.search_json(request.query(conn, "q"), limit.value, ctx.request_id),
-    )
+    return response.json_plan(200, response.search_json(request.query(conn, "q"), limit.value, ctx.request_id),)
 }
-
 fn handle_echo_post(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
     let mut body = request.body_max(conn, 1048576)
     if body == "" && request.body_eof(conn) == 0 {
@@ -350,7 +287,6 @@ fn handle_echo_post(conn: HttpHandle, ctx: request.RequestContext) -> response.R
     }
     return response.json_plan(200, body)
 }
-
 fn handle_echo_name(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
     let name = request.param_required(conn, "name")
     if name.ok == 0 {
@@ -358,7 +294,6 @@ fn handle_echo_name(conn: HttpHandle, ctx: request.RequestContext) -> response.R
     }
     return response.json_plan(200, response.named_echo_json(name.value, ctx.request_id))
 }
-
 fn handle_bind(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
     let payload = request.body_json_required(conn, ctx.route_name)
     if payload.ok == 0 {
@@ -368,20 +303,14 @@ fn handle_bind(conn: HttpHandle, ctx: request.RequestContext) -> response.Respon
     if user.ok == 0 {
         return request_error_plan(user.err)
     }
-    return response.json_plan(
-        200,
-        response.bind_json(user.value, request.json_bool_default(payload.payload, "active", 0), ctx.request_id),
-    )
+    return response.json_plan(200, response.bind_json(user.value, request.json_bool_default(payload.payload, "active", 0), ctx.request_id),)
 }
-
 fn handle_openapi(web: app.App) -> response.ResponsePlan {
     return response.json_plan(200, app.openapi_json(web))
 }
-
 fn handle_version(ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
     return response.json_plan(200, response.version_json(cfg.service_name, cfg.service_version, ctx.request_id))
 }
-
 fn handle_static(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
     let name = request.param_required(conn, "name")
     if name.ok == 0 {
@@ -389,11 +318,9 @@ fn handle_static(conn: HttpHandle, ctx: request.RequestContext) -> response.Resp
     }
     return response.bytes(200, "text/plain; charset=utf-8", static_body(name.value))
 }
-
 fn handle_items_list(ctx: request.RequestContext) -> response.ResponsePlan {
     return response.json_plan(200, response.items_json(ctx.request_id))
 }
-
 fn handle_item_get(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
     let item_id = request.param_required(conn, "id")
     if item_id.ok == 0 {
@@ -405,7 +332,6 @@ fn handle_item_get(conn: HttpHandle, ctx: request.RequestContext) -> response.Re
     }
     return response.json_plan(200, response.item_view_json(item_id.value, version.value, 1, ctx.request_id))
 }
-
 fn handle_item_put(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
     let item_id = request.param_required(conn, "id")
     if item_id.ok == 0 {
@@ -419,15 +345,9 @@ fn handle_item_put(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerCon
     if payload.ok == 0 {
         return request_error_plan(payload.err)
     }
-    discard persistence.put_json(
-        persistence.open(cfg.store_path),
-        "item",
-        item_id.value,
-        payload.raw,
-    )
+    discard persistence.put_json(persistence.open(cfg.store_path), "item", item_id.value, payload.raw,)
     return response.json_plan(200, response.item_json("updated", item_id.value, version.value, ctx.request_id))
 }
-
 fn handle_item_patch(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
     let item_id = request.param_required(conn, "id")
     if item_id.ok == 0 {
@@ -441,15 +361,9 @@ fn handle_item_patch(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerC
     if payload.ok == 0 {
         return request_error_plan(payload.err)
     }
-    discard persistence.put_json(
-        persistence.open(cfg.store_path),
-        "item_patch",
-        item_id.value,
-        payload.raw,
-    )
+    discard persistence.put_json(persistence.open(cfg.store_path), "item_patch", item_id.value, payload.raw,)
     return response.json_plan(200, response.item_json("patched", item_id.value, version.value, ctx.request_id))
 }
-
 fn handle_item_delete(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
     let item_id = request.param_required(conn, "id")
     if item_id.ok == 0 {
@@ -461,12 +375,10 @@ fn handle_item_delete(conn: HttpHandle, ctx: request.RequestContext) -> response
     }
     return response.accepted_json(response.item_json("deleted", item_id.value, version.value, ctx.request_id))
 }
-
 fn handle_cookie_set(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
     discard cookies.set_cookie(conn, "theme", "light", "/", 86400, 0, 1, "Lax")
     return response.json_plan(200, response.ok_json("cookie_set", ctx.request_id))
 }
-
 fn handle_session_login(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
     let payload = request.body_json_required(conn, ctx.route_name)
     if payload.ok == 0 {
@@ -483,7 +395,6 @@ fn handle_session_login(conn: HttpHandle, ctx: request.RequestContext, cfg: Serv
     discard sessions.attach(conn, session_config(cfg), rec)
     return response.json_plan(200, response.bind_json(rec.user, 1, ctx.request_id))
 }
-
 fn handle_session_me(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
     let rec = sessions.from_request(conn, session_config(cfg))
     if sessions.valid(rec) == 0 {
@@ -491,27 +402,15 @@ fn handle_session_me(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerC
     }
     return response.json_plan(200, response.bind_json(rec.user, 1, ctx.request_id))
 }
-
-fn handle_route(
-    conn: HttpHandle,
-    web: app.App,
-    decision: app.RouteDecision,
-    cfg: ServerConfig,
-    metrics: MetricsState,
-    rate: middleware.RateState,
-    started_ms: i32,
-) -> HandleOutcome {
+fn handle_route(conn: HttpHandle, web: app.App, decision: app.RouteDecision, cfg: ServerConfig, metrics: MetricsState, rate: middleware.RateState, started_ms: i32,) -> HandleOutcome {
     if decision.method_allowed == 0 {
         discard webcore.response_method_not_allowed(conn)
         return outcome(rate, metrics, 405)
     }
-
     if app.has_middleware(web, "security_headers") == 1 {
         discard cookies.default_security_headers(conn)
     }
-
     let ctx = request.context(decision.route_id, decision.route_name, decision.route_path, request.request_id(conn))
-
     if decision.route_id == app.route_root_id() {
         return emit_outcome(conn, handle_root(ctx, cfg), rate, metrics)
     }
@@ -584,11 +483,9 @@ fn handle_route(
         discard streaming.websocket_echo(conn)
         return outcome(rate, metrics, 200)
     }
-
     discard webcore.response_not_found(conn)
     return outcome(rate, metrics, 404)
 }
-
 fn run_live_server() -> i32 {
     discard log.set_json(1)
     let cfg = server_config()
@@ -599,24 +496,20 @@ fn run_live_server() -> i32 {
         close(listener)
         return 11
     }
-
     discard log.info("fzweb.server.start", fields2("component", "fzweb", "mode", "live"))
-
     let started_ms = time.monotonic_ms()
     let mut handled = 0
     let mut rate = middleware.rate_init(policy, started_ms)
     let mut metrics = metrics_new()
-
-    while handled < cfg.max_requests {
+    while handled<cfg.max_requests {
         let conn = http.accept()
         let read_status = webcore.request_read(conn)
         if read_status != 0 {
             discard webcore.response_service_unavailable(conn, "{\"error\":\"read_failed\"}")
             metrics = metrics_record(metrics, 503)
-            handled += 1
+            handled +=  1
             continue
         }
-
         let decision = app.select(web, conn)
         let gate = middleware.before_dispatch(conn, web, decision, policy, rate)
         rate = gate.rate
@@ -627,22 +520,20 @@ fn run_live_server() -> i32 {
                 discard response.send_json(conn, gate.status, gate_body(gate.reason))
             }
             metrics = metrics_record(metrics, gate.status)
-            handled += 1
+            handled +=  1
             if (handled % 256) == 0 {
                 yield()
             }
             continue
         }
-
         let result = handle_route(conn, web, decision, cfg, metrics, rate, started_ms)
         metrics = result.metrics
         rate = result.rate
-        handled += 1
+        handled +=  1
         if (handled % 256) == 0 {
             yield()
         }
     }
-
     close(listener)
     return 0
 }

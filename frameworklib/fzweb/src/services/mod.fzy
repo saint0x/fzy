@@ -1,11 +1,9 @@
 fn boot() -> i32 {
     return 0
 }
-
 fn metrics_score() -> i32 {
     return 37
 }
-
 fn metrics_text() -> str {
     return "fzweb_requests_total 1"
 }

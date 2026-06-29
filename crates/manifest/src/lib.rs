@@ -302,7 +302,9 @@ pub fn looks_like_compiler_manifest(contents: &str) -> bool {
     let Ok(value) = toml::from_str::<toml::Value>(contents) else {
         return false;
     };
-    value.get("package").is_some_and(|package| package.is_table())
+    value
+        .get("package")
+        .is_some_and(|package| package.is_table())
 }
 
 #[cfg(test)]

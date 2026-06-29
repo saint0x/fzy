@@ -1,29 +1,24 @@
 use core.http;
-
 fn request_read(conn: HttpHandle) -> i32 {
     if http.poll_register(conn) != 0 {
-        return -1
+        return - 1
     }
     discard http.poll_next()
     return http.read(conn)
 }
-
 fn request_read_headers(conn: HttpHandle) -> i32 {
     if http.poll_register(conn) != 0 {
-        return -1
+        return - 1
     }
     discard http.poll_next()
     return http.read_headers(conn)
 }
-
 fn request_method(conn: HttpHandle) -> str {
     return http.method(conn)
 }
-
 fn request_path(conn: HttpHandle) -> str {
     return http.path(conn)
 }
-
 fn request_body(conn: HttpHandle, max_bytes: i32) -> str {
     let raw = http.body(conn)
     if str.len(raw) <= max_bytes {
@@ -31,127 +26,96 @@ fn request_body(conn: HttpHandle, max_bytes: i32) -> str {
     }
     return str.slice(raw, 0, max_bytes)
 }
-
 fn request_body_read(conn: HttpHandle, max_bytes: i32) -> str {
     return http.body_read(conn, max_bytes)
 }
-
 fn request_body_eof(conn: HttpHandle) -> i32 {
     return http.body_eof(conn)
 }
-
 fn request_body_discard(conn: HttpHandle) -> i32 {
     return http.body_discard(conn)
 }
-
 fn request_header(conn: HttpHandle, key: str) -> str {
     return http.header(conn, key)
 }
-
 fn request_headers(conn: HttpHandle) -> MapHandle {
     return http.headers(conn)
 }
-
 fn request_id(conn: HttpHandle) -> str {
     return http.request_id(conn)
 }
-
 fn request_remote(conn: HttpHandle) -> str {
     return http.remote_addr(conn)
 }
-
 fn response_text(conn: HttpHandle, status: i32, body: str) -> i32 {
     return http.write_response(conn, status, "text/plain; charset=utf-8", body, 1)
 }
-
 fn response_header_set(conn: HttpHandle, key: str, value: str) -> i32 {
     return http.response_header_set(conn, key, value)
 }
-
 fn response_header_add(conn: HttpHandle, key: str, value: str) -> i32 {
     return http.response_header_add(conn, key, value)
 }
-
 fn response_header_clear(conn: HttpHandle) -> i32 {
     return http.response_header_clear(conn)
 }
-
 fn response_json(conn: HttpHandle, status: i32, body: str) -> i32 {
     return http.write_response(conn, status, "application/json; charset=utf-8", body, 1)
 }
-
 fn response_bytes(conn: HttpHandle, status: i32, content_type: str, body: str) -> i32 {
     return http.write_response(conn, status, content_type, body, 1)
 }
-
 fn response_no_content(conn: HttpHandle) -> i32 {
     return http.write_response(conn, 204, "text/plain; charset=utf-8", "", 1)
 }
-
 fn response_not_found(conn: HttpHandle) -> i32 {
     return route.write_404(conn)
 }
-
 fn response_method_not_allowed(conn: HttpHandle) -> i32 {
     return route.write_405(conn)
 }
-
 fn response_bad_request(conn: HttpHandle, body: str) -> i32 {
     return response_json(conn, 400, body)
 }
-
 fn response_unauthorized(conn: HttpHandle, body: str) -> i32 {
     return response_json(conn, 401, body)
 }
-
 fn response_forbidden(conn: HttpHandle, body: str) -> i32 {
     return response_json(conn, 403, body)
 }
-
 fn response_too_many_requests(conn: HttpHandle, body: str) -> i32 {
     return response_json(conn, 429, body)
 }
-
 fn response_service_unavailable(conn: HttpHandle, body: str) -> i32 {
     return response_json(conn, 503, body)
 }
-
 fn websocket_accept(conn: HttpHandle) -> WebSocketHandle {
     return http.websocket_accept(conn)
 }
-
 fn websocket_read(ws: WebSocketHandle, max_bytes: i32) -> str {
     return http.websocket_read(ws, max_bytes)
 }
-
 fn websocket_kind(ws: WebSocketHandle) -> str {
     return http.websocket_kind(ws)
 }
-
 fn websocket_close_code(ws: WebSocketHandle) -> i32 {
     return http.websocket_close_code(ws)
 }
-
 fn websocket_error(ws: WebSocketHandle) -> str {
     return http.websocket_error(ws)
 }
-
 fn websocket_write_text(ws: WebSocketHandle, body: str) -> i32 {
     return http.websocket_write_text(ws, body)
 }
-
 fn websocket_write_binary(ws: WebSocketHandle, body: str) -> i32 {
     return http.websocket_write_binary(ws, body)
 }
-
 fn websocket_ping(ws: WebSocketHandle, body: str) -> i32 {
     return http.websocket_ping(ws, body)
 }
-
 fn websocket_pong(ws: WebSocketHandle, body: str) -> i32 {
     return http.websocket_pong(ws, body)
 }
-
 fn websocket_close(ws: WebSocketHandle, code: i32, reason: str) -> i32 {
     return http.websocket_close(ws, code, reason)
 }

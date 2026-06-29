@@ -1,9 +1,7 @@
 use core.http;
-
 use request;
 use response;
 use webcore;
-
 fn websocket_echo(conn: HttpHandle) -> i32 {
     let ws = webcore.websocket_accept(conn)
     let message = webcore.websocket_read(ws, 2048)
@@ -21,18 +19,9 @@ fn websocket_echo(conn: HttpHandle) -> i32 {
     discard webcore.websocket_close(ws, 1003, "unsupported")
     return 0
 }
-
 fn sse_boot_payload(request_id: str) -> str {
-    return str.concat(
-        "event: ready\n",
-        "data: {\"framework\":\"fzweb\",\"request_id\":\"",
-        request_id,
-        "\"}\n\n",
-        "event: done\n",
-        "data: {}\n\n",
-    )
+    return str.concat("event: ready\n", "data: {\"framework\":\"fzweb\",\"request_id\":\"", request_id, "\"}\n\n", "event: done\n", "data: {}\n\n",)
 }
-
 fn send_sse_boot(conn: HttpHandle) -> i32 {
     discard response.header_set(conn, "Cache-Control", "no-store")
     discard response.header_set(conn, "X-Accel-Buffering", "no")

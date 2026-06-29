@@ -1,17 +1,13 @@
 use services;
-
 fn library_name() -> str {
     return "fzbounds"
 }
-
 fn touch() -> i32 {
     return services.surface_score()
 }
-
 fn doctor_json() -> str {
     return services.doctor_json()
 }
-
 fn inspect_json() -> str {
     return services.inspect_json()
 }

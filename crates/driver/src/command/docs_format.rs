@@ -752,6 +752,7 @@ pub(super) fn format_source_file(path: &Path) -> Result<bool> {
     let formatted = format_source(&original);
 
     if formatted != original {
+        ensure_formatted_source_is_safe(path, &original, &formatted)?;
         std::fs::write(path, formatted)
             .with_context(|| format!("failed writing formatted file: {}", path.display()))?;
         Ok(true)
@@ -789,7 +790,13 @@ pub(super) fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathB
                             entry_path.display()
                         )
                     })?;
-                    format_source(&original) != original
+                    let formatted = format_source(&original);
+                    if formatted != original {
+                        ensure_formatted_source_is_safe(&entry_path, &original, &formatted)?;
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     format_source_file(&entry_path)?
                 })
@@ -806,7 +813,9 @@ pub(super) fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathB
     if check {
         let original = std::fs::read_to_string(path)
             .with_context(|| format!("failed reading file for formatting: {}", path.display()))?;
-        if format_source(&original) != original {
+        let formatted = format_source(&original);
+        if formatted != original {
+            ensure_formatted_source_is_safe(path, &original, &formatted)?;
             changed.push(path.to_path_buf());
         }
         return Ok(changed);
@@ -815,4 +824,17 @@ pub(super) fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathB
         changed.push(path.to_path_buf());
     }
     Ok(changed)
+}
+
+fn ensure_formatted_source_is_safe(path: &Path, original: &str, formatted: &str) -> Result<()> {
+    let module_name = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("__formatter__");
+    let original_parses = parser::parse(original, module_name).is_ok();
+    let formatted_parse = parser::parse(formatted, module_name);
+    if original_parses && formatted_parse.is_err() {
+        bail!("formatter produced invalid output for {}", path.display());
+    }
+    Ok(())
 }

@@ -1,16 +1,13 @@
 use model;
-
 fn peak_of(left: i32, right: i32) -> i32 {
     if left >= right {
         return left
     }
     return right
 }
-
 fn make(capacity_bytes: i32) -> model.Arena {
     return model.arena(capacity_bytes)
 }
-
 fn alloc(arena: model.Arena, bytes: i32) -> model.Arena {
     if bytes <= 0 {
         return arena
@@ -21,23 +18,18 @@ fn alloc(arena: model.Arena, bytes: i32) -> model.Arena {
     let next_used = arena.used_bytes + bytes
     return model.arena_full(arena.capacity_bytes, next_used, peak_of(arena.peak_bytes, next_used), arena.allocations + 1, arena.resets, arena.overflows, "")
 }
-
 fn reset(arena: model.Arena) -> model.Arena {
     return model.arena_full(arena.capacity_bytes, 0, arena.peak_bytes, arena.allocations, arena.resets + 1, arena.overflows, "")
 }
-
 fn used(arena: model.Arena) -> i32 {
     return arena.used_bytes
 }
-
 fn remaining(arena: model.Arena) -> i32 {
     return arena.capacity_bytes - arena.used_bytes
 }
-
 fn capacity(arena: model.Arena) -> i32 {
     return arena.capacity_bytes
 }
-
 fn json(arena: model.Arena) -> str {
     return model.arena_json(arena)
 }

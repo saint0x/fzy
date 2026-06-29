@@ -1,26 +1,21 @@
 mod middleware;
 mod request;
-
 const ITERATIONS: i32 = 10000000
-
 fn workload() -> i32 {
     let policy = middleware.policy(2500, 1048576, 0, "", 1, 1, 1, 1, 120, 1000)
     let mut rate = middleware.rate_init(policy, 0)
     let mut i = 0
     let mut acc = 0
-
-    while i < ITERATIONS {
+    while i<ITERATIONS {
         let valid = request.parse_bool_text("true")
         let allow = middleware.rate_allowed(rate, 1)
         rate = middleware.rate_take(rate, 1)
         rate = middleware.rate_refill(policy, rate, i)
         acc = (acc + valid + allow + rate.tokens) % 251
-        i += 1
+        i +=  1
     }
-
     return acc
 }
-
 fn main() -> i32 {
     return workload()
 }
