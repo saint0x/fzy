@@ -482,7 +482,7 @@ pub(super) fn resolve_replay_target(target: &Path) -> Result<PathBuf> {
     }
     if schema_version == "fozzylang.test_manifest.v1" {
         bail!(
-            "native test manifests do not support scenario replay/ci/shrink; use the recorded native trace/report directly: {}",
+            "native test manifests are not replay targets; rerun `fz test` from source and inspect the emitted native trace/report artifacts directly: {}",
             manifest_path.display()
         );
     }

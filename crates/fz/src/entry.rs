@@ -288,10 +288,6 @@ fn parse_command(args: &[String]) -> Result<Command> {
             path: arg_path_or_cwd(args, 1)?,
             seed: parse_u64_flag(args, "--seed")?,
         }),
-        Some("equivalence") => Ok(Command::Equivalence {
-            path: arg_path_or_cwd(args, 1)?,
-            seed: parse_u64_flag(args, "--seed")?,
-        }),
         Some("audit") => match args.get(1).map(String::as_str) {
             Some("unsafe") => Ok(Command::AuditUnsafe {
                 path: arg_path_or_cwd(args, 2)?,

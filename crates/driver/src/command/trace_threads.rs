@@ -1,15 +1,5 @@
 use super::*;
 
-pub(super) fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String> {
-    ensure_exists(path)?;
-    let _ = seed;
-    let _ = format;
-    bail!(
-        "native scenario/host equivalence no longer routes through generated placeholder scenarios; compare native tests and `.fozzy.json` scenarios explicitly instead: {}",
-        path.display()
-    );
-}
-
 pub(super) fn semantic_signature(value: &serde_json::Value) -> Result<String> {
     let payload = serde_json::to_vec(value)?;
     let mut hasher = Sha256::new();

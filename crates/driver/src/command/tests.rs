@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn parity_and_equivalence_cover_primitive_control_flow_fixture() {
+    fn parity_covers_primitive_control_flow_fixture() {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/primitive_parity/main.fzy");
         let parity = parity_command(&source, 4242, Format::Json).expect("parity should run");
@@ -117,12 +117,6 @@ mod tests {
             parity_json["backendCapabilities"]["cranelift"]["unsupported"][0]["feature"],
             "async_c_export_surface"
         );
-
-        let equivalence = equivalence_command(&source, 4242, Format::Json)
-            .expect_err("equivalence should be retired");
-        assert!(equivalence
-            .to_string()
-            .contains("generated placeholder scenarios"));
     }
 
     #[test]
@@ -5187,7 +5181,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn native_run_host_backends_rejects_deterministic_bridge_mode() {
+    fn native_run_host_backends_rejects_deterministic_live_mode() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -5216,13 +5210,13 @@ fn main() -> i32 {
         .expect_err("native host-backed deterministic run should be rejected");
         assert!(error
             .to_string()
-            .contains("no longer routes through placeholder scenarios"));
+            .contains("deterministic execution is unavailable"));
 
         let _ = std::fs::remove_file(source);
     }
 
     #[test]
-    fn native_run_project_root_host_backends_rejects_deterministic_bridge_mode() {
+    fn native_run_project_root_host_backends_rejects_deterministic_live_mode() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -5260,7 +5254,7 @@ fn main() -> i32 {
         .expect_err("project-root host-backed deterministic run should be rejected");
         assert!(error
             .to_string()
-            .contains("no longer routes through placeholder scenarios"));
+            .contains("deterministic execution is unavailable"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -5300,7 +5294,7 @@ fn main() -> i32 {
         .expect_err("host-backed native test path should be rejected");
         assert!(error
             .to_string()
-            .contains("placeholder host-backed scenarios"));
+            .contains("host-backed execution is unavailable for native `fz test`"));
         assert!(
             !record.exists(),
             "requested record path should not be materialized"
@@ -5311,7 +5305,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn host_backed_run_reports_prepare_and_recorded_trace_paths() {
+    fn host_backed_run_rejects_recording_for_live_native_execution() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -5342,16 +5336,16 @@ fn main() -> i32 {
             },
             Format::Json,
         )
-        .expect_err("host-backed native run should be rejected");
+        .expect_err("host-backed native run recording should be rejected");
         assert!(
             error
                 .to_string()
-                .contains("no longer routes through placeholder scenarios"),
+                .contains("deterministic execution is unavailable"),
             "unexpected error: {error}"
         );
         assert!(
             !record.exists(),
-            "legacy bridge trace should not be materialized"
+            "live host-backed native run should not materialize a trace record"
         );
 
         let _ = std::fs::remove_file(source);
@@ -6442,7 +6436,7 @@ fn main() -> i32 {
             .expect_err("native test manifest should not resolve to replay target");
         assert!(error
             .to_string()
-            .contains("do not support scenario replay/ci/shrink"));
+            .contains("native test manifests are not replay targets"));
 
         let _ = std::fs::remove_dir_all(base);
     }

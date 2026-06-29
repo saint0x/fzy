@@ -194,10 +194,6 @@ pub enum Command {
         path: PathBuf,
         seed: Option<u64>,
     },
-    Equivalence {
-        path: PathBuf,
-        seed: Option<u64>,
-    },
     AuditUnsafe {
         path: PathBuf,
         workspace: bool,

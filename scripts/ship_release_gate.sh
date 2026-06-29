@@ -130,12 +130,12 @@ if "${FZ_CMD[@]}" replay "${NATIVE_TEST_RECORD%.json}.manifest.json" --json >/de
   echo "native test manifest unexpectedly replayed through scenario lifecycle" >&2
   exit 1
 fi
-grep -q "native test manifests do not support scenario replay/ci/shrink" "$TMP_DIR/native.replay.err"
+grep -q "native test manifests are not replay targets" "$TMP_DIR/native.replay.err"
 if "${FZ_CMD[@]}" run "$NATIVE_TEST_FIXTURE" --det --host-backends --json >/dev/null 2>"$TMP_DIR/native.host.err"; then
   echo "native deterministic host-backed bridge unexpectedly succeeded" >&2
   exit 1
 fi
-grep -q "no longer routes through placeholder scenarios" "$TMP_DIR/native.host.err"
+grep -q "deterministic execution is unavailable for host-backed native `fz run`" "$TMP_DIR/native.host.err"
 
 echo "[ship] native backend execute-and-compare control-flow parity"
 cargo test -q -p driver pipeline::tests::cross_backend_primitive_control_flow_and_operator_fixture_execute_consistently -- --exact >/dev/null

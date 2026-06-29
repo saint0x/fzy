@@ -135,7 +135,12 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             }
             if host_backends && deterministic {
                 bail!(
-                    "`fz run <native-source> --det --host-backends` no longer routes through placeholder scenarios; use a `.fozzy.json` scenario for host-backed deterministic execution"
+                    "deterministic execution is unavailable for host-backed native `fz run`; use a `.fozzy.json` scenario for deterministic host-backed execution"
+                );
+            }
+            if host_backends && record.is_some() {
+                bail!(
+                    "trace recording is unavailable for host-backed native `fz run`; use a `.fozzy.json` scenario or a deterministic native test run"
                 );
             }
             let unsafe_docs =
@@ -387,7 +392,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "maxSeconds": max_seconds,
                         "exitOnHealthcheck": exit_on_healthcheck,
                         "smokeHttp": smoke_http,
-                        "deterministicApplied": deterministic,
+                        "deterministicApplied": deterministic && !host_backends,
                         "policy": {
                             "profile": if strict_verify { "strict" } else if safe_profile { "verify" } else { "dev" },
                             "unsafeEnforcement": if strict_verify { "strict" } else { "profile-driven" },
@@ -461,7 +466,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             }
             if host_backends {
                 bail!(
-                    "`fz test <native-source>` no longer routes through placeholder host-backed scenarios; use `.fozzy.json` scenarios for host-backed execution"
+                    "host-backed execution is unavailable for native `fz test`; native tests run in the built-in test executor, and host-backed system tests must be expressed as `.fozzy.json` scenarios"
                 );
             }
             let unsafe_docs =
@@ -687,9 +692,6 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         }
         Command::StabilityDashboard => stability_dashboard_command(format),
         Command::Parity { path, seed } => parity_command(&path, seed.unwrap_or(1), format),
-        Command::Equivalence { path, seed } => {
-            equivalence_command(&path, seed.unwrap_or(1), format)
-        }
         Command::AuditUnsafe { path, workspace } => audit_unsafe_command(&path, workspace, format),
         Command::AuditFfi { path } => audit_ffi_command(&path, format),
         Command::AuditMemory { path } => audit_memory_command(&path, format),
