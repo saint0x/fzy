@@ -2532,6 +2532,68 @@ mod tests {
     }
 
     #[test]
+    fn host_backed_bytes_runtime_reads_slices_decodes_and_rewrites_binary_payloads() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-bytes-runtime-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        let fixture = root.join("fixture.bin");
+        let copy = root.join("copy.bin");
+        let mut payload = Vec::<u8>::new();
+        payload.extend_from_slice(&12_u64.to_le_bytes());
+        payload.extend_from_slice(br#"{"ok":"yes"}"#);
+        payload.extend_from_slice(&1.0f32.to_le_bytes());
+        payload.extend_from_slice(&0x3c00_u16.to_le_bytes());
+        std::fs::write(&fixture, payload).expect("fixture should be written");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"bytes_runtime\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"bytes_runtime\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            format!(
+                "use core.bytes;\nuse core.io;\n\nfn main() -> i32 {{\n    let raw = io.read_bytes(\"{}\")\n    let header_len: i64 = bytes.read_u64_le(raw, 0)\n    if header_len != 12 {{\n        return 11\n    }}\n    if bytes.len(raw) != 26 {{\n        return 12\n    }}\n    if bytes.at(raw, 23) != 63 {{\n        return 13\n    }}\n    if bytes.read_u16_le(raw, 24) != 15360 {{\n        return 14\n    }}\n    if bytes.read_u32_le(raw, 20) != 1065353216 {{\n        return 15\n    }}\n    let value32 = bytes.read_f32_le(raw, 20)\n    if value32 < 0.99f32 || value32 > 1.01f32 {{\n        return 16\n    }}\n    let value16 = bytes.read_f16_le(raw, 24)\n    if value16 < 0.99f32 || value16 > 1.01f32 {{\n        return 17\n    }}\n    let header = bytes.as_str(bytes.slice(raw, 8, 20))\n    if header != \"{{\\\"ok\\\":\\\"yes\\\"}}\" {{\n        return 18\n    }}\n    let tensor = bytes.slice(raw, 20, 26)\n    if io.write_bytes(\"{}\", tensor) != 0 {{\n        return 19\n    }}\n    let copied = io.read_bytes(\"{}\")\n    if bytes.len(copied) != 6 {{\n        return 21\n    }}\n    let copied32 = bytes.read_f32_le(copied, 0)\n    if copied32 < 0.99f32 || copied32 > 1.01f32 {{\n        return 22\n    }}\n    let copied16 = bytes.read_f16_le(copied, 4)\n    if copied16 < 0.99f32 || copied16 > 1.01f32 {{\n        return 23\n    }}\n    return 0\n}}\n",
+                fixture.display(),
+                copy.display(),
+                copy.display()
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("host-backed bytes runtime should succeed");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+        assert_eq!(
+            std::fs::read(&copy).expect("copy should exist"),
+            [&1.0f32.to_le_bytes()[..], &0x3c00_u16.to_le_bytes()[..]].concat()
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn crypto_runtime_surface_supports_hash_hmac_base64_and_secure_compare() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

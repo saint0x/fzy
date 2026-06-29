@@ -729,7 +729,7 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "use core.fs;\nuse core.http;\nuse core.proc;\nuse core.storage;\nuse core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn main() -> i32 {\n    let conn = http.accept()\n    discard http.write_json(conn, 200, \"{}\")\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard http.stream_close(stream)\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(handle)\n    let task = spawn(worker)\n    discard join(task)\n    let ctx_task = thread.spawn_ctx(worker, 7)\n    discard join(ctx_task)\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_close(store)\n    let file = fs.open(\"/tmp/fzy-handle-contract-file.txt\")\n    discard fs.write(file, \"hello\")\n    discard fs.close(file)\n    let payload = json.parse(\"{}\")\n    let items = json.to_list(payload)\n    let table = map.new()\n    discard list.len(items)\n    discard map.len(table)\n    return 0\n}\n",
+        "use core.fs;\nuse core.http;\nuse core.io;\nuse core.proc;\nuse core.storage;\nuse core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn main() -> i32 {\n    let conn = http.accept()\n    discard http.write_json(conn, 200, \"{}\")\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard http.stream_close(stream)\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(handle)\n    let task = spawn(worker)\n    discard join(task)\n    let ctx_task = thread.spawn_ctx(worker, 7)\n    discard join(ctx_task)\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_close(store)\n    let file = fs.open(\"/tmp/fzy-handle-contract-file.txt\")\n    discard fs.write(file, \"hello\")\n    discard fs.close(file)\n    let payload = json.parse(\"{}\")\n    let items = json.to_list(payload)\n    let table = map.new()\n    let raw = io.read_bytes(\"/tmp/fzy-handle-contract-file.txt\")\n    discard io.write_bytes(\"/tmp/fzy-handle-contract-file-copy.txt\", raw)\n    discard list.len(items)\n    discard map.len(table)\n    return 0\n}\n",
     )
     .expect("source should be written");
 
@@ -742,6 +742,7 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
     assert!(handle_contracts.contains("\"consumerIntrinsics\""));
     assert!(handle_contracts.contains("\"name\": \"JsonHandle\""));
     assert!(handle_contracts.contains("\"producerIntrinsics\""));
+    assert!(handle_contracts.contains("\"name\": \"BytesHandle\""));
     assert!(handle_contracts.contains("\"name\": \"KvStoreHandle\""));
     assert!(handle_contracts.contains("\"name\": \"FileHandle\""));
 
@@ -753,6 +754,9 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
     assert!(runtime_contracts.contains("\"linearity\": \"produces_linear_handle\""));
     assert!(runtime_contracts.contains("\"callee\": \"json.parse\""));
     assert!(runtime_contracts.contains("\"linearity\": \"produces_handle\""));
+    assert!(runtime_contracts.contains("\"callee\": \"fs.read_bytes\""));
+    assert!(runtime_contracts.contains("\"returnOwnership\": \"owned_bytes_handle\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.len\""));
     assert!(runtime_contracts.contains("\"callee\": \"list.len\""));
     assert!(runtime_contracts.contains("\"linearity\": \"observes_handle\""));
     assert!(runtime_contracts.contains("\"callee\": \"fs.close\""));

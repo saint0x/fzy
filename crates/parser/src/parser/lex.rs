@@ -35,6 +35,10 @@ pub(crate) fn core_stdlib_binding(name: &str) -> Option<CoreStdlibBinding> {
             name: "simd",
             module_name: Some("simd"),
         }),
+        "bytes" => Some(CoreStdlibBinding {
+            name: "bytes",
+            module_name: Some("bytes"),
+        }),
         "gpu" => Some(CoreStdlibBinding {
             name: "gpu",
             module_name: Some("gpu"),

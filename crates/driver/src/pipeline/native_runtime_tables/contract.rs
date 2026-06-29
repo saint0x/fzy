@@ -45,6 +45,7 @@ pub(crate) fn default_error_behavior(callee: &str) -> &'static str {
         || callee.starts_with("route.")
         || callee.starts_with("proc.")
         || callee.starts_with("fs.")
+        || callee.starts_with("bytes.")
         || callee.starts_with("storage.")
         || callee.starts_with("crypto.")
         || callee.starts_with("gpu.")
@@ -94,7 +95,9 @@ pub(crate) fn default_blocking_behavior(callee: &str) -> &'static str {
             | "http.websocket_read"
             | "term.read_line"
             | "fs.read_file"
+            | "fs.read_bytes"
             | "fs.write_file"
+            | "fs.write_bytes"
             | "fs.atomic_write"
             | "storage.atomic_append"
             | "gpu.device_name"
@@ -170,7 +173,9 @@ pub(crate) fn default_linearity(callee: &str) -> &'static str {
             | "json.to_list"
             | "json.to_map"
             | "json.keys"
+            | "fs.read_bytes"
             | "fs.listdir"
+            | "bytes.slice"
             | "gpu.download_f32"
             | "gpu.download_i32"
             | "gpu.download_u32"
@@ -272,6 +277,15 @@ pub(crate) fn default_linearity(callee: &str) -> &'static str {
             | "json.get_str"
             | "json.has"
             | "json.path"
+            | "bytes.len"
+            | "bytes.at"
+            | "bytes.read_u16_le"
+            | "bytes.read_u32_le"
+            | "bytes.read_u64_le"
+            | "bytes.read_f32_le"
+            | "bytes.read_f16_le"
+            | "bytes.as_str"
+            | "fs.write_bytes"
     ) {
         "observes_handle"
     } else if matches!(
@@ -611,6 +625,14 @@ pub(crate) fn native_runtime_contract_for_callee(
             contract.arg_ownership = "borrow_handle_limit";
             contract.return_ownership = "value";
         }
+        "fs.read_bytes" => {
+            contract.arg_ownership = "borrow_path";
+            contract.return_ownership = "owned_bytes_handle";
+        }
+        "fs.write_bytes" => {
+            contract.arg_ownership = "borrow_path_handle";
+            contract.return_ownership = "status";
+        }
         "fs.flush" | "fs.fsync" | "fs.lock" => {
             contract.arg_ownership = "borrow_handle";
             contract.return_ownership = "status";
@@ -650,6 +672,27 @@ pub(crate) fn native_runtime_contract_for_callee(
         "storage.atomic_append" => {
             contract.arg_ownership = "borrow_target_bytes";
             contract.return_ownership = "status";
+        }
+        "bytes.len" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "status";
+        }
+        "bytes.slice" => {
+            contract.arg_ownership = "borrow_handle_range";
+            contract.return_ownership = "owned_bytes_handle";
+        }
+        "bytes.at" => {
+            contract.arg_ownership = "borrow_handle_index";
+            contract.return_ownership = "status";
+        }
+        "bytes.read_u16_le" | "bytes.read_u32_le" | "bytes.read_u64_le" | "bytes.read_f32_le"
+        | "bytes.read_f16_le" => {
+            contract.arg_ownership = "borrow_handle_index";
+            contract.return_ownership = "value";
+        }
+        "bytes.as_str" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "value";
         }
         _ => {}
     }

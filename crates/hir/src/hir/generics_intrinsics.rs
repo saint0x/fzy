@@ -1207,7 +1207,9 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "fs.lock",
         "fs.read",
         "fs.read_file",
+        "fs.read_bytes",
         "fs.write_file",
+        "fs.write_bytes",
         "fs.mkdir",
         "fs.exists",
         "fs.is_file",
@@ -1227,6 +1229,15 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "path.stem",
         "path.extension",
         "path.normalize",
+        "bytes.len",
+        "bytes.slice",
+        "bytes.at",
+        "bytes.read_u16_le",
+        "bytes.read_u32_le",
+        "bytes.read_u64_le",
+        "bytes.read_f32_le",
+        "bytes.read_f16_le",
+        "bytes.as_str",
         "route.match",
         "route.write_404",
         "route.write_405",
@@ -1376,6 +1387,10 @@ pub(crate) fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     };
     let map_handle = Type::Named {
         name: "MapHandle".to_string(),
+        args: Vec::new(),
+    };
+    let bytes_handle = Type::Named {
+        name: "BytesHandle".to_string(),
         args: Vec::new(),
     };
     let proc_handle = Type::Named {
@@ -2021,7 +2036,9 @@ pub(crate) fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "fs.read" => (vec![file_handle.clone(), i32.clone()], str_ty.clone()),
         "fs.atomic_write" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "fs.read_file" => (vec![str_ty.clone()], str_ty.clone()),
+        "fs.read_bytes" => (vec![str_ty.clone()], bytes_handle.clone()),
         "fs.write_file" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "fs.write_bytes" => (vec![str_ty.clone(), bytes_handle.clone()], i32.clone()),
         "fs.mkdir" | "fs.exists" | "fs.is_file" | "fs.is_dir" | "fs.is_symlink"
         | "fs.remove_file" | "fs.remove" => (vec![str_ty.clone()], i32.clone()),
         "fs.stat_size" => (vec![str_ty.clone()], i32.clone()),
@@ -2033,6 +2050,18 @@ pub(crate) fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "path.basename" | "path.dirname" | "path.stem" | "path.extension" | "path.normalize" => {
             (vec![str_ty.clone()], str_ty.clone())
         }
+        "bytes.len" => (vec![bytes_handle.clone()], i32.clone()),
+        "bytes.slice" => (
+            vec![bytes_handle.clone(), i32.clone(), i32.clone()],
+            bytes_handle.clone(),
+        ),
+        "bytes.at" => (vec![bytes_handle.clone(), i32.clone()], i32.clone()),
+        "bytes.read_u16_le" => (vec![bytes_handle.clone(), i32.clone()], i32.clone()),
+        "bytes.read_u32_le" => (vec![bytes_handle.clone(), i32.clone()], i32.clone()),
+        "bytes.read_u64_le" => (vec![bytes_handle.clone(), i32.clone()], i64.clone()),
+        "bytes.read_f32_le" => (vec![bytes_handle.clone(), i32.clone()], f32_ty.clone()),
+        "bytes.read_f16_le" => (vec![bytes_handle.clone(), i32.clone()], f32_ty.clone()),
+        "bytes.as_str" => (vec![bytes_handle.clone()], str_ty.clone()),
         "route.match" => (
             vec![http_handle.clone(), str_ty.clone(), str_ty.clone()],
             i32.clone(),

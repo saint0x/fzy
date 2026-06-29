@@ -20,6 +20,7 @@ pub(super) fn section() -> &'static str {
 #define FZ_MAX_INTERVALS 512
 #define FZ_MAX_JSON_VALUES 16384
 #define FZ_MAX_STORAGE_KV 1024
+#define FZ_MAX_BYTES 8192
 #define FZ_MAX_NET_POLL_WATCHES 256
 #define FZ_STRING_INDEX_CAPACITY 65536
 
@@ -152,6 +153,12 @@ typedef struct {
 
 typedef struct {
   int in_use;
+  size_t len;
+  uint8_t* data;
+} fz_bytes_state;
+
+typedef struct {
+  int in_use;
   int32_t tag;
   int32_t count;
   uint64_t items[FZ_MAX_AGGREGATE_ITEMS];
@@ -170,12 +177,14 @@ static fz_aggregate_state fz_aggregates[FZ_MAX_AGGREGATES];
 static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
 static fz_json_value_state fz_json_values[FZ_MAX_JSON_VALUES];
 static fz_storage_kv_state fz_storage_kv[FZ_MAX_STORAGE_KV];
+static fz_bytes_state fz_bytes[FZ_MAX_BYTES];
 static pthread_mutex_t fz_collections_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_list_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_array_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_map_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_aggregate_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_storage_kv_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t fz_bytes_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_time_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_json_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_conn_request_counter = 0;
@@ -324,6 +333,15 @@ static int32_t fz_find_string_slice_unlocked(const char* value, size_t len, uint
 static int32_t fz_find_string_cstr_unlocked(const char* value, uint32_t hash);
 static void fz_string_index_insert_unlocked(int32_t id, const char* value, uint32_t hash);
 static void fz_string_index_bootstrap(void);
+static int32_t fz_bytes_alloc(void);
+static fz_bytes_state* fz_bytes_get(int32_t handle);
+static void fz_bytes_reset(fz_bytes_state* bytes);
+static int32_t fz_runtime_bytes_new_from_slice(const uint8_t* data, size_t len);
+static int32_t fz_runtime_bytes_len(int32_t handle);
+static const uint8_t* fz_runtime_bytes_data_ptr(int32_t handle, size_t* out_len);
+static int fz_runtime_bytes_bounds_ok(size_t len, int32_t start, int32_t width, const char* context);
+static int fz_runtime_bytes_utf8_ok(const uint8_t* data, size_t len);
+static float fz_runtime_bytes_f16_to_f32(uint16_t bits);
 static void fz_numeric_vec_reset(fz_numeric_vec_state* vec);
 static int fz_numeric_vec_reserve(fz_numeric_vec_state* vec, int32_t need);
 int32_t fz_native_net_request_id(int32_t conn_fd);

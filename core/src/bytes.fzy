@@ -1,7 +1,7 @@
 // core.bytes
-// Public facade for byte-oriented helpers. This shelf is authored directly in
-// Fzy and stays intentionally small; native runtime byte-buffer internals and
-// endian details remain hidden behind this stable `core.*` contract.
+// Public facade for byte-oriented helpers. The `bytes.*` runtime intrinsics are
+// the canonical product surface after `use core.bytes;`; this shelf only keeps
+// small pure helpers that do not shadow the intrinsic entrypoints.
 fn clamp_byte(value: i32) -> i32 {
     let mut safe = value
     if safe < 0 { safe = 0 }
@@ -9,7 +9,60 @@ fn clamp_byte(value: i32) -> i32 {
     return safe
 }
 
-fn read_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
+fn pow2_f32(exp: i32) -> f32 {
+    let mut value = 1.0f32
+    let mut remaining = exp
+    while remaining > 0 {
+        value = value * 2.0f32
+        remaining -= 1
+    }
+    while remaining < 0 {
+        value = value * 0.5f32
+        remaining += 1
+    }
+    return value
+}
+
+fn half_fraction(frac: i32, include_hidden_bit: i32) -> f32 {
+    let mut value = 0.0f32
+    if include_hidden_bit != 0 {
+        value = 1.0f32
+    }
+    if (frac & 512) != 0 { value = value + 0.5f32 }
+    if (frac & 256) != 0 { value = value + 0.25f32 }
+    if (frac & 128) != 0 { value = value + 0.125f32 }
+    if (frac & 64) != 0 { value = value + 0.0625f32 }
+    if (frac & 32) != 0 { value = value + 0.03125f32 }
+    if (frac & 16) != 0 { value = value + 0.015625f32 }
+    if (frac & 8) != 0 { value = value + 0.0078125f32 }
+    if (frac & 4) != 0 { value = value + 0.00390625f32 }
+    if (frac & 2) != 0 { value = value + 0.001953125f32 }
+    if (frac & 1) != 0 { value = value + 0.0009765625f32 }
+    return value
+}
+
+fn read_f16_le(buf: BytesHandle, index: i32) -> f32 {
+    let bits = bytes.read_u16_le(buf, index)
+    let sign = if (bits & 32768) != 0 {
+        -1.0f32
+    } else {
+        1.0f32
+    }
+    let exp = (bits >> 10) & 31
+    let frac = bits & 1023
+    if exp == 0 {
+        if frac == 0 {
+            return sign * 0.0f32
+        }
+        return sign * half_fraction(frac, 0) * pow2_f32(-14)
+    }
+    if exp == 31 {
+        return sign * half_fraction(frac, 1) * pow2_f32(16)
+    }
+    return sign * half_fraction(frac, 1) * pow2_f32(exp - 15)
+}
+
+fn pack_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
     let byte0 = clamp_byte(b0)
     let byte1 = clamp_byte(b1)
     let byte2 = clamp_byte(b2)

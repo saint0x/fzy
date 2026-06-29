@@ -31,6 +31,13 @@ fn read_text(file_path: str) -> str {
     }
     return fs.read_file(normalized)
 }
+fn read_bytes(file_path: str) -> BytesHandle {
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
+        return fs.read_bytes("")
+    }
+    return fs.read_bytes(normalized)
+}
 fn write_text_plan(file_path: str, value: str) -> WriteTextPlan {
     return WriteTextPlan {
         path: normalize_path(file_path), value: value,
@@ -44,6 +51,13 @@ fn apply_write_text(request: WriteTextPlan) -> i32 {
 }
 fn write_text(file_path: str, value: str) -> i32 {
     return apply_write_text(write_text_plan(file_path, value))
+}
+fn write_bytes(file_path: str, value: BytesHandle) -> i32 {
+    let normalized = normalize_path(file_path)
+    if normalized == "" {
+        return 1
+    }
+    return fs.write_bytes(normalized, value)
 }
 fn mkdir(dir_path: str) -> i32 {
     let normalized = normalize_path(dir_path)

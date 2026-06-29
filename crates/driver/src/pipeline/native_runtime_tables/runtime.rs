@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "runtime/bytes.rs"]
+mod bytes;
 #[path = "runtime/core.rs"]
 mod core;
 #[path = "runtime/fs.rs"]
@@ -22,6 +24,7 @@ mod task;
 pub(crate) fn native_runtime_imports() -> impl Iterator<Item = &'static NativeRuntimeImport> {
     [
         core::IMPORTS,
+        bytes::IMPORTS,
         http::IMPORTS,
         gpu::IMPORTS,
         json::IMPORTS,

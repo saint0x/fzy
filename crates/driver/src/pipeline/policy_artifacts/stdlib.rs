@@ -9,6 +9,15 @@ fn stdlib_contract_rows() -> &'static [(
 )] {
     &[
         (
+            "core.bytes",
+            "none",
+            "byte buffers are owned non-linear values",
+            "runtime status + last-error boundary for malformed/bounds-checked reads",
+            "BytesHandle is an owned non-linear handle",
+            "no explicit cleanup; derive slices/views through `bytes.slice(...)`",
+            "send-safe and async-stable owned byte buffers",
+        ),
+        (
             "core.mem",
             "mem",
             "owned values + explicit alloc/free lifecycle",

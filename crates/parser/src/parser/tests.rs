@@ -1269,6 +1269,7 @@ mod tests {
             use core.text;
             use core.env;
             use core.str;
+            use core.bytes;
             use core.io;
             use core.path;
             use core.http;
@@ -1279,6 +1280,12 @@ mod tests {
             module.capabilities,
             vec!["thread".to_string(), "log".to_string(), "http".to_string()]
         );
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["bytes".to_string()]
+        }));
         assert!(module.imports.iter().any(|entry| {
             !entry.is_pub
                 && !entry.wildcard

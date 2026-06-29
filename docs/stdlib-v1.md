@@ -56,7 +56,9 @@ The v1 stdlib provides production baseline primitives for:
 - `metadata(path) -> Result<FileMetadata, IoError>`
 - `remove(path) -> Result<(), IoError>`
 - Language-facing `core.io` wrappers expose typed metadata plus native copy/remove staging helpers:
+  - `io.read_bytes(path)`
   - `io.metadata(path)` with `exists`, `is_file`, `is_dir`, `is_symlink`, `size`, `modified_unix_secs`
+  - `io.write_bytes(path, bytes)`
   - `io.write_text_plan(path, value)` plus `io.write_text(path, value)` / `io.apply_write_text(plan)`
   - `io.copy_plan(src, dst, recursive)` plus `io.execute_copy(plan)`
   - `io.copy_file(src, dst)`
@@ -180,6 +182,7 @@ let err = observed.stderr
 - `JsonHandle`: copy=no, owned=yes, linear=no, closable=no, send-safe=yes, async-stable=yes
 - `ListHandle`: copy=no, owned=yes, linear=no, closable=no, send-safe=yes, async-stable=yes
 - `MapHandle`: copy=no, owned=yes, linear=no, closable=no, send-safe=yes, async-stable=yes
+- `BytesHandle`: copy=no, owned=yes, linear=no, closable=no, send-safe=yes, async-stable=yes
 - `KvStoreHandle`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
 - `ChannelHandle`: copy=no, owned=yes, linear=yes, closable=no, send-safe=yes, async-stable=yes
 - `RpcFrame`: copy=no, owned=yes, linear=yes, closable=no, send-safe=no, async-stable=no

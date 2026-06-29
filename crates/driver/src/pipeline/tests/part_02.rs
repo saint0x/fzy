@@ -452,6 +452,45 @@ fn compile_file_memory_report_tracks_collection_handles() {
 }
 
 #[test]
+fn compile_file_memory_report_tracks_bytes_handles() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-report-bytes-handle-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    let fixture = root.join("fixture.bin");
+    std::fs::write(&fixture, [1_u8, 2, 3, 4]).expect("fixture should be written");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_report_bytes_handle\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_report_bytes_handle\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        format!(
+            "use core.io;\nfn main() -> i32 {{\n    let raw = io.read_bytes(\"{}\")\n    discard bytes.len(raw)\n    return 0\n}}\n",
+            fixture.display()
+        ),
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let memory_report = std::fs::read_to_string(root.join(".fz/memory-report.json"))
+        .expect("memory report should exist");
+    assert!(
+        memory_report.contains("\"type\":\"BytesHandle\"")
+            || memory_report.contains("\"type\": \"BytesHandle\"")
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_file_runtime_contracts_cover_collection_handle_observers() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-runtime-contracts-collection-handles-{}",
@@ -485,6 +524,54 @@ fn compile_file_runtime_contracts_cover_collection_handle_observers() {
     assert!(runtime_contracts.contains("\"callee\": \"map.len\""));
     assert!(runtime_contracts.contains("\"linearity\": \"produces_handle\""));
     assert!(runtime_contracts.contains("\"linearity\": \"observes_handle\""));
+}
+
+#[test]
+fn compile_file_runtime_contracts_cover_bytes_handles() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-runtime-contracts-bytes-handles-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    let fixture = root.join("fixture.bin");
+    std::fs::write(&fixture, [0_u8, 1, 2, 3, 4, 5]).expect("fixture should be written");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"runtime_contracts_bytes_handles\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"runtime_contracts_bytes_handles\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        format!(
+            "use core.io;\nfn main() -> i32 {{\n    let raw = io.read_bytes(\"{}\")\n    let head = bytes.slice(raw, 0, 4)\n    discard bytes.len(head)\n    discard bytes.at(raw, 1)\n    discard bytes.read_u16_le(raw, 0)\n    discard bytes.read_u32_le(raw, 0)\n    discard bytes.read_u64_le(raw, 0)\n    discard bytes.read_f32_le(raw, 0)\n    discard bytes.read_f16_le(raw, 0)\n    discard bytes.as_str(bytes.slice(raw, 0, 0))\n    discard io.write_bytes(\"{}\", head)\n    return 0\n}}\n",
+            fixture.display(),
+            root.join("copy.bin").display()
+        ),
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+        .expect("native runtime contracts should exist");
+    assert!(runtime_contracts.contains("\"callee\": \"fs.read_bytes\""));
+    assert!(runtime_contracts.contains("\"callee\": \"fs.write_bytes\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.slice\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.len\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.at\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.read_u16_le\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.read_u32_le\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.read_u64_le\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.read_f32_le\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.read_f16_le\""));
+    assert!(runtime_contracts.contains("\"callee\": \"bytes.as_str\""));
+    assert!(runtime_contracts.contains("\"returnOwnership\": \"owned_bytes_handle\""));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

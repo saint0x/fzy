@@ -47,8 +47,18 @@ pub(crate) const IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "fs.read_bytes",
+        symbol: "fz_native_fs_read_bytes",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "fs.write_file",
         symbol: "fz_native_fs_write_file",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "fs.write_bytes",
+        symbol: "fz_native_fs_write_bytes",
         arity: 2,
     },
     NativeRuntimeImport {

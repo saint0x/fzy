@@ -22,6 +22,25 @@ static int32_t fz_aggregate_alloc(void) {
   return -1;
 }
 
+static int32_t fz_bytes_alloc(void) {
+  for (int i = 0; i < FZ_MAX_BYTES; i++) {
+    if (!fz_bytes[i].in_use) {
+      memset(&fz_bytes[i], 0, sizeof(fz_bytes[i]));
+      fz_bytes[i].in_use = 1;
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static fz_bytes_state* fz_bytes_get(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_BYTES) {
+    return NULL;
+  }
+  fz_bytes_state* bytes = &fz_bytes[handle - 1];
+  return bytes->in_use ? bytes : NULL;
+}
+
 static fz_aggregate_state* fz_aggregate_get(uint64_t handle) {
   if (handle == 0 || handle > (uint64_t)FZ_MAX_AGGREGATES) {
     return NULL;
