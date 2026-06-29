@@ -563,6 +563,9 @@ pub(super) fn production_lint_findings(path: &Path) -> Result<Vec<diagnostics::D
             }
             let text = std::fs::read_to_string(&manifest_path)
                 .with_context(|| format!("failed reading {}", manifest_path.display()))?;
+            if !manifest::looks_like_compiler_manifest(&text) {
+                continue;
+            }
             let manifest = manifest::load(&text).context("failed parsing fozzy.toml")?;
             if manifest.unsafe_policy.enforce_verify == Some(false)
                 || manifest.unsafe_policy.enforce_release == Some(false)

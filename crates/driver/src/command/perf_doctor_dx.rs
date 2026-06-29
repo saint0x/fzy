@@ -182,10 +182,20 @@ pub(super) fn doctor_project_command(path: &Path, strict: bool, format: Format) 
     let manifest = if manifest_text.is_empty() {
         None
     } else {
-        match manifest::load(&manifest_text)
-            .map_err(anyhow::Error::from)
-            .and_then(|loaded| loaded.validate().map(|_| loaded).map_err(|e| anyhow!(e)))
-        {
+        if !manifest::looks_like_compiler_manifest(&manifest_text) {
+            checks.push(DoctorCheck {
+                name: "manifest-validate".to_string(),
+                status: "error".to_string(),
+                detail: format!("{} is not a compiler manifest", manifest_path.display()),
+                fix: "point doctor at a Fozzy project root or add a valid [package] manifest".to_string(),
+            });
+            errors += 1;
+            None
+        } else {
+            match manifest::load(&manifest_text)
+                .map_err(anyhow::Error::from)
+                .and_then(|loaded| loaded.validate().map(|_| loaded).map_err(|e| anyhow!(e)))
+            {
             Ok(parsed) => Some(parsed),
             Err(err) => {
                 checks.push(DoctorCheck {
@@ -196,6 +206,7 @@ pub(super) fn doctor_project_command(path: &Path, strict: bool, format: Format) 
                 });
                 errors += 1;
                 None
+            }
             }
         }
     };

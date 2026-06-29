@@ -92,6 +92,14 @@ pub(super) fn resolve_source(path: &Path) -> Result<ResolvedSource> {
             };
             bail!(guidance);
         }
+        Err(error) if error.to_string().contains("no valid compiler manifest found") => {
+            let guidance = format!(
+                "directory `{}` is not a Fozzy project root ({} is scenario/runtime config, not a compiler manifest). run the command against a real project root or a `.fzy` file explicitly",
+                path.display(),
+                manifest_path.display()
+            );
+            bail!(guidance);
+        }
         Err(error) => return Err(error),
     };
     let relative = manifest
@@ -508,6 +516,30 @@ mod tests {
         assert_eq!(second.modules.len(), 1);
         assert!(second.modules[0].source.contains("return 42"));
         assert_ne!(first.modules[0].source, second.modules[0].source);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_source_rejects_scenario_config_directory_as_project_root() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzylang-source-scenario-config-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "base_dir = \".fozzy\"\nreporter = \"pretty\"\nproc_backend = \"scripted\"\n",
+        )
+        .expect("scenario config should be written");
+
+        let error = resolve_source(&root).expect_err("scenario config dir must not resolve");
+        assert!(error
+            .to_string()
+            .contains("is not a Fozzy project root"));
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -7,6 +7,9 @@ pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
     let manifest_path = path.join("fozzy.toml");
     let manifest_text = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("missing manifest: {}", manifest_path.display()))?;
+    if !manifest::looks_like_compiler_manifest(&manifest_text) {
+        bail!("missing compiler manifest: {}", manifest_path.display());
+    }
     let manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
     manifest
         .validate()

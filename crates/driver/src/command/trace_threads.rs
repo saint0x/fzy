@@ -498,6 +498,9 @@ pub(super) fn strict_unsafe_audit_for_projects(project_roots: &[PathBuf]) -> boo
         let Ok(text) = std::fs::read_to_string(&manifest_path) else {
             return true;
         };
+        if !manifest::looks_like_compiler_manifest(&text) {
+            return true;
+        }
         let Ok(manifest) = manifest::load(&text) else {
             return true;
         };

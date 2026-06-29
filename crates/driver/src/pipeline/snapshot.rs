@@ -357,6 +357,9 @@ fn collect_snapshot_files_recursive(
             collect_snapshot_files_recursive(&path, source_anchor, seen, entries)?;
             continue;
         }
+        if name.starts_with('.') && name.contains(".tmp-") {
+            continue;
+        }
         let canonical = path
             .canonicalize()
             .with_context(|| format!("failed resolving snapshot file: {}", path.display()))?;

@@ -134,7 +134,7 @@ if "${FZ_CMD[@]}" run "$NATIVE_TEST_FIXTURE" --det --host-backends --json >/dev/
   echo "native deterministic host-backed bridge unexpectedly succeeded" >&2
   exit 1
 fi
-grep -q "deterministic execution is unavailable for host-backed native `fz run`" "$TMP_DIR/native.host.err"
+grep -q 'deterministic execution is unavailable for host-backed native `fz run`' "$TMP_DIR/native.host.err"
 
 echo "[ship] native backend execute-and-compare control-flow parity"
 cargo test -q -p driver pipeline::tests::cross_backend_primitive_control_flow_and_operator_fixture_execute_consistently -- --exact >/dev/null

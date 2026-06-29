@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct ResolvedSource {
     pub(super) source_path: PathBuf,
@@ -24,6 +25,8 @@ pub(super) struct WorkspacePolicySection {
     unsafe_enforce_verify: Option<bool>,
     unsafe_enforce_release: Option<bool>,
 }
+
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LockfileMode {
@@ -448,7 +451,8 @@ pub(super) fn write_lockfile(
         }
     };
     if should_write {
-        std::fs::write(&lock_path, serde_json::to_vec_pretty(&payload)?)
+        let content = serde_json::to_string_pretty(&payload)?;
+        write_atomic_text_file(&lock_path, &content)
             .with_context(|| format!("failed writing lockfile: {}", lock_path.display()))?;
     }
     Ok(graph_hash)
@@ -622,6 +626,12 @@ pub(super) fn dependency_source_state(canonical: &Path) -> Result<DependencySour
             manifest_path.display()
         )
     })?;
+    if !manifest::looks_like_compiler_manifest(&dep_manifest_text) {
+        bail!(
+            "path dependency manifest at {} is not a compiler manifest",
+            manifest_path.display()
+        );
+    }
     let dep_manifest = manifest::load(&dep_manifest_text).with_context(|| {
         format!(
             "failed parsing dependency manifest at {}",
@@ -706,11 +716,12 @@ pub(super) fn write_atomic_text_file(path: &Path, content: &str) -> Result<()> {
     std::fs::create_dir_all(parent)
         .with_context(|| format!("failed creating parent directory: {}", parent.display()))?;
     let unique = format!(
-        ".{}.tmp-{}-{}",
+        ".{}.tmp-{}-{}-{}",
         path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("atomic"),
         std::process::id(),
+        ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
