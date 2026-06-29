@@ -102,11 +102,10 @@ assert fast["mode"] == "fast", fast
 assert fast["nondeterministicTestNames"] == ["chaos"], fast
 assert fast["passedTests"] == 2, fast
 PY
-if "${FZ_CMD[@]}" replay "${NATIVE_TEST_RECORD%.json}.manifest.json" --json >/dev/null 2>"$TMP_DIR/native.replay.err"; then
-  echo "native test manifest unexpectedly replayed through scenario lifecycle" >&2
-  exit 1
-fi
-grep -q "native test manifests are not replay targets" "$TMP_DIR/native.replay.err"
+NATIVE_TEST_MANIFEST="${NATIVE_TEST_RECORD%.json}.manifest.json"
+"${FZ_CMD[@]}" trace verify "$NATIVE_TEST_MANIFEST" --strict --json >/dev/null
+"${FZ_CMD[@]}" replay "$NATIVE_TEST_MANIFEST" --json >/dev/null
+"${FZ_CMD[@]}" ci "$NATIVE_TEST_MANIFEST" --strict --json >/dev/null
 if "${FZ_CMD[@]}" run "$NATIVE_TEST_FIXTURE" --det --host-backends --json >/dev/null 2>"$TMP_DIR/native.host.err"; then
   echo "native deterministic host-backed bridge unexpectedly succeeded" >&2
   exit 1

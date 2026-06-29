@@ -14,6 +14,476 @@ pub(super) const FOZZY_TRACE_FORMAT: &str = "fozzy-trace";
 #[cfg(test)]
 pub(super) const FOZZY_TRACE_VERSION: u64 = 4;
 
+#[derive(Debug, Clone, Deserialize)]
+struct NativeTestManifest {
+    #[serde(rename = "schemaVersion")]
+    schema_version: String,
+    source: String,
+    deterministic: bool,
+    #[serde(rename = "strictVerify")]
+    strict_verify: bool,
+    #[serde(rename = "safeProfile")]
+    safe_profile: bool,
+    scheduler: String,
+    seed: u64,
+    #[serde(rename = "selectedTestNames", default)]
+    selected_test_names: Vec<String>,
+    #[serde(rename = "deterministicTestNames", default)]
+    deterministic_test_names: Vec<String>,
+    #[serde(rename = "nondeterministicTestNames", default)]
+    nondeterministic_test_names: Vec<String>,
+    trace: String,
+    report: String,
+    timeline: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NativeTestTracePayload {
+    #[serde(rename = "schemaVersion")]
+    schema_version: String,
+    scheduler: String,
+    seed: u64,
+    #[serde(rename = "discoveredTests")]
+    discovered_tests: usize,
+    #[serde(rename = "executedTests")]
+    executed_tests: usize,
+    #[serde(rename = "executionOrder")]
+    execution_order: Vec<u64>,
+    #[serde(rename = "asyncSchedule")]
+    async_schedule: Vec<u64>,
+    tests: Vec<NativeTestTraceRun>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NativeTestTraceRun {
+    name: String,
+    mode: String,
+    status: String,
+    #[serde(default)]
+    events: Vec<NativeTestTraceEvent>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NativeTestTraceEvent {
+    kind: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NativeTestReportPayload {
+    #[serde(rename = "schemaVersion")]
+    schema_version: String,
+    status: String,
+    scheduler: String,
+    seed: u64,
+    #[serde(rename = "discoveredTests")]
+    discovered_tests: usize,
+    #[serde(rename = "executedTests")]
+    executed_tests: usize,
+    passed: usize,
+    failed: usize,
+    #[serde(rename = "runtimeEventCount")]
+    runtime_event_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NativeArtifactCheck {
+    name: String,
+    ok: bool,
+    detail: String,
+}
+
+fn native_test_manifest_for_target(target: &Path) -> Result<Option<PathBuf>> {
+    let Some(name) = target.file_name().and_then(|value| value.to_str()) else {
+        return Ok(None);
+    };
+    if name.ends_with(".manifest.json") {
+        let text = std::fs::read_to_string(target)
+            .with_context(|| format!("failed reading native manifest: {}", target.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .with_context(|| format!("failed parsing native manifest: {}", target.display()))?;
+        if value
+            .get("schemaVersion")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value == "fozzylang.test_manifest.v1")
+        {
+            return Ok(Some(target.to_path_buf()));
+        }
+        return Ok(None);
+    }
+    if let Some(prefix) = name.strip_suffix(".native.trace.json") {
+        let manifest = target
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{prefix}.manifest.json"));
+        if manifest.exists() {
+            let text = std::fs::read_to_string(&manifest).with_context(|| {
+                format!("failed reading native test manifest: {}", manifest.display())
+            })?;
+            let value: serde_json::Value = serde_json::from_str(&text).with_context(|| {
+                format!("failed parsing native test manifest: {}", manifest.display())
+            })?;
+            if value
+                .get("schemaVersion")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value == "fozzylang.test_manifest.v1")
+            {
+                return Ok(Some(manifest));
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub(super) fn is_native_test_artifact_target(target: &Path) -> Result<bool> {
+    Ok(native_test_manifest_for_target(target)?.is_some())
+}
+
+fn load_native_test_manifest(target: &Path) -> Result<(PathBuf, NativeTestManifest)> {
+    let manifest_path = native_test_manifest_for_target(target)?.ok_or_else(|| {
+        anyhow!(
+            "native test artifact target requires a `.manifest.json` file: {}",
+            target.display()
+        )
+    })?;
+    let text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed reading native test manifest: {}", manifest_path.display()))?;
+    let manifest: NativeTestManifest = serde_json::from_str(&text)
+        .with_context(|| format!("failed parsing native test manifest: {}", manifest_path.display()))?;
+    if manifest.schema_version != "fozzylang.test_manifest.v1" {
+        bail!(
+            "unsupported native test manifest schema `{}` in {}",
+            manifest.schema_version,
+            manifest_path.display()
+        );
+    }
+    Ok((manifest_path, manifest))
+}
+
+fn load_native_test_artifacts(
+    target: &Path,
+) -> Result<(
+    PathBuf,
+    NativeTestManifest,
+    PathBuf,
+    NativeTestTracePayload,
+    PathBuf,
+    NativeTestReportPayload,
+)> {
+    let (manifest_path, manifest) = load_native_test_manifest(target)?;
+    let trace_path = PathBuf::from(&manifest.trace);
+    ensure_exists(&trace_path)?;
+    let trace_text = std::fs::read_to_string(&trace_path)
+        .with_context(|| format!("failed reading native test trace: {}", trace_path.display()))?;
+    let trace: NativeTestTracePayload = serde_json::from_str(&trace_text)
+        .with_context(|| format!("failed parsing native test trace: {}", trace_path.display()))?;
+    let report_path = PathBuf::from(&manifest.report);
+    ensure_exists(&report_path)?;
+    let report_text = std::fs::read_to_string(&report_path)
+        .with_context(|| format!("failed reading native test report: {}", report_path.display()))?;
+    let report: NativeTestReportPayload = serde_json::from_str(&report_text)
+        .with_context(|| format!("failed parsing native test report: {}", report_path.display()))?;
+    Ok((manifest_path, manifest, trace_path, trace, report_path, report))
+}
+
+pub(super) fn verify_native_test_artifacts(target: &Path) -> Result<serde_json::Value> {
+    let (manifest_path, manifest, trace_path, trace, report_path, report) =
+        load_native_test_artifacts(target)?;
+    let mut checks = Vec::<NativeArtifactCheck>::new();
+    checks.push(NativeArtifactCheck {
+        name: "manifest_schema".to_string(),
+        ok: manifest.schema_version == "fozzylang.test_manifest.v1",
+        detail: manifest.schema_version.clone(),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "trace_schema".to_string(),
+        ok: trace.schema_version == "fozzylang.test_trace.v1",
+        detail: trace.schema_version.clone(),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "report_schema".to_string(),
+        ok: report.schema_version == "fozzylang.test_report.v1",
+        detail: report.schema_version.clone(),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "scheduler_match".to_string(),
+        ok: manifest.scheduler == trace.scheduler && trace.scheduler == report.scheduler,
+        detail: format!(
+            "manifest={} trace={} report={}",
+            manifest.scheduler, trace.scheduler, report.scheduler
+        ),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "seed_match".to_string(),
+        ok: manifest.seed == trace.seed && trace.seed == report.seed,
+        detail: format!(
+            "manifest={} trace={} report={}",
+            manifest.seed, trace.seed, report.seed
+        ),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "executed_tests_match".to_string(),
+        ok: trace.executed_tests == trace.tests.len() && trace.executed_tests == report.executed_tests,
+        detail: format!(
+            "trace.executed={} tests.len={} report.executed={}",
+            trace.executed_tests,
+            trace.tests.len(),
+            report.executed_tests
+        ),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "discovered_tests_match".to_string(),
+        ok: trace.discovered_tests == report.discovered_tests && trace.discovered_tests >= trace.executed_tests,
+        detail: format!(
+            "trace.discovered={} report.discovered={} executed={}",
+            trace.discovered_tests, report.discovered_tests, trace.executed_tests
+        ),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "execution_order_match".to_string(),
+        ok: trace.execution_order.len() == trace.executed_tests,
+        detail: format!(
+            "order.len={} executed={}",
+            trace.execution_order.len(),
+            trace.executed_tests
+        ),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "async_schedule_range".to_string(),
+        ok: trace
+            .async_schedule
+            .iter()
+            .all(|task_id| (*task_id as usize) < trace.executed_tests),
+        detail: format!(
+            "asyncSchedule.len={} executed={}",
+            trace.async_schedule.len(),
+            trace.executed_tests
+        ),
+    });
+    let passed = trace
+        .tests
+        .iter()
+        .filter(|run| run.status == "passed")
+        .count();
+    let failed = trace.tests.len().saturating_sub(passed);
+    checks.push(NativeArtifactCheck {
+        name: "status_counts_match".to_string(),
+        ok: passed == report.passed && failed == report.failed,
+        detail: format!(
+            "trace passed={} failed={} report passed={} failed={}",
+            passed, failed, report.passed, report.failed
+        ),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "selected_test_names_match".to_string(),
+        ok: manifest.selected_test_names
+            == trace.tests.iter().map(|run| run.name.clone()).collect::<Vec<_>>(),
+        detail: format!("selected={}", manifest.selected_test_names.join(",")),
+    });
+    checks.push(NativeArtifactCheck {
+        name: "deterministic_modes_match".to_string(),
+        ok: trace.tests.iter().all(|run| run.mode == "det")
+            && manifest.selected_test_names == manifest.deterministic_test_names
+            && manifest.nondeterministic_test_names.is_empty(),
+        detail: format!(
+            "modes={} nondet={}",
+            trace
+                .tests
+                .iter()
+                .map(|run| run.mode.clone())
+                .collect::<Vec<_>>()
+                .join(","),
+            manifest.nondeterministic_test_names.join(",")
+        ),
+    });
+    if let Some(timeline) = &manifest.timeline {
+        let timeline_path = PathBuf::from(timeline);
+        checks.push(NativeArtifactCheck {
+            name: "timeline_present".to_string(),
+            ok: timeline_path.exists(),
+            detail: timeline_path.display().to_string(),
+        });
+    }
+    let ok = checks.iter().all(|check| check.ok);
+    Ok(serde_json::json!({
+        "schemaVersion": "fozzylang.native_test_trace_verify.v1",
+        "ok": ok,
+        "manifest": manifest_path.display().to_string(),
+        "trace": trace_path.display().to_string(),
+        "report": report_path.display().to_string(),
+        "source": manifest.source,
+        "strictVerify": manifest.strict_verify,
+        "safeProfile": manifest.safe_profile,
+        "runtimeEventCount": report.runtime_event_count,
+        "reportStatus": report.status,
+        "checks": checks,
+    }))
+}
+
+fn compare_native_test_plan_against_recorded(
+    manifest: &NativeTestManifest,
+    trace: &NativeTestTracePayload,
+    report: &NativeTestReportPayload,
+    plan: &NonScenarioTestPlan,
+) -> Vec<NativeArtifactCheck> {
+    let replayed_names = plan.selected_test_names.clone();
+    let recorded_names = manifest.selected_test_names.clone();
+    let replayed_passed = plan.passed_tests;
+    let replayed_failed = plan.failed_tests;
+    let replayed_status = if replayed_failed == 0 { "pass" } else { "fail" };
+    let replayed_async_events = plan.async_checkpoint_count;
+    let recorded_async_events = trace
+        .tests
+        .iter()
+        .flat_map(|run| run.events.iter())
+        .filter(|event| {
+            event.kind == "runtime"
+                && (event.detail == "checkpoint"
+                    || event.detail == "yield"
+                    || event.detail == "pulse"
+                    || event.detail.starts_with("timeout(")
+                    || event.detail.starts_with("deadline("))
+        })
+        .count();
+    vec![
+        NativeArtifactCheck {
+            name: "selected_tests_match".to_string(),
+            ok: recorded_names == replayed_names,
+            detail: format!("recorded={} replayed={}", recorded_names.join(","), replayed_names.join(",")),
+        },
+        NativeArtifactCheck {
+            name: "scheduler_match".to_string(),
+            ok: manifest.scheduler == plan.scheduler,
+            detail: format!("recorded={} replayed={}", manifest.scheduler, plan.scheduler),
+        },
+        NativeArtifactCheck {
+            name: "passed_failed_match".to_string(),
+            ok: report.passed == replayed_passed && report.failed == replayed_failed,
+            detail: format!(
+                "recorded passed={} failed={} replayed passed={} failed={}",
+                report.passed, report.failed, replayed_passed, replayed_failed
+            ),
+        },
+        NativeArtifactCheck {
+            name: "report_status_match".to_string(),
+            ok: report.status == replayed_status,
+            detail: format!("recorded={} replayed={}", report.status, replayed_status),
+        },
+        NativeArtifactCheck {
+            name: "async_checkpoint_match".to_string(),
+            ok: recorded_async_events == replayed_async_events,
+            detail: format!(
+                "recorded={} replayed={}",
+                recorded_async_events, replayed_async_events
+            ),
+        },
+        NativeArtifactCheck {
+            name: "deterministic_filter_contract".to_string(),
+            ok: manifest.deterministic
+                && manifest.nondeterministic_test_names.is_empty()
+                && manifest.selected_test_names == manifest.deterministic_test_names,
+            detail: format!(
+                "deterministic={} nondet={} selected={} det={}",
+                manifest.deterministic,
+                manifest.nondeterministic_test_names.join(","),
+                manifest.selected_test_names.join(","),
+                manifest.deterministic_test_names.join(",")
+            ),
+        },
+    ]
+}
+
+pub(super) fn replay_native_test_artifacts(
+    target: &Path,
+    strict: bool,
+    format: Format,
+) -> Result<String> {
+    let (manifest_path, manifest, _, trace, _, report) = load_native_test_artifacts(target)?;
+    let source_path = PathBuf::from(&manifest.source);
+    ensure_exists(&source_path)?;
+    let plan = run_non_scenario_test_plan_with_root_guidance(
+        &source_path,
+        NonScenarioPlanRequest {
+            deterministic: manifest.deterministic,
+            strict_verify: manifest.strict_verify,
+            safe_profile: manifest.safe_profile,
+            scheduler: Some(manifest.scheduler.clone()),
+            seed: Some(manifest.seed),
+            record: None,
+            rich_artifacts: false,
+            filter: None,
+        },
+    )?;
+    let checks = compare_native_test_plan_against_recorded(&manifest, &trace, &report, &plan);
+    let ok = checks.iter().all(|check| check.ok);
+    let rendered = render_value_output(
+        format,
+        &serde_json::json!({
+            "schemaVersion": "fozzylang.native_test_replay.v1",
+            "ok": ok,
+            "manifest": manifest_path.display().to_string(),
+            "source": manifest.source,
+            "recorded": {
+                "selectedTestNames": manifest.selected_test_names,
+                "passed": report.passed,
+                "failed": report.failed,
+                "asyncCheckpointCount": trace.tests.iter().flat_map(|run| run.events.iter()).filter(|event| event.kind == "runtime").count(),
+            },
+            "replayed": {
+                "selectedTestNames": plan.selected_test_names,
+                "passed": plan.passed_tests,
+                "failed": plan.failed_tests,
+                "asyncCheckpointCount": plan.async_checkpoint_count,
+            },
+            "checks": checks,
+        }),
+    )?;
+    if !ok || strict {
+        if !ok {
+            return Err(CommandFailure {
+                exit_code: 1,
+                output: rendered,
+            }
+            .into());
+        }
+    }
+    Ok(rendered)
+}
+
+pub(super) fn ci_native_test_artifacts(
+    target: &Path,
+    strict: bool,
+    format: Format,
+) -> Result<String> {
+    let verify = verify_native_test_artifacts(target)?;
+    let replay_output = replay_native_test_artifacts(target, false, Format::Json)?;
+    let replay: serde_json::Value =
+        serde_json::from_str(&replay_output).context("failed parsing native test replay report")?;
+    let verify_ok = verify.get("ok").and_then(|value| value.as_bool()).unwrap_or(false);
+    let replay_ok = replay.get("ok").and_then(|value| value.as_bool()).unwrap_or(false);
+    let ok = verify_ok && replay_ok;
+    let rendered = render_value_output(
+        format,
+        &serde_json::json!({
+            "schemaVersion": "fozzylang.native_test_ci.v1",
+            "ok": ok,
+            "strict": strict,
+            "verify": verify,
+            "replay": replay,
+        }),
+    )?;
+    if !ok || strict {
+        if !ok {
+            return Err(CommandFailure {
+                exit_code: 1,
+                output: rendered,
+            }
+            .into());
+        }
+    }
+    Ok(rendered)
+}
+
 fn resolve_native_trace_target(target: &Path) -> Result<PathBuf> {
     ensure_exists(target)?;
     let is_trace = target

@@ -38,8 +38,9 @@ use self::source::{
     resolve_source, ResolvedModuleSource,
 };
 use self::trace_native::{
-    convert_fozzy_trace_to_native, native_explore, render_trace_native_artifacts,
-    resolve_replay_target,
+    ci_native_test_artifacts, convert_fozzy_trace_to_native, is_native_test_artifact_target,
+    native_explore, render_trace_native_artifacts, replay_native_test_artifacts,
+    resolve_replay_target, verify_native_test_artifacts,
 };
 
 #[cfg(test)]

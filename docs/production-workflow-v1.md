@@ -67,7 +67,11 @@ fz test tests/run.pass.fozzy.json --host-backends --json
 Native `.fzy` test execution is a separate surface:
 
 - `fz test <module>.fzy --det ...` executes compiled deterministic test descriptors directly.
-- `fz test <module>.fzy --host-backends` is intentionally unsupported; use `.fozzy.json` scenarios for host-backed execution.
+- `fz test <module>.fzy --host-backends` remains intentionally unsupported; use `.fozzy.json` scenarios for host-backed execution.
+- Recorded native test manifests are first-class validation targets:
+  - `fz trace verify <native-test.manifest.json> --strict --json`
+  - `fz replay <native-test.manifest.json> --json`
+  - `fz ci <native-test.manifest.json> --json`
 
 For native CLI and terminal-facing products, validate both launch modes:
 

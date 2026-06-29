@@ -260,6 +260,9 @@ pub(crate) fn load_manifest_for_parse(dir: &Path) -> Result<manifest::Manifest> 
     let primary = dir.join("fozzy.toml");
     let contents = std::fs::read_to_string(&primary)
         .with_context(|| format!("no valid compiler manifest found at {}", primary.display()))?;
+    if !manifest::looks_like_compiler_manifest(&contents) {
+        bail!("no valid compiler manifest found at {}", primary.display());
+    }
     let mut parsed = manifest::load(&contents).context("failed parsing fozzy.toml")?;
     apply_workspace_policy(dir, &mut parsed)?;
     parsed.infer_default_targets(dir);

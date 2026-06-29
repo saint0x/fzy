@@ -337,6 +337,16 @@ pub(super) fn scenario_replay_like(
     strict: bool,
     format: Format,
 ) -> Result<String> {
+    if is_native_test_artifact_target(target)? {
+        return match command {
+            "replay" => replay_native_test_artifacts(target, strict, format),
+            "ci" => ci_native_test_artifacts(target, strict, format),
+            "shrink" => bail!(
+                "native test manifests do not support `fz shrink`; rerun `fz test` with a narrower `--filter` and deterministic seed instead"
+            ),
+            other => bail!("unsupported native test replay-like command `{other}`"),
+        };
+    }
     let config = scenario_config()?;
     let replay_target = resolve_replay_target(target)?;
     match command {

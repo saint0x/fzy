@@ -5939,6 +5939,10 @@ fn main() -> i32 {
         let manifest = std::fs::read_to_string(base.join(format!("{stem}.manifest.json")))
             .expect("manifest should be readable");
         assert!(manifest.contains("\"schemaVersion\": \"fozzylang.test_manifest.v1\""));
+        assert!(manifest.contains("\"source\""));
+        assert!(manifest.contains("\"scheduler\": \"fifo\""));
+        assert!(manifest.contains("\"strictVerify\": false"));
+        assert!(manifest.contains("\"safeProfile\": false"));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
@@ -6411,34 +6415,122 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn resolve_replay_target_rejects_native_test_manifest() {
+    fn trace_verify_accepts_native_test_manifest() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let base = std::env::temp_dir().join(format!("fozzylang-replay-native-test-{suffix}"));
-        std::fs::create_dir_all(&base).expect("base dir should be created");
-        let trace = base.join("trace.native.trace.json");
-        let manifest = base.join("trace.manifest.json");
-        std::fs::write(&trace, "{\"schemaVersion\":\"fozzylang.test_trace.v1\"}")
-            .expect("trace should be written");
+        let source = std::env::temp_dir().join(format!("fozzylang-native-test-verify-{suffix}.fzy"));
+        let trace = std::env::temp_dir().join(format!("fozzylang-native-test-verify-{suffix}.trace.json"));
         std::fs::write(
-            &manifest,
-            serde_json::json!({
-                "schemaVersion": "fozzylang.test_manifest.v1",
-                "trace": trace.display().to_string()
-            })
-            .to_string(),
+            &source,
+            "test \"ok\" {\n    assert.eq_i32(1, 1)\n}\nfn main() -> i32 {\n    return 0\n}\n",
         )
-        .expect("manifest should be written");
+        .expect("source should be written");
+        run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(5),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        let manifest = trace
+            .parent()
+            .expect("trace should have parent")
+            .join(format!(
+                "{}.manifest.json",
+                trace.file_stem().and_then(|value| value.to_str()).expect("stem")
+            ));
+        let output = run(
+            Command::TraceVerify {
+                trace: manifest.clone(),
+                strict: true,
+            },
+            Format::Json,
+        )
+        .expect("trace verify should accept native test manifest");
+        assert!(output.contains("\"schemaVersion\":\"fozzylang.native_test_trace_verify.v1\""));
+        assert!(output.contains("\"ok\":true"));
 
-        let error = resolve_replay_target(&manifest)
-            .expect_err("native test manifest should not resolve to replay target");
-        assert!(error
-            .to_string()
-            .contains("native test manifests are not replay targets"));
+        let stem = trace.file_stem().and_then(|value| value.to_str()).expect("stem");
+        let base = trace.parent().expect("parent");
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
+    }
 
-        let _ = std::fs::remove_dir_all(base);
+    #[test]
+    fn replay_and_ci_accept_native_test_manifest() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-native-test-replay-{suffix}.fzy"));
+        let trace = std::env::temp_dir().join(format!("fozzylang-native-test-replay-{suffix}.trace.json"));
+        std::fs::write(
+            &source,
+            "use core.thread;\nfn worker() -> i32 {\n    checkpoint()\n    return 3\n}\ntest \"ok\" {\n    let handle = spawn(worker)\n    let result = join(handle)\n    assert.eq_i32(result, 3)\n}\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(9),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        let stem = trace.file_stem().and_then(|value| value.to_str()).expect("stem");
+        let base = trace.parent().expect("parent");
+        let manifest = base.join(format!("{stem}.manifest.json"));
+
+        let replay = run(
+            Command::Replay {
+                trace: manifest.clone(),
+            },
+            Format::Json,
+        )
+        .expect("replay should accept native test manifest");
+        assert!(replay.contains("\"schemaVersion\":\"fozzylang.native_test_replay.v1\""));
+        assert!(replay.contains("\"ok\":true"));
+
+        let ci = run(
+            Command::Ci {
+                trace: manifest.clone(),
+                strict: true,
+            },
+            Format::Json,
+        )
+        .expect("ci should accept native test manifest");
+        assert!(ci.contains("\"schemaVersion\":\"fozzylang.native_test_ci.v1\""));
+        assert!(ci.contains("\"ok\":true"));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
     }
 
     #[test]

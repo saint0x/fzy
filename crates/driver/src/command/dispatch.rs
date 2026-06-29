@@ -769,6 +769,22 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         }
         Command::TraceVerify { trace, strict } => {
             ensure_exists(&trace)?;
+            if is_native_test_artifact_target(&trace)? {
+                let output = verify_native_test_artifacts(&trace)?;
+                let rendered = render_value_output(format, &output)?;
+                let ok = output
+                    .get("ok")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                if !ok {
+                    return Err(CommandFailure {
+                        exit_code: 1,
+                        output: rendered,
+                    }
+                    .into());
+                }
+                return Ok(rendered);
+            }
             let output = fzscenario::verify_trace_file(&trace).map_err(scenario_error)?;
             render_trace_verify_report(format, output, strict)
         }

@@ -127,6 +127,9 @@ fn load_cached_project_manifest(path: &Path) -> Result<manifest::Manifest> {
     }
     let manifest_text = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("failed reading manifest: {}", manifest_path.display()))?;
+    if !manifest::looks_like_compiler_manifest(&manifest_text) {
+        bail!("no valid compiler manifest found at {}", manifest_path.display());
+    }
     let mut manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
     manifest.infer_default_targets(path);
     manifest

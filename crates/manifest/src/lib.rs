@@ -298,9 +298,16 @@ pub fn load(contents: &str) -> Result<Manifest, toml::de::Error> {
     toml::from_str(contents)
 }
 
+pub fn looks_like_compiler_manifest(contents: &str) -> bool {
+    let Ok(value) = toml::from_str::<toml::Value>(contents) else {
+        return false;
+    };
+    value.get("package").is_some_and(|package| package.is_table())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::load;
+    use super::{load, looks_like_compiler_manifest};
 
     #[test]
     fn loads_manifest() {
@@ -320,6 +327,22 @@ mod tests {
             .expect("manifest should pass validation");
         assert_eq!(manifest.primary_bin_path(), Some("src/main.fzy"));
         assert_eq!(manifest.primary_bin_name(), Some("demo"));
+    }
+
+    #[test]
+    fn distinguishes_compiler_manifest_from_scenario_config() {
+        let manifest = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+        "#;
+        let scenario = r#"
+            base_dir = ".fozzy"
+            reporter = "pretty"
+            proc_backend = "scripted"
+        "#;
+        assert!(looks_like_compiler_manifest(manifest));
+        assert!(!looks_like_compiler_manifest(scenario));
     }
 
     #[test]
