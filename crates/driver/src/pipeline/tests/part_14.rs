@@ -562,6 +562,36 @@ fn benchmark_result_fixture_stays_buildable_under_release_llvm_gate() {
 }
 
 #[test]
+fn release_llvm_handles_aggregate_array_fields_without_scalar_cast_failures() {
+    let project_name = format!(
+        "fozzylang-llvm-aggregate-array-fields-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"agg_array_fields\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"agg_array_fields\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.simd;\n\nstruct HiddenChunks {\n    chunk0: [i32; 4],\n    chunk1: [i32; 4],\n}\n\nfn make_hidden() -> HiddenChunks {\n    return HiddenChunks { chunk0: [1, 2, 3, 4], chunk1: [5, 6, 7, 8] }\n}\n\nfn chunk_at(hidden: HiddenChunks, chunk_id: i32) -> [i32; 4] {\n    if chunk_id == 0 {\n        return hidden.chunk0\n    }\n    return hidden.chunk1\n}\n\nfn main() -> i32 {\n    let hidden = make_hidden()\n    let picked = simd.i32x4_load(chunk_at(hidden, 1))\n    return simd.i32x4_lane2(picked)\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Release, Some("llvm"))
+        .expect("release llvm compile should succeed");
+    assert_eq!(artifact.status, "ok");
+    assert!(artifact.output.is_some());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn direct_memory_backend_contract_array_index_lowers_without_data_plane_runtime_calls() {
     let source = "fn main() -> i32 {\n    let values = [3, 5, 8];\n    let idx = 2;\n    return values[idx]\n}\n";
     let module = parser::parse(source, "direct_memory_array").expect("source should parse");

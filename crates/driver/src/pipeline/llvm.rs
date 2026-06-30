@@ -146,24 +146,6 @@ impl LlvmFuncCtx {
     }
 }
 
-fn llvm_cast_scalar_to_i64(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> LlvmValue {
-    match value.ty.as_str() {
-        "i64" => value,
-        "i32" | "i8" | "i1" => {
-            let out = ctx.value();
-            ctx.code.push_str(&format!(
-                "  {out} = zext {} {} to i64\n",
-                value.ty, value.value
-            ));
-            LlvmValue {
-                value: out,
-                ty: "i64".to_string(),
-            }
-        }
-        _ => value,
-    }
-}
-
 #[path = "llvm/agg.rs"]
 mod agg;
 #[path = "llvm/emit.rs"]

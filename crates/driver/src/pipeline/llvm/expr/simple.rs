@@ -159,12 +159,12 @@ pub(crate) fn llvm_emit_simple_expr(
                 if let Some(binding) = ctx.aggregate_bindings.get(name).cloned() {
                     if let Some(item) = binding.items.get(field) {
                         let handle = llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?;
-                        return Ok(llvm_emit_aggregate_get(ctx, &handle, item.index, &item.ty));
+                        return llvm_emit_aggregate_get(ctx, &handle, item.index, &item.ty);
                     }
                 }
                 if let Some(item) = llvm_struct_field_binding_for_local(name, field, ctx) {
                     let handle = llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?;
-                    return Ok(llvm_emit_aggregate_get(ctx, &handle, item.index, &item.ty));
+                    return llvm_emit_aggregate_get(ctx, &handle, item.index, &item.ty);
                 }
             }
             if let Some(task_ref_name) = expr_task_ref_name(expr) {
@@ -191,7 +191,7 @@ pub(crate) fn llvm_emit_simple_expr(
             for item in items {
                 rendered.push(llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids)?);
             }
-            Ok(llvm_emit_aggregate_handle(0, &rendered, ctx))
+            llvm_emit_aggregate_handle(0, &rendered, ctx)
         })()),
         ast::Expr::ArrayLiteral(items) => Some(llvm_emit_array_literal_value(
             items,
@@ -209,7 +209,7 @@ pub(crate) fn llvm_emit_simple_expr(
                     task_ref_ids,
                 )?);
             }
-            Ok(llvm_emit_aggregate_handle(0, &rendered, ctx))
+            llvm_emit_aggregate_handle(0, &rendered, ctx)
         })()),
         ast::Expr::EnumInit {
             enum_name,
@@ -236,7 +236,7 @@ pub(crate) fn llvm_emit_simple_expr(
                     task_ref_ids,
                 )?);
             }
-            Ok(llvm_emit_aggregate_handle(tag, &rendered, ctx))
+            llvm_emit_aggregate_handle(tag, &rendered, ctx)
         })()),
         _ => None,
     }

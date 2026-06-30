@@ -27,7 +27,92 @@ pub(crate) fn llvm_cast_i64_to_ty(
     }
 }
 
-pub(crate) fn llvm_emit_aggregate_get(
+fn llvm_aggregate_width_for_ir_type(target_ty: &str) -> usize {
+    if let Some((len, element_ty)) = llvm_parse_array_ir_type_local(target_ty) {
+        return len * llvm_aggregate_width_for_ir_type(&element_ty);
+    }
+    1
+}
+
+fn llvm_parse_array_ir_type_local(ty: &str) -> Option<(usize, String)> {
+    let ty = ty.trim();
+    let inner = ty.strip_prefix('[')?.strip_suffix(']')?;
+    let (len, element_ty) = inner.split_once(" x ")?;
+    let len = len.parse::<usize>().ok()?;
+    Some((len, element_ty.trim().to_string()))
+}
+
+fn llvm_aggregate_width_for_ast_type(target_ty: &ast::Type) -> usize {
+    llvm_aggregate_width_for_ir_type(&llvm_ir_type_for_ast_type(target_ty))
+}
+
+fn llvm_scalar_to_i64(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Result<LlvmValue> {
+    match value.ty.as_str() {
+        "i64" => Ok(value),
+        "i32" | "i8" | "i1" => {
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = zext {} {} to i64\n",
+                value.ty, value.value
+            ));
+            Ok(LlvmValue {
+                value: out,
+                ty: "i64".to_string(),
+            })
+        }
+        "float" => {
+            let bits = ctx.value();
+            let widened = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {bits} = bitcast float {} to i32\n  {widened} = zext i32 {bits} to i64\n",
+                value.value
+            ));
+            Ok(LlvmValue {
+                value: widened,
+                ty: "i64".to_string(),
+            })
+        }
+        "double" => {
+            let bits = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {bits} = bitcast double {} to i64\n",
+                value.value
+            ));
+            Ok(LlvmValue {
+                value: bits,
+                ty: "i64".to_string(),
+            })
+        }
+        _ => Err(anyhow!(
+            "unsupported llvm aggregate scalar storage type `{}`",
+            value.ty
+        )),
+    }
+}
+
+fn llvm_flatten_aggregate_value(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Result<Vec<LlvmValue>> {
+    if let Some((len, element_ty)) = llvm_parse_array_ir_type_local(&value.ty) {
+        let mut out = Vec::with_capacity(len * llvm_aggregate_width_for_ir_type(&element_ty));
+        for index in 0..len {
+            let extracted = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {extracted} = extractvalue {} {}, {index}\n",
+                value.ty, value.value
+            ));
+            out.extend(llvm_flatten_aggregate_value(
+                ctx,
+                LlvmValue {
+                    value: extracted,
+                    ty: element_ty.clone(),
+                },
+            )?);
+        }
+        return Ok(out);
+    }
+    Ok(vec![llvm_scalar_to_i64(ctx, value)?])
+}
+
+fn llvm_emit_aggregate_get_scalar(
     ctx: &mut LlvmFuncCtx,
     handle: &LlvmValue,
     index: usize,
@@ -41,6 +126,35 @@ pub(crate) fn llvm_emit_aggregate_get(
     llvm_cast_i64_to_ty(ctx, raw, target_ty)
 }
 
+pub(crate) fn llvm_emit_aggregate_get(
+    ctx: &mut LlvmFuncCtx,
+    handle: &LlvmValue,
+    index: usize,
+    target_ty: &str,
+) -> Result<LlvmValue> {
+    if let Some((len, element_ty)) = llvm_parse_array_ir_type_local(target_ty) {
+        let mut current = "undef".to_string();
+        let mut scalar_index = index;
+        for lane in 0..len {
+            let element = llvm_emit_aggregate_get(ctx, handle, scalar_index, &element_ty)?;
+            scalar_index += llvm_aggregate_width_for_ir_type(&element_ty);
+            let next = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {next} = insertvalue {target_ty} {current}, {} {}, {lane}\n",
+                element.ty, element.value
+            ));
+            current = next;
+        }
+        return Ok(LlvmValue {
+            value: current,
+            ty: target_ty.to_string(),
+        });
+    }
+    Ok(llvm_emit_aggregate_get_scalar(
+        ctx, handle, index, target_ty,
+    ))
+}
+
 pub(crate) fn llvm_record_aggregate_binding(
     name: &str,
     value: &ast::Expr,
@@ -51,28 +165,34 @@ pub(crate) fn llvm_record_aggregate_binding(
     let mut binding = LlvmAggregateBinding::default();
     match value {
         ast::Expr::StructInit { fields, .. } => {
-            for (index, (field, field_expr)) in fields.iter().enumerate() {
+            let mut index = 0;
+            for (field, field_expr) in fields {
                 let field_value =
                     llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                let field_ty = field_value.ty.clone();
                 binding.items.insert(
                     field.clone(),
                     LlvmAggregateItemBinding {
                         index,
-                        ty: field_value.ty,
+                        ty: field_ty.clone(),
                     },
                 );
+                index += llvm_aggregate_width_for_ir_type(&field_ty);
             }
         }
         ast::Expr::Tuple(items) => {
-            for (index, item_expr) in items.iter().enumerate() {
+            let mut index = 0;
+            for (ordinal, item_expr) in items.iter().enumerate() {
                 let item_value = llvm_emit_expr(item_expr, ctx, string_literal_ids, task_ref_ids)?;
+                let item_ty = item_value.ty.clone();
                 binding.items.insert(
-                    format!("__tuple{index}"),
+                    format!("__tuple{ordinal}"),
                     LlvmAggregateItemBinding {
                         index,
-                        ty: item_value.ty,
+                        ty: item_ty.clone(),
                     },
                 );
+                index += llvm_aggregate_width_for_ir_type(&item_ty);
             }
         }
         ast::Expr::EnumInit {
@@ -80,27 +200,32 @@ pub(crate) fn llvm_record_aggregate_binding(
             named_payload,
             ..
         } => {
-            for (index, payload_expr) in payload.iter().enumerate() {
+            let mut index = 0;
+            for (ordinal, payload_expr) in payload.iter().enumerate() {
                 let payload_value =
                     llvm_emit_expr(payload_expr, ctx, string_literal_ids, task_ref_ids)?;
+                let payload_ty = payload_value.ty.clone();
                 binding.items.insert(
-                    format!("__payload{index}"),
+                    format!("__payload{ordinal}"),
                     LlvmAggregateItemBinding {
                         index,
-                        ty: payload_value.ty,
+                        ty: payload_ty.clone(),
                     },
                 );
+                index += llvm_aggregate_width_for_ir_type(&payload_ty);
             }
-            for (offset, (field, field_expr)) in named_payload.iter().enumerate() {
+            for (field, field_expr) in named_payload {
                 let field_value =
                     llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                let field_ty = field_value.ty.clone();
                 binding.items.insert(
                     field.clone(),
                     LlvmAggregateItemBinding {
-                        index: payload.len() + offset,
-                        ty: field_value.ty,
+                        index,
+                        ty: field_ty.clone(),
                     },
                 );
+                index += llvm_aggregate_width_for_ir_type(&field_ty);
             }
         }
         _ => return Ok(()),
@@ -118,8 +243,13 @@ pub(crate) fn llvm_tuple_item_binding_for_local(
         return None;
     };
     let item_ty = items.get(index)?;
+    let item_index = items
+        .iter()
+        .take(index)
+        .map(llvm_aggregate_width_for_ast_type)
+        .sum();
     Some(LlvmAggregateItemBinding {
-        index,
+        index: item_index,
         ty: llvm_ir_type_for_ast_type(item_ty),
     })
 }
@@ -138,8 +268,14 @@ pub(crate) fn llvm_struct_field_binding_for_local(
         .iter()
         .enumerate()
         .find(|(_, item)| item.name == field)?;
+    let item_index = struct_def
+        .fields
+        .iter()
+        .take(index)
+        .map(|item| llvm_aggregate_width_for_ast_type(&item.ty))
+        .sum();
     Some(LlvmAggregateItemBinding {
-        index,
+        index: item_index,
         ty: llvm_ir_type_for_ast_type(&struct_field.ty),
     })
 }
@@ -160,8 +296,14 @@ pub(crate) fn llvm_enum_payload_binding_for_local(
     let enum_def = ctx.enum_defs.get(enum_name)?;
     let variant_def = enum_def.variants.iter().find(|item| item.name == variant)?;
     let payload_ty = variant_def.payload.get(index)?;
+    let item_index = variant_def
+        .payload
+        .iter()
+        .take(index)
+        .map(llvm_aggregate_width_for_ast_type)
+        .sum();
     Some(LlvmAggregateItemBinding {
-        index,
+        index: item_index,
         ty: llvm_ir_type_for_ast_type(payload_ty),
     })
 }
@@ -186,8 +328,19 @@ pub(crate) fn llvm_enum_named_binding_for_local(
         .iter()
         .enumerate()
         .find(|(_, item)| item.name == field)?;
+    let item_index = variant_def
+        .payload
+        .iter()
+        .map(llvm_aggregate_width_for_ast_type)
+        .sum::<usize>()
+        + variant_def
+            .named_payload
+            .iter()
+            .take(offset)
+            .map(|item| llvm_aggregate_width_for_ast_type(&item.ty))
+            .sum::<usize>();
     Some(LlvmAggregateItemBinding {
-        index: variant_def.payload.len() + offset,
+        index: item_index,
         ty: llvm_ir_type_for_ast_type(&named_field.ty),
     })
 }
@@ -203,25 +356,32 @@ pub(crate) fn llvm_emit_aggregate_handle(
     tag: i32,
     items: &[LlvmValue],
     ctx: &mut LlvmFuncCtx,
-) -> LlvmValue {
+) -> Result<LlvmValue> {
+    let flattened = items
+        .iter()
+        .cloned()
+        .map(|item| llvm_flatten_aggregate_value(ctx, item))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let handle = ctx.value();
     ctx.code.push_str(&format!(
         "  {handle} = call i64 @{}(i32 {tag}, i32 {})\n",
         NATIVE_AGG_NEW_SYMBOL,
-        items.len()
+        flattened.len()
     ));
-    for (index, item) in items.iter().cloned().enumerate() {
-        let raw = llvm_cast_scalar_to_i64(ctx, item);
+    for (index, item) in flattened.into_iter().enumerate() {
         let status = ctx.value();
         ctx.code.push_str(&format!(
             "  {status} = call i32 @{}(i64 {handle}, i32 {index}, i64 {})\n",
-            NATIVE_AGG_SET_I64_SYMBOL, raw.value
+            NATIVE_AGG_SET_I64_SYMBOL, item.value
         ));
     }
-    LlvmValue {
+    Ok(LlvmValue {
         value: handle,
         ty: "i64".to_string(),
-    }
+    })
 }
 
 pub(crate) fn collect_wrapped_index_candidates(
@@ -468,7 +628,7 @@ pub(crate) fn llvm_emit_let_pattern(
                             &handle,
                             item_binding.index,
                             &item_binding.ty,
-                        );
+                        )?;
                         let temp_name = format!("__agg_tuple_extract_{}_{}", name, index);
                         let slot = format!(
                             "%slot_{}_{}",
@@ -572,7 +732,7 @@ pub(crate) fn llvm_emit_let_pattern(
                             &handle,
                             item_binding.index,
                             &item_binding.ty,
-                        );
+                        )?;
                         let slot = format!(
                             "%slot_{}_{}",
                             native_mangle_symbol(binding_name),
@@ -700,7 +860,7 @@ pub(crate) fn llvm_emit_let_pattern(
                             &handle,
                             item_binding.index,
                             &item_binding.ty,
-                        );
+                        )?;
                         let slot = format!(
                             "%slot_{}_{}",
                             native_mangle_symbol(binding_name),
@@ -749,7 +909,7 @@ pub(crate) fn llvm_emit_let_pattern(
                             &handle,
                             item_binding.index,
                             &item_binding.ty,
-                        );
+                        )?;
                         let slot = format!(
                             "%slot_{}_{}",
                             native_mangle_symbol(binding_name),
