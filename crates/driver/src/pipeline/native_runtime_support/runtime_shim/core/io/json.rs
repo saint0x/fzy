@@ -157,6 +157,19 @@ static int32_t fz_json_value_alloc_from_slice(const char* start, const char* end
   return fz_json_value_alloc(value_id);
 }
 
+static int32_t fz_json_value_intern_text_from_slice(const char* start, const char* end) {
+  if (start == NULL || end == NULL || end < start) {
+    return 0;
+  }
+  const char* cursor = start;
+  char* decoded = NULL;
+  if (fz_json_parse_string(&cursor, &decoded) == 0 && cursor == end) {
+    return fz_intern_owned(decoded);
+  }
+  free(decoded);
+  return fz_intern_slice(start, (size_t)(end - start));
+}
+
 static const char* fz_json_ws(const char* p) {
   while (p != NULL && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) {
     p++;

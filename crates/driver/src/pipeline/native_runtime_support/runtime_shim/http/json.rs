@@ -131,57 +131,87 @@ int32_t fz_native_json_from_map(int32_t map_handle) {
 int32_t fz_native_json_to_list(int32_t json_id) {
   int32_t value_id = fz_json_value_get_id(json_id);
   const char* raw = fz_lookup_string(value_id);
-  char** items = NULL;
-  int count = 0;
-  if (fz_parse_json_string_array(raw, &items, &count) != 0) {
+  const char* p = fz_json_ws(raw);
+  if (p == NULL || *p != '[') {
     return -1;
   }
-  pthread_mutex_lock(&fz_list_lock);
-  int32_t handle = fz_list_alloc();
-  fz_list_state* list = fz_list_get(handle);
-  if (list != NULL) {
-    for (int i = 0; i < count; i++) {
-      (void)fz_list_push_cstr(list, items[i] == NULL ? "" : items[i]);
-    }
+  int32_t handle = fz_runtime_list_new();
+  if (handle <= 0) {
+    return -1;
   }
-  pthread_mutex_unlock(&fz_list_lock);
-  fz_free_string_list(items, count);
+  p = fz_json_ws(p + 1);
+  if (*p == ']') {
+    return handle;
+  }
+  for (;;) {
+    const char* value_start = p;
+    if (fz_json_skip_value_token(&p, 0) != 0) {
+      return -1;
+    }
+    int32_t item_id = fz_json_value_intern_text_from_slice(value_start, p);
+    if (item_id <= 0 || fz_runtime_list_push(handle, item_id) != 0) {
+      return -1;
+    }
+    p = fz_json_ws(p);
+    if (*p == ',') {
+      p = fz_json_ws(p + 1);
+      continue;
+    }
+    if (*p == ']') {
+      return handle;
+    }
+    return -1;
+  }
   return handle;
 }
 
 int32_t fz_native_json_to_map(int32_t json_id) {
   int32_t value_id = fz_json_value_get_id(json_id);
   const char* raw = fz_lookup_string(value_id);
-  char** pairs = NULL;
-  int count = 0;
-  if (fz_parse_json_env_object(raw, &pairs, &count) != 0) {
+  const char* p = fz_json_ws(raw);
+  if (p == NULL || *p != '{') {
     return -1;
   }
-  pthread_mutex_lock(&fz_map_lock);
-  int32_t handle = fz_map_alloc();
-  fz_map_state* map = fz_map_get(handle);
-  if (map != NULL) {
-    for (int i = 0; i < count; i++) {
-      char* eq = strchr(pairs[i], '=');
-      if (eq == NULL) continue;
-      *eq = '\0';
-      if (fz_map_reserve(map, map->count + 1) != 0) {
-        break;
-      }
-      map->keys[map->count] = strdup(pairs[i]);
-      map->values[map->count] = strdup(eq + 1);
-      if (map->keys[map->count] != NULL && map->values[map->count] != NULL) {
-        map->count++;
-      } else {
-        free(map->keys[map->count]);
-        free(map->values[map->count]);
-        map->keys[map->count] = NULL;
-        map->values[map->count] = NULL;
-      }
-    }
+  int32_t handle = fz_runtime_map_new();
+  if (handle <= 0) {
+    return -1;
   }
-  pthread_mutex_unlock(&fz_map_lock);
-  fz_free_string_list(pairs, count);
+  p = fz_json_ws(p + 1);
+  if (*p == '}') {
+    return handle;
+  }
+  for (;;) {
+    char* key = NULL;
+    if (fz_json_parse_string(&p, &key) != 0) {
+      free(key);
+      return -1;
+    }
+    p = fz_json_ws(p);
+    if (*p != ':') {
+      free(key);
+      return -1;
+    }
+    p = fz_json_ws(p + 1);
+    const char* value_start = p;
+    if (fz_json_skip_value_token(&p, 0) != 0) {
+      free(key);
+      return -1;
+    }
+    int32_t key_id = fz_intern_owned(key);
+    int32_t mapped_value_id = fz_json_value_intern_text_from_slice(value_start, p);
+    if (key_id <= 0 || mapped_value_id <= 0 || fz_runtime_map_set(handle, key_id, mapped_value_id) != 0) {
+      return -1;
+    }
+    p = fz_json_ws(p);
+    if (*p == ',') {
+      p = fz_json_ws(p + 1);
+      continue;
+    }
+    if (*p == '}') {
+      return handle;
+    }
+    return -1;
+  }
   return handle;
 }
 

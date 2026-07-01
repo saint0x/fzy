@@ -5276,6 +5276,50 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn native_run_host_backends_preserves_json_collection_roundtrips() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-json-collections-host-live-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.term;\n\nfn parse_sequence(wire: str) -> ListHandle {\n    if wire == \"\" {\n        return list.new()\n    }\n    return json.to_list(json.parse(wire))\n}\n\nfn join_sequence(items: ListHandle) -> str {\n    let encoded = list.new()\n    let mut idx = 0\n    while idx < list.len(items) {\n        discard list.push(encoded, json.str(list.get(items, idx)))\n        idx = idx + 1\n    }\n    return json.array(encoded)\n}\n\nfn append_sequence(wire: str, entry: str) -> str {\n    let items = parse_sequence(wire)\n    let next = list.new()\n    let mut idx = 0\n    while idx < list.len(items) {\n        discard list.push(next, list.get(items, idx))\n        idx = idx + 1\n    }\n    discard list.push(next, entry)\n    return join_sequence(next)\n}\n\nfn main() -> i32 {\n    let mut wire = \"\"\n    let mut idx = 0\n    while idx < 512 {\n        wire = append_sequence(wire, str.concat(\"entry-\", str.from_i32(idx)))\n        if list.len(parse_sequence(wire)) != idx + 1 {\n            discard term.transcript_write(term.transcript_style(8), \"idx\", str.from_i32(idx))\n            discard term.transcript_write(term.transcript_style(8), \"wire\", wire)\n            discard term.transcript_write(term.transcript_style(8), \"len\", str.from_i32(list.len(parse_sequence(wire))))\n            return 61\n        }\n        idx = idx + 1\n    }\n    let mixed = json.to_list(json.parse(\"[\\\"alpha\\\",7,true,{\\\"kind\\\":\\\"beta\\\"},[1,2],null]\"))\n    if list.len(mixed) != 6 {\n        return 62\n    }\n    if list.get(mixed, 0) != \"alpha\" {\n        return 63\n    }\n    if list.get(mixed, 1) != \"7\" {\n        return 64\n    }\n    if list.get(mixed, 2) != \"true\" {\n        return 65\n    }\n    if list.get(mixed, 3) != \"{\\\"kind\\\":\\\"beta\\\"}\" {\n        return 66\n    }\n    if list.get(mixed, 4) != \"[1,2]\" {\n        return 67\n    }\n    if list.get(mixed, 5) != \"null\" {\n        return 68\n    }\n    let obj = json.to_map(json.parse(\"{\\\"name\\\":\\\"saint\\\",\\\"count\\\":7,\\\"flags\\\":[true,false],\\\"meta\\\":{\\\"ok\\\":true}}\"))\n    if map.get(obj, \"name\") != \"saint\" {\n        return 69\n    }\n    if map.get(obj, \"count\") != \"7\" {\n        return 70\n    }\n    if map.get(obj, \"flags\") != \"[true,false]\" {\n        return 71\n    }\n    if map.get(obj, \"meta\") != \"{\\\"ok\\\":true}\" {\n        return 72\n    }\n    discard term.transcript_write(term.transcript_style(8), \"done\", str.from_i32(idx))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        for backend in ["llvm", "cranelift"] {
+            let output = run(
+                Command::Run {
+                    path: source.clone(),
+                    args: Vec::new(),
+                    deterministic: false,
+                    strict_verify: false,
+                    safe_profile: false,
+                    seed: None,
+                    record: None,
+                    host_backends: true,
+                    backend: Some(backend.to_string()),
+                    max_seconds: Some(30),
+                    exit_on_healthcheck: None,
+                    smoke_http: None,
+                },
+                Format::Json,
+            )
+            .unwrap_or_else(|error| {
+                panic!("host-backed json collection run should succeed for {backend}: {error}")
+            });
+            assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+            assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+            assert!(output.contains("done"), "output was: {output}");
+            assert!(output.contains("512"), "output was: {output}");
+        }
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn native_run_variadic_str_concat_executes() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

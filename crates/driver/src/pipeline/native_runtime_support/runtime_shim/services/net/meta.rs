@@ -159,19 +159,11 @@ int32_t fz_native_net_body_bind(int32_t conn_fd) {
     const char* value_end = p;
     int32_t key_id = fz_intern_slice(key == NULL ? "" : key, strlen(key == NULL ? "" : key));
     free(key);
-
-    const char* q = value_start;
-    char* string_value = NULL;
-    int decoded = fz_json_parse_string(&q, &string_value) == 0 && fz_json_ws(q) == value_end;
-    if (decoded) {
-      int32_t value_id = fz_intern_slice(string_value == NULL ? "" : string_value, strlen(string_value == NULL ? "" : string_value));
-      free(string_value);
-      (void)fz_runtime_map_set(out_map, key_id, value_id);
-    } else {
-      free(string_value);
-      int32_t value_id = fz_intern_slice(value_start, (size_t)(value_end - value_start));
-      (void)fz_runtime_map_set(out_map, key_id, value_id);
-    }
+    int32_t value_id = fz_json_value_intern_text_from_slice(value_start, value_end);
+    (void)fz_runtime_map_set(
+        out_map,
+        key_id,
+        value_id > 0 ? value_id : fz_intern_slice("", 0));
     p = fz_json_ws(p);
     if (*p == ',') {
       p = fz_json_ws(p + 1);

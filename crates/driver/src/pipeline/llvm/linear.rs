@@ -15,11 +15,15 @@ pub(crate) fn llvm_emit_linear_stmts(
                 mutable,
                 ..
             } => {
-                if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
-                    ctx.const_strings.insert(name.clone(), const_value);
-                    ctx.array_slots.remove(name);
-                    ctx.direct_values.remove(name);
-                    continue;
+                if !*mutable {
+                    if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
+                        ctx.const_strings.insert(name.clone(), const_value);
+                        ctx.array_slots.remove(name);
+                        ctx.direct_values.remove(name);
+                        continue;
+                    }
+                } else {
+                    ctx.const_strings.remove(name);
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let storage = format!("%slot_{}_arr_{}", name, ctx.next_value);
@@ -231,11 +235,7 @@ pub(crate) fn llvm_emit_linear_stmts(
                 llvm_emit_let_pattern(pattern, value, ctx, string_literal_ids, task_ref_ids)?;
             }
             ast::Stmt::Assign { target, value } => {
-                if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
-                    ctx.const_strings.insert(target.clone(), const_value);
-                    ctx.array_slots.remove(target);
-                    continue;
-                }
+                ctx.const_strings.remove(target);
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let storage = format!("%slot_{}_arr_{}", target, ctx.next_value);
                     let len = items.len();
