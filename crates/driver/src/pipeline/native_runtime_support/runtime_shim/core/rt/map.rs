@@ -32,7 +32,7 @@ static int32_t fz_runtime_map_set(int32_t handle, int32_t key_id, int32_t value_
     pthread_mutex_unlock(&fz_map_lock);
     return 0;
   }
-  if (map->count >= FZ_MAX_MAP_ENTRIES) {
+  if (fz_map_reserve(map, map->count + 1) != 0) {
     pthread_mutex_unlock(&fz_map_lock);
     return -1;
   }

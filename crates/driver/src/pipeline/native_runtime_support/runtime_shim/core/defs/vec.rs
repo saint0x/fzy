@@ -9,18 +9,45 @@ static void fz_numeric_vec_reset(fz_numeric_vec_state* vec) {
 }
 
 static int32_t fz_numeric_vec_alloc(void) {
-  for (int i = 0; i < FZ_MAX_LISTS; i++) {
+  if (fz_numeric_vec_capacity == 0) {
+    fz_numeric_vecs = (fz_numeric_vec_state*)calloc(
+        (size_t)FZ_INITIAL_NUMERIC_VEC_CAPACITY, sizeof(fz_numeric_vec_state));
+    if (fz_numeric_vecs == NULL) {
+      return -1;
+    }
+    fz_numeric_vec_capacity = FZ_INITIAL_NUMERIC_VEC_CAPACITY;
+  }
+  for (int32_t i = 0; i < fz_numeric_vec_capacity; i++) {
     if (!fz_numeric_vecs[i].in_use) {
       fz_numeric_vec_reset(&fz_numeric_vecs[i]);
       fz_numeric_vecs[i].in_use = 1;
       return i + 1;
     }
   }
-  return -1;
+  int32_t next_capacity = fz_numeric_vec_capacity;
+  if (next_capacity < FZ_INITIAL_NUMERIC_VEC_CAPACITY) {
+    next_capacity = FZ_INITIAL_NUMERIC_VEC_CAPACITY;
+  }
+  if (next_capacity > INT32_MAX / 2) {
+    return -1;
+  }
+  next_capacity *= 2;
+  size_t old_capacity = (size_t)fz_numeric_vec_capacity;
+  size_t new_capacity = (size_t)next_capacity;
+  fz_numeric_vec_state* next = (fz_numeric_vec_state*)realloc(
+      fz_numeric_vecs, new_capacity * sizeof(fz_numeric_vec_state));
+  if (next == NULL) {
+    return -1;
+  }
+  memset(next + old_capacity, 0, (new_capacity - old_capacity) * sizeof(fz_numeric_vec_state));
+  fz_numeric_vecs = next;
+  fz_numeric_vec_capacity = next_capacity;
+  fz_numeric_vecs[old_capacity].in_use = 1;
+  return (int32_t)old_capacity + 1;
 }
 
 static fz_numeric_vec_state* fz_numeric_vec_get(uintptr_t handle) {
-  if (handle == 0 || handle > FZ_MAX_LISTS) {
+  if (handle == 0 || handle > (uintptr_t)fz_numeric_vec_capacity || fz_numeric_vecs == NULL) {
     return NULL;
   }
   fz_numeric_vec_state* vec = &fz_numeric_vecs[(size_t)handle - 1];

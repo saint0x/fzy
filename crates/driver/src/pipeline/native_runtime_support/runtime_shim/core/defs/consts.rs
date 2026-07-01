@@ -1,7 +1,7 @@
 pub(super) fn section() -> &'static str {
     r#"
 
-#define FZ_MAX_DYNAMIC_STRINGS 16384
+#define FZ_INITIAL_DYNAMIC_STRING_CAPACITY 16384
 #define FZ_MAX_CONN_STATES 2048
 #define FZ_MAX_HTTP_READ 262144
 #define FZ_MAX_PROC_STATES 1024
@@ -11,23 +11,28 @@ pub(super) fn section() -> &'static str {
 #define FZ_MAX_SPAWN_THREADS 4096
 #define FZ_MAX_CONN_META 128
 #define FZ_MAX_ROUTE_PARAMS 64
-#define FZ_MAX_LISTS 2048
-#define FZ_MAX_LIST_ITEMS 4096
-#define FZ_MAX_MAPS 2048
-#define FZ_MAX_MAP_ENTRIES 4096
+#define FZ_INITIAL_LIST_CAPACITY 2048
+#define FZ_INITIAL_LIST_ITEM_CAPACITY 16
+#define FZ_INITIAL_ARRAY_CAPACITY 2048
+#define FZ_INITIAL_ARRAY_ITEM_CAPACITY 16
+#define FZ_INITIAL_NUMERIC_VEC_CAPACITY 2048
+#define FZ_INITIAL_MAP_CAPACITY 2048
+#define FZ_INITIAL_MAP_ENTRY_CAPACITY 16
 #define FZ_INITIAL_AGGREGATE_CAPACITY 4096
 #define FZ_MAX_AGGREGATE_ITEMS 64
-#define FZ_MAX_INTERVALS 512
-#define FZ_MAX_JSON_VALUES 16384
-#define FZ_MAX_STORAGE_KV 1024
-#define FZ_MAX_BYTES 8192
+#define FZ_INITIAL_INTERVAL_CAPACITY 512
+#define FZ_INITIAL_JSON_VALUE_CAPACITY 16384
+#define FZ_INITIAL_STORAGE_KV_CAPACITY 1024
+#define FZ_INITIAL_BYTES_CAPACITY 8192
 #define FZ_MAX_NET_POLL_WATCHES 256
-#define FZ_STRING_INDEX_CAPACITY 65536
+#define FZ_INITIAL_STRING_INDEX_CAPACITY 65536
 
-static char* fz_dynamic_strings[FZ_MAX_DYNAMIC_STRINGS];
-static int fz_dynamic_string_count = 0;
-static int32_t fz_string_index_ids[FZ_STRING_INDEX_CAPACITY];
-static uint32_t fz_string_index_hashes[FZ_STRING_INDEX_CAPACITY];
+static char** fz_dynamic_strings = NULL;
+static int32_t fz_dynamic_string_count = 0;
+static int32_t fz_dynamic_string_capacity = 0;
+static int32_t* fz_string_index_ids = NULL;
+static uint32_t* fz_string_index_hashes = NULL;
+static int32_t fz_string_index_capacity = 0;
 static pthread_rwlock_t fz_string_lock = PTHREAD_RWLOCK_INITIALIZER;
 static pthread_once_t fz_string_index_once = PTHREAD_ONCE_INIT;
 
@@ -109,14 +114,16 @@ typedef struct {
 
 typedef struct {
   int in_use;
-  int count;
-  char* items[FZ_MAX_LIST_ITEMS];
+  int32_t count;
+  int32_t cap;
+  char** items;
 } fz_list_state;
 
 typedef struct {
   int in_use;
-  int count;
-  int32_t items[FZ_MAX_LIST_ITEMS];
+  int32_t count;
+  int32_t cap;
+  int32_t* items;
 } fz_array_state;
 
 typedef struct {
@@ -129,9 +136,10 @@ typedef struct {
 
 typedef struct {
   int in_use;
-  int count;
-  char* keys[FZ_MAX_MAP_ENTRIES];
-  char* values[FZ_MAX_MAP_ENTRIES];
+  int32_t count;
+  int32_t cap;
+  char** keys;
+  char** values;
 } fz_map_state;
 
 typedef struct {
@@ -169,16 +177,24 @@ static pthread_mutex_t fz_proc_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_proc_default_timeout_ms = 30000;
 static int32_t fz_proc_last_error_id = 0;
 static int32_t fz_last_exit_class = 0;
-static fz_list_state fz_lists[FZ_MAX_LISTS];
-static fz_array_state fz_arrays[FZ_MAX_LISTS];
-static fz_numeric_vec_state fz_numeric_vecs[FZ_MAX_LISTS];
-static fz_map_state fz_maps[FZ_MAX_MAPS];
+static fz_list_state* fz_lists = NULL;
+static int32_t fz_list_capacity = 0;
+static fz_array_state* fz_arrays = NULL;
+static int32_t fz_array_capacity = 0;
+static fz_numeric_vec_state* fz_numeric_vecs = NULL;
+static int32_t fz_numeric_vec_capacity = 0;
+static fz_map_state* fz_maps = NULL;
+static int32_t fz_map_capacity = 0;
 static fz_aggregate_state* fz_aggregates = NULL;
 static int32_t fz_aggregate_capacity = 0;
-static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
-static fz_json_value_state fz_json_values[FZ_MAX_JSON_VALUES];
-static fz_storage_kv_state fz_storage_kv[FZ_MAX_STORAGE_KV];
-static fz_bytes_state fz_bytes[FZ_MAX_BYTES];
+static fz_interval_state* fz_intervals = NULL;
+static int32_t fz_interval_capacity = 0;
+static fz_json_value_state* fz_json_values = NULL;
+static int32_t fz_json_value_capacity = 0;
+static fz_storage_kv_state* fz_storage_kv = NULL;
+static int32_t fz_storage_kv_capacity = 0;
+static fz_bytes_state* fz_bytes = NULL;
+static int32_t fz_bytes_capacity = 0;
 static pthread_mutex_t fz_collections_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_list_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_array_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -343,6 +359,12 @@ static const uint8_t* fz_runtime_bytes_data_ptr(int32_t handle, size_t* out_len)
 static int fz_runtime_bytes_bounds_ok(size_t len, int32_t start, int32_t width, const char* context);
 static int fz_runtime_bytes_utf8_ok(const uint8_t* data, size_t len);
 static float fz_runtime_bytes_f16_to_f32(uint16_t bits);
+static void fz_list_reset(fz_list_state* list);
+static int fz_list_reserve(fz_list_state* list, int32_t need);
+static void fz_array_reset(fz_array_state* array);
+static int fz_array_reserve(fz_array_state* array, int32_t need);
+static void fz_map_reset(fz_map_state* map);
+static int fz_map_reserve(fz_map_state* map, int32_t need);
 static void fz_numeric_vec_reset(fz_numeric_vec_state* vec);
 static int fz_numeric_vec_reserve(fz_numeric_vec_state* vec, int32_t need);
 int32_t fz_native_net_request_id(int32_t conn_fd);

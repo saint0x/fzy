@@ -112,7 +112,7 @@ int32_t fz_native_storage_kv_open(int32_t path_id) {
     return -1;
   }
   pthread_mutex_lock(&fz_storage_kv_lock);
-  for (int i = 0; i < FZ_MAX_STORAGE_KV; i++) {
+  for (int32_t i = 0; i < fz_storage_kv_capacity; i++) {
     if (!fz_storage_kv[i].in_use) {
       continue;
     }

@@ -5189,6 +5189,93 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn native_run_host_backends_keeps_repeated_collection_handle_allocations_live() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-collection-host-live-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.term;\n\nfn main() -> i32 {\n    let mut idx = 0\n    while idx < 5000 {\n        let items = list.new()\n        discard list.push(items, \"alpha\")\n        discard list.push(items, \"beta\")\n        let payload = map.new()\n        discard map.set(payload, \"left\", \"1\")\n        discard map.set(payload, \"right\", \"2\")\n        let parsed = json.parse(\"{\\\"message\\\":\\\"hi\\\",\\\"count\\\":\\\"2\\\"}\")\n        let keys = json.keys(parsed)\n        let parsed_map = json.to_map(parsed)\n        let map_keys = map.keys(parsed_map)\n        let first_key = list.get(keys, 0)\n        let raw = json.get_str(json.get(parsed, first_key), \"raw\")\n        if list.len(items) != 2 || map.len(payload) != 2 || list.len(keys) != 2 || list.len(map_keys) != 2 || raw == \"\" {\n            discard term.transcript_write(term.transcript_style(8), \"idx\", str.from_i32(idx))\n            discard term.transcript_write(term.transcript_style(8), \"items_len\", str.from_i32(list.len(items)))\n            discard term.transcript_write(term.transcript_style(8), \"payload_len\", str.from_i32(map.len(payload)))\n            discard term.transcript_write(term.transcript_style(8), \"keys_len\", str.from_i32(list.len(keys)))\n            discard term.transcript_write(term.transcript_style(8), \"map_keys_len\", str.from_i32(list.len(map_keys)))\n            discard term.transcript_write(term.transcript_style(8), \"raw\", raw)\n            return 41\n        }\n        idx = idx + 1\n    }\n    discard term.transcript_write(term.transcript_style(8), \"done\", str.from_i32(idx))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        for backend in ["llvm", "cranelift"] {
+            let output = run(
+                Command::Run {
+                    path: source.clone(),
+                    args: Vec::new(),
+                    deterministic: false,
+                    strict_verify: false,
+                    safe_profile: false,
+                    seed: None,
+                    record: None,
+                    host_backends: true,
+                    backend: Some(backend.to_string()),
+                    max_seconds: Some(20),
+                    exit_on_healthcheck: None,
+                    smoke_http: None,
+                },
+                Format::Json,
+            )
+            .unwrap_or_else(|error| {
+                panic!("host-backed collection run should succeed for {backend}: {error}")
+            });
+            assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+            assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+            assert!(output.contains("done"), "output was: {output}");
+            assert!(output.contains("5000"), "output was: {output}");
+        }
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_run_host_backends_keeps_large_unique_string_intern_workloads_live() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-strings-host-live-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.term;\n\nfn main() -> i32 {\n    let mut idx = 0\n    while idx < 20000 {\n        let value = str.concat(str.concat(\"block/\", str.from_i32(idx)), \"/wire\")\n        let payload = map.new()\n        discard map.set(payload, \"value\", json.str(value))\n        discard map.set(payload, \"index\", json.str(str.from_i32(idx)))\n        let encoded = json.object(payload)\n        let parsed = json.parse(encoded)\n        let roundtrip = json.get_str(parsed, \"value\")\n        if value == \"\" || encoded == \"\" || roundtrip != value {\n            discard term.transcript_write(term.transcript_style(8), \"idx\", str.from_i32(idx))\n            discard term.transcript_write(term.transcript_style(8), \"value\", value)\n            discard term.transcript_write(term.transcript_style(8), \"encoded_len\", str.from_i32(str.len(encoded)))\n            discard term.transcript_write(term.transcript_style(8), \"roundtrip\", roundtrip)\n            return 51\n        }\n        idx = idx + 1\n    }\n    discard term.transcript_write(term.transcript_style(8), \"done\", str.from_i32(idx))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        for backend in ["llvm", "cranelift"] {
+            let output = run(
+                Command::Run {
+                    path: source.clone(),
+                    args: Vec::new(),
+                    deterministic: false,
+                    strict_verify: false,
+                    safe_profile: false,
+                    seed: None,
+                    record: None,
+                    host_backends: true,
+                    backend: Some(backend.to_string()),
+                    max_seconds: Some(30),
+                    exit_on_healthcheck: None,
+                    smoke_http: None,
+                },
+                Format::Json,
+            )
+            .unwrap_or_else(|error| {
+                panic!("host-backed string-intern run should succeed for {backend}: {error}")
+            });
+            assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+            assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+            assert!(output.contains("done"), "output was: {output}");
+            assert!(output.contains("20000"), "output was: {output}");
+        }
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn native_run_variadic_str_concat_executes() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

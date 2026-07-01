@@ -92,7 +92,16 @@ static int32_t fz_json_value_alloc(int32_t value_id) {
     return -1;
   }
   pthread_mutex_lock(&fz_json_lock);
-  for (int i = 0; i < FZ_MAX_JSON_VALUES; i++) {
+  if (fz_json_value_capacity == 0) {
+    fz_json_values = (fz_json_value_state*)calloc(
+        (size_t)FZ_INITIAL_JSON_VALUE_CAPACITY, sizeof(fz_json_value_state));
+    if (fz_json_values == NULL) {
+      pthread_mutex_unlock(&fz_json_lock);
+      return -1;
+    }
+    fz_json_value_capacity = FZ_INITIAL_JSON_VALUE_CAPACITY;
+  }
+  for (int32_t i = 0; i < fz_json_value_capacity; i++) {
     if (!fz_json_values[i].in_use) {
       fz_json_values[i].in_use = 1;
       fz_json_values[i].value_id = value_id;
@@ -100,12 +109,34 @@ static int32_t fz_json_value_alloc(int32_t value_id) {
       return i + 1;
     }
   }
+  int32_t next_capacity = fz_json_value_capacity;
+  if (next_capacity < FZ_INITIAL_JSON_VALUE_CAPACITY) {
+    next_capacity = FZ_INITIAL_JSON_VALUE_CAPACITY;
+  }
+  if (next_capacity > INT32_MAX / 2) {
+    pthread_mutex_unlock(&fz_json_lock);
+    return -1;
+  }
+  next_capacity *= 2;
+  size_t old_capacity = (size_t)fz_json_value_capacity;
+  size_t new_capacity = (size_t)next_capacity;
+  fz_json_value_state* next = (fz_json_value_state*)realloc(
+      fz_json_values, new_capacity * sizeof(fz_json_value_state));
+  if (next == NULL) {
+    pthread_mutex_unlock(&fz_json_lock);
+    return -1;
+  }
+  memset(next + old_capacity, 0, (new_capacity - old_capacity) * sizeof(fz_json_value_state));
+  fz_json_values = next;
+  fz_json_value_capacity = next_capacity;
+  fz_json_values[old_capacity].in_use = 1;
+  fz_json_values[old_capacity].value_id = value_id;
   pthread_mutex_unlock(&fz_json_lock);
-  return -1;
+  return (int32_t)old_capacity + 1;
 }
 
 static int32_t fz_json_value_get_id(int32_t handle) {
-  if (handle <= 0 || handle > FZ_MAX_JSON_VALUES) {
+  if (handle <= 0 || handle > fz_json_value_capacity || fz_json_values == NULL) {
     return 0;
   }
   pthread_mutex_lock(&fz_json_lock);

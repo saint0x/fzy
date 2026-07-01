@@ -161,14 +161,22 @@ int32_t fz_native_json_to_map(int32_t json_id) {
   int32_t handle = fz_map_alloc();
   fz_map_state* map = fz_map_get(handle);
   if (map != NULL) {
-    for (int i = 0; i < count && map->count < FZ_MAX_MAP_ENTRIES; i++) {
+    for (int i = 0; i < count; i++) {
       char* eq = strchr(pairs[i], '=');
       if (eq == NULL) continue;
       *eq = '\0';
+      if (fz_map_reserve(map, map->count + 1) != 0) {
+        break;
+      }
       map->keys[map->count] = strdup(pairs[i]);
       map->values[map->count] = strdup(eq + 1);
       if (map->keys[map->count] != NULL && map->values[map->count] != NULL) {
         map->count++;
+      } else {
+        free(map->keys[map->count]);
+        free(map->values[map->count]);
+        map->keys[map->count] = NULL;
+        map->values[map->count] = NULL;
       }
     }
   }
