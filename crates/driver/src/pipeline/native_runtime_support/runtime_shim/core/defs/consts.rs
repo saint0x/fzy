@@ -15,7 +15,7 @@ pub(super) fn section() -> &'static str {
 #define FZ_MAX_LIST_ITEMS 4096
 #define FZ_MAX_MAPS 2048
 #define FZ_MAX_MAP_ENTRIES 4096
-#define FZ_MAX_AGGREGATES 4096
+#define FZ_INITIAL_AGGREGATE_CAPACITY 4096
 #define FZ_MAX_AGGREGATE_ITEMS 64
 #define FZ_MAX_INTERVALS 512
 #define FZ_MAX_JSON_VALUES 16384
@@ -161,7 +161,7 @@ typedef struct {
   int in_use;
   int32_t tag;
   int32_t count;
-  uint64_t items[FZ_MAX_AGGREGATE_ITEMS];
+  uint64_t* items;
 } fz_aggregate_state;
 
 static fz_proc_state fz_proc_states[FZ_MAX_PROC_STATES];
@@ -173,7 +173,8 @@ static fz_list_state fz_lists[FZ_MAX_LISTS];
 static fz_array_state fz_arrays[FZ_MAX_LISTS];
 static fz_numeric_vec_state fz_numeric_vecs[FZ_MAX_LISTS];
 static fz_map_state fz_maps[FZ_MAX_MAPS];
-static fz_aggregate_state fz_aggregates[FZ_MAX_AGGREGATES];
+static fz_aggregate_state* fz_aggregates = NULL;
+static int32_t fz_aggregate_capacity = 0;
 static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
 static fz_json_value_state fz_json_values[FZ_MAX_JSON_VALUES];
 static fz_storage_kv_state fz_storage_kv[FZ_MAX_STORAGE_KV];

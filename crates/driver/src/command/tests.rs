@@ -5145,6 +5145,50 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn native_run_host_backends_keeps_repeated_aggregate_helper_calls_live() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-aggregate-host-live-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.term;\n\nstruct Shape {\n    layer_count: i32,\n    head_count: i32,\n    head_dim: i32,\n    page_tokens: i32,\n    context_tokens: i32,\n    late_layer_start: i32,\n}\n\nstruct SessionState {\n    prompt_tokens: i32,\n    decode_tokens: i32,\n    total_tokens: i32,\n    prefill_pages: i32,\n    decode_pages: i32,\n    used_pages: i32,\n    tail_page_tokens: i32,\n    hot_budget_pct: i32,\n    hot_pages: i32,\n    recent_start_page: i32,\n}\n\nfn shape_record(layer_count: i32, head_count: i32, head_dim: i32, page_tokens: i32, context_tokens: i32, late_layer_start: i32) -> Shape {\n    return Shape {\n        layer_count: layer_count,\n        head_count: head_count,\n        head_dim: head_dim,\n        page_tokens: page_tokens,\n        context_tokens: context_tokens,\n        late_layer_start: late_layer_start,\n    }\n}\n\nfn state_record(prompt_tokens: i32, decode_tokens: i32, total_tokens: i32, prefill_pages: i32, decode_pages: i32, used_pages: i32, tail_page_tokens: i32, hot_budget_pct: i32, hot_pages: i32, recent_start_page: i32) -> SessionState {\n    return SessionState {\n        prompt_tokens: prompt_tokens,\n        decode_tokens: decode_tokens,\n        total_tokens: total_tokens,\n        prefill_pages: prefill_pages,\n        decode_pages: decode_pages,\n        used_pages: used_pages,\n        tail_page_tokens: tail_page_tokens,\n        hot_budget_pct: hot_budget_pct,\n        hot_pages: hot_pages,\n        recent_start_page: recent_start_page,\n    }\n}\n\nfn manager_of(shape: Shape, policy_name: str, state: SessionState) -> i32 {\n    if policy_name == \"\" {\n        return 1000\n    }\n    return shape.page_tokens + shape.context_tokens + state.used_pages + state.tail_page_tokens + state.hot_budget_pct + state.total_tokens\n}\n\nfn run_wire_fields(policy_name: str, page_tokens: i32, hot_budget_pct: i32, total_tokens: i32, used_pages: i32, tail_page_tokens: i32) -> i32 {\n    let shape = shape_record(24, 8, 64, page_tokens, 512, 18)\n    let state = state_record(total_tokens - 1, 1, total_tokens, used_pages - 1, 1, used_pages, tail_page_tokens, hot_budget_pct, 2, 0)\n    return manager_of(shape, policy_name, state)\n}\n\nfn main() -> i32 {\n    let expected_a = 64 + 512 + 3 + 25 + 50 + 153\n    let expected_b = 64 + 512 + 4 + 26 + 51 + 154\n    let mut idx = 0\n    while idx < 5000 {\n        let left = run_wire_fields(\"full_kv\", 64, 50, 153, 3, 25)\n        let right = run_wire_fields(\"paged_full_kv\", 64, 51, 154, 4, 26)\n        if left != expected_a || right != expected_b {\n            discard term.transcript_write(term.transcript_style(8), \"idx\", str.from_i32(idx))\n            discard term.transcript_write(term.transcript_style(8), \"left\", str.from_i32(left))\n            discard term.transcript_write(term.transcript_style(8), \"right\", str.from_i32(right))\n            return 31\n        }\n        idx = idx + 1\n    }\n    discard term.transcript_write(term.transcript_style(8), \"done\", str.from_i32(idx))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        for backend in ["llvm", "cranelift"] {
+            let output = run(
+                Command::Run {
+                    path: source.clone(),
+                    args: Vec::new(),
+                    deterministic: false,
+                    strict_verify: false,
+                    safe_profile: false,
+                    seed: None,
+                    record: None,
+                    host_backends: true,
+                    backend: Some(backend.to_string()),
+                    max_seconds: Some(20),
+                    exit_on_healthcheck: None,
+                    smoke_http: None,
+                },
+                Format::Json,
+            )
+            .unwrap_or_else(|error| {
+                panic!("host-backed aggregate run should succeed for {backend}: {error}")
+            });
+            assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+            assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+            assert!(output.contains("done"), "output was: {output}");
+            assert!(output.contains("5000"), "output was: {output}");
+        }
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn native_run_variadic_str_concat_executes() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -12,14 +12,41 @@ static int32_t fz_list_alloc(void) {
 }
 
 static int32_t fz_aggregate_alloc(void) {
-  for (int i = 0; i < FZ_MAX_AGGREGATES; i++) {
+  if (fz_aggregate_capacity == 0) {
+    fz_aggregates = (fz_aggregate_state*)calloc(
+        (size_t)FZ_INITIAL_AGGREGATE_CAPACITY, sizeof(fz_aggregate_state));
+    if (fz_aggregates == NULL) {
+      return -1;
+    }
+    fz_aggregate_capacity = FZ_INITIAL_AGGREGATE_CAPACITY;
+  }
+  for (int32_t i = 0; i < fz_aggregate_capacity; i++) {
     if (!fz_aggregates[i].in_use) {
       memset(&fz_aggregates[i], 0, sizeof(fz_aggregates[i]));
       fz_aggregates[i].in_use = 1;
       return i + 1;
     }
   }
-  return -1;
+  int32_t next_capacity = fz_aggregate_capacity;
+  if (next_capacity < FZ_INITIAL_AGGREGATE_CAPACITY) {
+    next_capacity = FZ_INITIAL_AGGREGATE_CAPACITY;
+  }
+  if (next_capacity > INT32_MAX / 2) {
+    return -1;
+  }
+  next_capacity *= 2;
+  size_t old_capacity = (size_t)fz_aggregate_capacity;
+  size_t new_capacity = (size_t)next_capacity;
+  fz_aggregate_state* next = (fz_aggregate_state*)realloc(
+      fz_aggregates, new_capacity * sizeof(fz_aggregate_state));
+  if (next == NULL) {
+    return -1;
+  }
+  memset(next + old_capacity, 0, (new_capacity - old_capacity) * sizeof(fz_aggregate_state));
+  fz_aggregates = next;
+  fz_aggregate_capacity = next_capacity;
+  fz_aggregates[old_capacity].in_use = 1;
+  return (int32_t)old_capacity + 1;
 }
 
 static int32_t fz_bytes_alloc(void) {
@@ -42,7 +69,7 @@ static fz_bytes_state* fz_bytes_get(int32_t handle) {
 }
 
 static fz_aggregate_state* fz_aggregate_get(uint64_t handle) {
-  if (handle == 0 || handle > (uint64_t)FZ_MAX_AGGREGATES) {
+  if (handle == 0 || handle > (uint64_t)fz_aggregate_capacity || fz_aggregates == NULL) {
     return NULL;
   }
   fz_aggregate_state* aggregate = &fz_aggregates[(size_t)handle - 1];

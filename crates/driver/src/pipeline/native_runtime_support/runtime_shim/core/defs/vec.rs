@@ -119,8 +119,17 @@ uint64_t fz_native_agg_new(int32_t tag, int32_t count) {
   int32_t handle = fz_aggregate_alloc();
   if (handle > 0) {
     fz_aggregate_state* aggregate = &fz_aggregates[handle - 1];
-    aggregate->tag = tag;
-    aggregate->count = count;
+    if (count > 0) {
+      aggregate->items = (uint64_t*)calloc((size_t)count, sizeof(uint64_t));
+      if (aggregate->items == NULL) {
+        memset(aggregate, 0, sizeof(*aggregate));
+        handle = -1;
+      }
+    }
+    if (handle > 0) {
+      aggregate->tag = tag;
+      aggregate->count = count;
+    }
   }
   pthread_mutex_unlock(&fz_aggregate_lock);
   return handle > 0 ? (uint64_t)handle : 0;
@@ -157,6 +166,7 @@ int32_t fz_native_agg_drop(uint64_t handle) {
     pthread_mutex_unlock(&fz_aggregate_lock);
     return -1;
   }
+  free(aggregate->items);
   memset(aggregate, 0, sizeof(*aggregate));
   pthread_mutex_unlock(&fz_aggregate_lock);
   return 0;
