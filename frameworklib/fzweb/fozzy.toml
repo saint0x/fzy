@@ -4,4 +4,12 @@ version = "0.1.0"
 
 [[target.bin]]
 name = "fzweb"
+path = "src/live_server_main.fzy"
+
+[[target.bin]]
+name = "fzweb-basic-server"
+path = "src/basic_server_main.fzy"
+
+[[target.bin]]
+name = "fzweb-smoke"
 path = "src/main.fzy"

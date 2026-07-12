@@ -37,6 +37,9 @@ python3 ./scripts/direct_memory_architecture_gate.py >/dev/null
 echo "[gate] runtime core execution path gate"
 python3 ./scripts/runtime_core_execution_path_gate.py >/dev/null
 
+echo "[gate] nojson policy gate"
+python3 ./scripts/nojson_architecture_gate.py >/dev/null
+
 echo "[gate] core package check/build"
 cargo run -q -p fz -- check core --json >/dev/null
 cargo run -q -p fz -- build core --backend llvm --release --json >/dev/null
@@ -188,6 +191,22 @@ grep -q '"mode": "bidirectional_streaming"' "$ARTIFACT_DIR/fullstack-rpc/rpc.sch
 ! grep -q 'transport_send' "$ARTIFACT_DIR/fullstack-rpc/rpc.client.fzy"
 grep -q 'return GetUser(req)' "$ARTIFACT_DIR/fullstack-rpc/rpc.client.fzy"
 grep -q 'prepare_getuser_handler' "$ARTIFACT_DIR/fullstack-rpc/rpc.server.fzy"
+
+echo "[gate] direct built-binary confidence pass"
+MINIMAL_BUILD_JSON="$("${FZ_CMD[@]}" build "$ROOT/examples/minimal_runtime" --release --json)"
+MINIMAL_BUILD_OUTPUT="$(python3 - <<'PY' "$MINIMAL_BUILD_JSON"
+import json, sys
+print(json.loads(sys.argv[1])["output"])
+PY
+)"
+"$MINIMAL_BUILD_OUTPUT" >/dev/null
+ROBUST_BUILD_JSON="$("${FZ_CMD[@]}" build "$ROOT/examples/robust_cli" --release --json)"
+ROBUST_BUILD_OUTPUT="$(python3 - <<'PY' "$ROBUST_BUILD_JSON"
+import json, sys
+print(json.loads(sys.argv[1])["output"])
+PY
+)"
+"$ROBUST_BUILD_OUTPUT" >/dev/null
 
 echo "[gate] pedantic topology closure"
 MAP_JSON="$("${FZ_CMD[@]}" map suites --root . --scenario-root tests --profile pedantic --json)"

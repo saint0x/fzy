@@ -129,7 +129,7 @@ This gate includes:
 - strict `fz fmt` and `fz doc gen` smokes
 - pedantic hotspot closure
 - unsafe-budget enforcement
-- repo-facing architecture contract review, including the typed-internals / JSON-boundary policy in `NOJSON.md`
+- `NOJSON.md` policy integrity gate plus targeted architecture checks for typed-internals / JSON-boundary rules
 
 ## 5. Release
 

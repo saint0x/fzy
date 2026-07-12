@@ -176,6 +176,22 @@ for example_root in \
   echo "[ship] example strict run ok: $(basename "$example_root")"
 done
 
+echo "[ship] direct built-binary confidence pass"
+MINIMAL_BUILD_JSON="$("${FZ_CMD[@]}" build "$ROOT/examples/minimal_runtime" --release --json)"
+MINIMAL_BUILD_OUTPUT="$(python3 - <<'PY' "$MINIMAL_BUILD_JSON"
+import json, sys
+print(json.loads(sys.argv[1])["output"])
+PY
+)"
+"$MINIMAL_BUILD_OUTPUT" >/dev/null
+ROBUST_BUILD_JSON="$("${FZ_CMD[@]}" build "$ROOT/examples/robust_cli" --release --json)"
+ROBUST_BUILD_OUTPUT="$(python3 - <<'PY' "$ROBUST_BUILD_JSON"
+import json, sys
+print(json.loads(sys.argv[1])["output"])
+PY
+)"
+"$ROBUST_BUILD_OUTPUT" >/dev/null
+
 echo "[ship] service and GPU example validations"
 LIVE_SERVER_SCENARIO="$ROOT/tests/live_server.http.pass.fozzy.json"
 "${FZ_CMD[@]}" test "$LIVE_SERVER_SCENARIO" --det --strict-verify --seed "$SEED" --json >/dev/null

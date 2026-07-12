@@ -43,7 +43,7 @@ def main() -> int:
             print(f"  - {phrase}", file=sys.stderr)
         return 1
 
-    print("nojson architecture gate: ok")
+    print("nojson policy gate: ok")
     return 0
 
 

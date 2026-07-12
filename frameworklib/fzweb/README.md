@@ -26,7 +26,9 @@
 - `src/streaming/mod.fzy`: websocket echo helpers and event-stream responses.
 - `src/middleware/mod.fzy`: timeout/log/auth/cors/validation/rate-limit policy logic.
 - `src/support/mod.fzy`: live server loop, metrics, route handlers, configuration, support helpers.
-- `src/main.fzy`: deterministic package tests and framework smoke surface.
+- `src/live_server_main.fzy`: packaged production server default project target for project-level verification/build coverage.
+- `src/basic_server_main.fzy`: packaged basic server binary target for project-level verification/build coverage.
+- `src/main.fzy`: deterministic smoke target used for native package test coverage.
 
 ## Core API
 

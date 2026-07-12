@@ -4,7 +4,7 @@ General-purpose systems language and production toolchain with a memory-safe-by-
 
 fzy ships one production CLI, `fz`, for both compiler workflows and deterministic validation. Correctness, determinism, replay, incident artifacts, and production evidence are part of the normal workflow rather than an afterthought. For a quick visual tour of the language, open the shipped [FZL showcase](./fzl-showcase.html) in your browser with `open fzl-showcase.html`. For the short argument for why you might pick it, see [WHYFZY.md](./WHYFZY.md).
 
-Repository architecture policy is typed internally and JSON at real boundaries only. `NOJSON.md` is the production contract for that rule across compiler/runtime internals, examples, and repo-facing design work.
+Repository architecture policy is typed internally and JSON at real boundaries only. `NOJSON.md` defines the production contract for that rule, and the release gates enforce its document integrity plus targeted architecture checks.
 
 ## Start Here
 
@@ -396,7 +396,7 @@ Inspect the emitted native test artifacts directly:
 - `artifacts/demo.trace.timeline.json` when rich artifacts are enabled
 - `artifacts/demo.trace.manifest.json`
 
-Native test manifests are report/index artifacts only; they do not route into scenario `replay`/`ci`/`shrink`.
+Native test manifests are first-class `trace verify` / `replay` / `ci` inputs for recorded native test runs. They are not scenario inputs and do not participate in scenario `shrink`.
 
 ## Example Projects
 
