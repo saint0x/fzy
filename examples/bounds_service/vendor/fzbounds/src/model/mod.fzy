@@ -10,7 +10,33 @@ struct Budget {
     max_lists: i32,
     max_strings: i32,
 }
-
+struct AuditLog {
+    len: i32,
+    messages: ListHandle,
+    timestamps_ms: ListHandle,
+}
+struct OverflowLog {
+    len: i32,
+    resources: ListHandle,
+    capacities: ListHandle,
+    attempts: ListHandle,
+    regions: ListHandle,
+    messages: ListHandle,
+    timestamps_ms: ListHandle,
+    rejected_flags: ListHandle,
+}
+struct RegionLog {
+    len: i32,
+    names: ListHandle,
+    budget_bytes: ListHandle,
+    used_bytes: ListHandle,
+    peak_bytes: ListHandle,
+    overflows: ListHandle,
+    allocation_counts: ListHandle,
+    started_ms: ListHandle,
+    ended_ms: ListHandle,
+    closed_flags: ListHandle,
+}
 struct RuntimeState {
     budget: Budget,
     max_memory_bytes: i32,
@@ -24,13 +50,12 @@ struct RuntimeState {
     region_count: i32,
     region_peak: i32,
     assert_failures_total: i32,
-    closed_regions: ListHandle,
-    overflow_events: ListHandle,
-    audit_events: ListHandle,
+    closed_regions: RegionLog,
+    overflow_events: OverflowLog,
+    audit_events: AuditLog,
     injected_region: str,
     injected_alloc_fail: i32,
 }
-
 struct OverflowEvent {
     resource: str,
     capacity: i32,
@@ -40,7 +65,6 @@ struct OverflowEvent {
     timestamp_ms: i32,
     rejected: i32,
 }
-
 struct Region {
     name: str,
     budget_bytes: i32,
@@ -52,7 +76,6 @@ struct Region {
     ended_ms: i32,
     closed: i32,
 }
-
 struct Arena {
     capacity_bytes: i32,
     used_bytes: i32,
@@ -62,7 +85,6 @@ struct Arena {
     overflows: i32,
     last_error: str,
 }
-
 struct BoundedList {
     capacity: i32,
     len: i32,
@@ -71,7 +93,6 @@ struct BoundedList {
     items: ListHandle,
     last_error: str,
 }
-
 struct BoundedMap {
     capacity: i32,
     len: i32,
@@ -80,7 +101,6 @@ struct BoundedMap {
     entries: ListHandle,
     last_error: str,
 }
-
 struct BoundedQueue {
     capacity: i32,
     len: i32,
@@ -90,7 +110,6 @@ struct BoundedQueue {
     items: ListHandle,
     last_error: str,
 }
-
 struct BoundedChannel {
     capacity: i32,
     len: i32,
@@ -100,7 +119,6 @@ struct BoundedChannel {
     items: ListHandle,
     last_error: str,
 }
-
 struct BoundedBuffer {
     capacity_bytes: i32,
     used_bytes: i32,
@@ -109,19 +127,7 @@ struct BoundedBuffer {
     data: str,
     last_error: str,
 }
-
-fn budget_record(
-    max_memory_bytes: i32,
-    max_regions: i32,
-    max_tasks: i32,
-    max_sockets: i32,
-    max_buffers: i32,
-    max_channels: i32,
-    max_queue_entries: i32,
-    max_maps: i32,
-    max_lists: i32,
-    max_strings: i32,
-) -> Budget {
+fn budget_record(max_memory_bytes: i32, max_regions: i32, max_tasks: i32, max_sockets: i32, max_buffers: i32, max_channels: i32, max_queue_entries: i32, max_maps: i32, max_lists: i32, max_strings: i32,) -> Budget {
     return Budget {
         max_memory_bytes: max_memory_bytes,
         max_regions: max_regions,
@@ -135,7 +141,99 @@ fn budget_record(
         max_strings: max_strings,
     }
 }
-
+fn audit_log() -> AuditLog {
+    return AuditLog {
+        len: 0,
+        messages: list.new(),
+        timestamps_ms: list.new(),
+    }
+}
+fn audit_log_full(len: i32, messages: ListHandle, timestamps_ms: ListHandle) -> AuditLog {
+    return AuditLog {
+        len: len,
+        messages: messages,
+        timestamps_ms: timestamps_ms,
+    }
+}
+fn audit_log_append(log: AuditLog, message: str, timestamp_ms: i32) -> AuditLog {
+    discard list.push(log.messages, message)
+    discard list.push(log.timestamps_ms, str.from_i32(timestamp_ms))
+    return audit_log_full(log.len + 1, log.messages, log.timestamps_ms)
+}
+fn overflow_log() -> OverflowLog {
+    return OverflowLog {
+        len: 0,
+        resources: list.new(),
+        capacities: list.new(),
+        attempts: list.new(),
+        regions: list.new(),
+        messages: list.new(),
+        timestamps_ms: list.new(),
+        rejected_flags: list.new(),
+    }
+}
+fn overflow_log_full(len: i32, resources: ListHandle, capacities: ListHandle, attempts: ListHandle, regions: ListHandle, messages: ListHandle, timestamps_ms: ListHandle, rejected_flags: ListHandle,) -> OverflowLog {
+    return OverflowLog {
+        len: len,
+        resources: resources,
+        capacities: capacities,
+        attempts: attempts,
+        regions: regions,
+        messages: messages,
+        timestamps_ms: timestamps_ms,
+        rejected_flags: rejected_flags,
+    }
+}
+fn overflow_log_append(log: OverflowLog, event: OverflowEvent) -> OverflowLog {
+    discard list.push(log.resources, event.resource)
+    discard list.push(log.capacities, str.from_i32(event.capacity))
+    discard list.push(log.attempts, str.from_i32(event.attempt))
+    discard list.push(log.regions, event.region)
+    discard list.push(log.messages, event.message)
+    discard list.push(log.timestamps_ms, str.from_i32(event.timestamp_ms))
+    discard list.push(log.rejected_flags, str.from_i32(event.rejected))
+    return overflow_log_full(log.len + 1, log.resources, log.capacities, log.attempts, log.regions, log.messages, log.timestamps_ms, log.rejected_flags)
+}
+fn region_log() -> RegionLog {
+    return RegionLog {
+        len: 0,
+        names: list.new(),
+        budget_bytes: list.new(),
+        used_bytes: list.new(),
+        peak_bytes: list.new(),
+        overflows: list.new(),
+        allocation_counts: list.new(),
+        started_ms: list.new(),
+        ended_ms: list.new(),
+        closed_flags: list.new(),
+    }
+}
+fn region_log_full(len: i32, names: ListHandle, budget_bytes: ListHandle, used_bytes: ListHandle, peak_bytes: ListHandle, overflows: ListHandle, allocation_counts: ListHandle, started_ms: ListHandle, ended_ms: ListHandle, closed_flags: ListHandle,) -> RegionLog {
+    return RegionLog {
+        len: len,
+        names: names,
+        budget_bytes: budget_bytes,
+        used_bytes: used_bytes,
+        peak_bytes: peak_bytes,
+        overflows: overflows,
+        allocation_counts: allocation_counts,
+        started_ms: started_ms,
+        ended_ms: ended_ms,
+        closed_flags: closed_flags,
+    }
+}
+fn region_log_append(log: RegionLog, item: Region) -> RegionLog {
+    discard list.push(log.names, item.name)
+    discard list.push(log.budget_bytes, str.from_i32(item.budget_bytes))
+    discard list.push(log.used_bytes, str.from_i32(item.used_bytes))
+    discard list.push(log.peak_bytes, str.from_i32(item.peak_bytes))
+    discard list.push(log.overflows, str.from_i32(item.overflows))
+    discard list.push(log.allocation_counts, str.from_i32(item.allocation_count))
+    discard list.push(log.started_ms, str.from_i32(item.started_ms))
+    discard list.push(log.ended_ms, str.from_i32(item.ended_ms))
+    discard list.push(log.closed_flags, str.from_i32(item.closed))
+    return region_log_full(log.len + 1, log.names, log.budget_bytes, log.used_bytes, log.peak_bytes, log.overflows, log.allocation_counts, log.started_ms, log.ended_ms, log.closed_flags)
+}
 fn runtime_state(budget: Budget, mode: str) -> RuntimeState {
     return RuntimeState {
         budget: budget,
@@ -150,33 +248,14 @@ fn runtime_state(budget: Budget, mode: str) -> RuntimeState {
         region_count: 0,
         region_peak: 0,
         assert_failures_total: 0,
-        closed_regions: list.new(),
-        overflow_events: list.new(),
-        audit_events: list.new(),
+        closed_regions: region_log(),
+        overflow_events: overflow_log(),
+        audit_events: audit_log(),
         injected_region: "",
         injected_alloc_fail: 0,
     }
 }
-
-fn runtime_state_full(
-    budget: Budget,
-    mode: str,
-    max_memory_bytes: i32,
-    frozen: i32,
-    memory_used: i32,
-    memory_peak: i32,
-    allocations_total: i32,
-    overflows_total: i32,
-    rejected_total: i32,
-    region_count: i32,
-    region_peak: i32,
-    assert_failures_total: i32,
-    closed_regions: ListHandle,
-    overflow_events: ListHandle,
-    audit_events: ListHandle,
-    injected_region: str,
-    injected_alloc_fail: i32,
-) -> RuntimeState {
+fn runtime_state_full(budget: Budget, mode: str, max_memory_bytes: i32, frozen: i32, memory_used: i32, memory_peak: i32, allocations_total: i32, overflows_total: i32, rejected_total: i32, region_count: i32, region_peak: i32, assert_failures_total: i32, closed_regions: RegionLog, overflow_events: OverflowLog, audit_events: AuditLog, injected_region: str, injected_alloc_fail: i32,) -> RuntimeState {
     return RuntimeState {
         budget: budget,
         max_memory_bytes: max_memory_bytes,
@@ -197,7 +276,6 @@ fn runtime_state_full(
         injected_alloc_fail: injected_alloc_fail,
     }
 }
-
 fn overflow_event(resource: str, capacity: i32, attempt: i32, region: str, message: str, timestamp_ms: i32, rejected: i32) -> OverflowEvent {
     return OverflowEvent {
         resource: resource,
@@ -209,7 +287,6 @@ fn overflow_event(resource: str, capacity: i32, attempt: i32, region: str, messa
         rejected: rejected,
     }
 }
-
 fn region(name: str, budget_bytes: i32, started_ms: i32) -> Region {
     return Region {
         name: name,
@@ -223,18 +300,7 @@ fn region(name: str, budget_bytes: i32, started_ms: i32) -> Region {
         closed: 0,
     }
 }
-
-fn region_full(
-    name: str,
-    budget_bytes: i32,
-    used_bytes: i32,
-    peak_bytes: i32,
-    overflows: i32,
-    allocation_count: i32,
-    started_ms: i32,
-    ended_ms: i32,
-    closed: i32,
-) -> Region {
+fn region_full(name: str, budget_bytes: i32, used_bytes: i32, peak_bytes: i32, overflows: i32, allocation_count: i32, started_ms: i32, ended_ms: i32, closed: i32,) -> Region {
     return Region {
         name: name,
         budget_bytes: budget_bytes,
@@ -247,7 +313,6 @@ fn region_full(
         closed: closed,
     }
 }
-
 fn arena(capacity_bytes: i32) -> Arena {
     return Arena {
         capacity_bytes: capacity_bytes,
@@ -259,7 +324,6 @@ fn arena(capacity_bytes: i32) -> Arena {
         last_error: "",
     }
 }
-
 fn arena_full(capacity_bytes: i32, used_bytes: i32, peak_bytes: i32, allocations: i32, resets: i32, overflows: i32, last_error: str) -> Arena {
     return Arena {
         capacity_bytes: capacity_bytes,
@@ -271,7 +335,6 @@ fn arena_full(capacity_bytes: i32, used_bytes: i32, peak_bytes: i32, allocations
         last_error: last_error,
     }
 }
-
 fn bounded_list(capacity: i32) -> BoundedList {
     return BoundedList {
         capacity: capacity,
@@ -282,7 +345,6 @@ fn bounded_list(capacity: i32) -> BoundedList {
         last_error: "",
     }
 }
-
 fn bounded_list_full(capacity: i32, len: i32, peak_len: i32, overflows: i32, items: ListHandle, last_error: str) -> BoundedList {
     return BoundedList {
         capacity: capacity,
@@ -293,7 +355,6 @@ fn bounded_list_full(capacity: i32, len: i32, peak_len: i32, overflows: i32, ite
         last_error: last_error,
     }
 }
-
 fn bounded_map(capacity: i32) -> BoundedMap {
     return BoundedMap {
         capacity: capacity,
@@ -304,7 +365,6 @@ fn bounded_map(capacity: i32) -> BoundedMap {
         last_error: "",
     }
 }
-
 fn bounded_map_full(capacity: i32, len: i32, peak_len: i32, overflows: i32, entries: ListHandle, last_error: str) -> BoundedMap {
     return BoundedMap {
         capacity: capacity,
@@ -315,7 +375,6 @@ fn bounded_map_full(capacity: i32, len: i32, peak_len: i32, overflows: i32, entr
         last_error: last_error,
     }
 }
-
 fn bounded_queue(capacity: i32) -> BoundedQueue {
     return BoundedQueue {
         capacity: capacity,
@@ -327,7 +386,6 @@ fn bounded_queue(capacity: i32) -> BoundedQueue {
         last_error: "",
     }
 }
-
 fn bounded_queue_full(capacity: i32, len: i32, peak_len: i32, head: i32, overflows: i32, items: ListHandle, last_error: str) -> BoundedQueue {
     return BoundedQueue {
         capacity: capacity,
@@ -339,7 +397,6 @@ fn bounded_queue_full(capacity: i32, len: i32, peak_len: i32, head: i32, overflo
         last_error: last_error,
     }
 }
-
 fn bounded_channel(capacity: i32) -> BoundedChannel {
     return BoundedChannel {
         capacity: capacity,
@@ -351,7 +408,6 @@ fn bounded_channel(capacity: i32) -> BoundedChannel {
         last_error: "",
     }
 }
-
 fn bounded_channel_full(capacity: i32, len: i32, peak_len: i32, head: i32, overflows: i32, items: ListHandle, last_error: str) -> BoundedChannel {
     return BoundedChannel {
         capacity: capacity,
@@ -363,7 +419,6 @@ fn bounded_channel_full(capacity: i32, len: i32, peak_len: i32, head: i32, overf
         last_error: last_error,
     }
 }
-
 fn bounded_buffer(capacity_bytes: i32) -> BoundedBuffer {
     return BoundedBuffer {
         capacity_bytes: capacity_bytes,
@@ -374,7 +429,6 @@ fn bounded_buffer(capacity_bytes: i32) -> BoundedBuffer {
         last_error: "",
     }
 }
-
 fn bounded_buffer_full(capacity_bytes: i32, used_bytes: i32, peak_bytes: i32, overflows: i32, data: str, last_error: str) -> BoundedBuffer {
     return BoundedBuffer {
         capacity_bytes: capacity_bytes,
@@ -385,22 +439,24 @@ fn bounded_buffer_full(capacity_bytes: i32, used_bytes: i32, peak_bytes: i32, ov
         last_error: last_error,
     }
 }
-
 fn bool_json(v: i32) -> str {
     if v == 1 {
         return "true"
     }
     return "false"
 }
-
+fn bool_wire_json(value: str) -> str {
+    if value == "1" {
+        return "true"
+    }
+    return "false"
+}
 fn json_i32(value: i32) -> str {
     return str.from_i32(value)
 }
-
 fn json_bool(value: i32) -> str {
     return bool_json(value)
 }
-
 fn budget_json(budget: Budget) -> str {
     let payload = map.new()
     discard map.set(payload, "max_memory_bytes", json_i32(budget.max_memory_bytes))
@@ -415,7 +471,6 @@ fn budget_json(budget: Budget) -> str {
     discard map.set(payload, "max_strings", json_i32(budget.max_strings))
     return json.object(payload)
 }
-
 fn overflow_json(event: OverflowEvent) -> str {
     let payload = map.new()
     discard map.set(payload, "resource", json.str(event.resource))
@@ -427,7 +482,6 @@ fn overflow_json(event: OverflowEvent) -> str {
     discard map.set(payload, "rejected", json_bool(event.rejected))
     return json.object(payload)
 }
-
 fn region_json(item: Region) -> str {
     let payload = map.new()
     discard map.set(payload, "name", json.str(item.name))
@@ -441,7 +495,54 @@ fn region_json(item: Region) -> str {
     discard map.set(payload, "closed", json_bool(item.closed))
     return json.object(payload)
 }
-
+fn audit_log_json(log: AuditLog) -> str {
+    let payload = list.new()
+    let mut idx = 0
+    while idx < log.len {
+        let item = map.new()
+        discard map.set(item, "message", json.str(list.get(log.messages, idx)))
+        discard map.set(item, "timestamp_ms", list.get(log.timestamps_ms, idx))
+        discard list.push(payload, json.object(item))
+        idx = idx + 1
+    }
+    return json.array(payload)
+}
+fn overflow_log_json(log: OverflowLog) -> str {
+    let payload = list.new()
+    let mut idx = 0
+    while idx < log.len {
+        let item = map.new()
+        discard map.set(item, "resource", json.str(list.get(log.resources, idx)))
+        discard map.set(item, "capacity", list.get(log.capacities, idx))
+        discard map.set(item, "attempt", list.get(log.attempts, idx))
+        discard map.set(item, "region", json.str(list.get(log.regions, idx)))
+        discard map.set(item, "message", json.str(list.get(log.messages, idx)))
+        discard map.set(item, "timestamp_ms", list.get(log.timestamps_ms, idx))
+        discard map.set(item, "rejected", bool_wire_json(list.get(log.rejected_flags, idx)))
+        discard list.push(payload, json.object(item))
+        idx = idx + 1
+    }
+    return json.array(payload)
+}
+fn region_log_json(log: RegionLog) -> str {
+    let payload = list.new()
+    let mut idx = 0
+    while idx < log.len {
+        let item = map.new()
+        discard map.set(item, "name", json.str(list.get(log.names, idx)))
+        discard map.set(item, "budget_bytes", list.get(log.budget_bytes, idx))
+        discard map.set(item, "used_bytes", list.get(log.used_bytes, idx))
+        discard map.set(item, "peak_bytes", list.get(log.peak_bytes, idx))
+        discard map.set(item, "overflows", list.get(log.overflows, idx))
+        discard map.set(item, "allocation_count", list.get(log.allocation_counts, idx))
+        discard map.set(item, "started_ms", list.get(log.started_ms, idx))
+        discard map.set(item, "ended_ms", list.get(log.ended_ms, idx))
+        discard map.set(item, "closed", bool_wire_json(list.get(log.closed_flags, idx)))
+        discard list.push(payload, json.object(item))
+        idx = idx + 1
+    }
+    return json.array(payload)
+}
 fn arena_json(item: Arena) -> str {
     let payload = map.new()
     discard map.set(payload, "capacity_bytes", json_i32(item.capacity_bytes))
@@ -453,7 +554,6 @@ fn arena_json(item: Arena) -> str {
     discard map.set(payload, "last_error", json.str(item.last_error))
     return json.object(payload)
 }
-
 fn bounded_list_json(item: BoundedList) -> str {
     let payload = map.new()
     discard map.set(payload, "capacity", json_i32(item.capacity))
@@ -464,7 +564,6 @@ fn bounded_list_json(item: BoundedList) -> str {
     discard map.set(payload, "items", json.array(item.items))
     return json.object(payload)
 }
-
 fn bounded_map_json(item: BoundedMap) -> str {
     let payload = map.new()
     discard map.set(payload, "capacity", json_i32(item.capacity))
@@ -475,7 +574,6 @@ fn bounded_map_json(item: BoundedMap) -> str {
     discard map.set(payload, "entries", json.array(item.entries))
     return json.object(payload)
 }
-
 fn bounded_queue_json(item: BoundedQueue) -> str {
     let payload = map.new()
     discard map.set(payload, "capacity", json_i32(item.capacity))
@@ -487,7 +585,6 @@ fn bounded_queue_json(item: BoundedQueue) -> str {
     discard map.set(payload, "items", json.array(item.items))
     return json.object(payload)
 }
-
 fn bounded_channel_json(item: BoundedChannel) -> str {
     let payload = map.new()
     discard map.set(payload, "capacity", json_i32(item.capacity))
@@ -499,7 +596,6 @@ fn bounded_channel_json(item: BoundedChannel) -> str {
     discard map.set(payload, "items", json.array(item.items))
     return json.object(payload)
 }
-
 fn bounded_buffer_json(item: BoundedBuffer) -> str {
     let payload = map.new()
     discard map.set(payload, "capacity_bytes", json_i32(item.capacity_bytes))
@@ -510,7 +606,6 @@ fn bounded_buffer_json(item: BoundedBuffer) -> str {
     discard map.set(payload, "data", json.str(item.data))
     return json.object(payload)
 }
-
 fn runtime_json(state: RuntimeState) -> str {
     let payload = map.new()
     discard map.set(payload, "mode", json.str(state.mode))
@@ -525,8 +620,8 @@ fn runtime_json(state: RuntimeState) -> str {
     discard map.set(payload, "region_peak", json_i32(state.region_peak))
     discard map.set(payload, "assert_failures_total", json_i32(state.assert_failures_total))
     discard map.set(payload, "budget", budget_json(state.budget))
-    discard map.set(payload, "closed_regions", json.array(state.closed_regions))
-    discard map.set(payload, "overflow_events", json.array(state.overflow_events))
-    discard map.set(payload, "audit_events", json.array(state.audit_events))
+    discard map.set(payload, "closed_regions", region_log_json(state.closed_regions))
+    discard map.set(payload, "overflow_events", overflow_log_json(state.overflow_events))
+    discard map.set(payload, "audit_events", audit_log_json(state.audit_events))
     return json.object(payload)
 }

@@ -167,12 +167,31 @@ fn insert_if_matching(
 pub(crate) fn should_skip_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|s| s.to_str())
-        .is_some_and(|name| {
-            matches!(
-                name,
-                ".git" | "target" | "node_modules" | ".fozzy" | "dist" | "build" | "coverage"
-            )
-        })
+        .is_some_and(should_skip_dir_name)
+}
+
+fn should_skip_dir_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "target"
+            | "node_modules"
+            | ".fozzy"
+            | "dist"
+            | "build"
+            | "coverage"
+            | "__pycache__"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".ruff_cache"
+            | ".cache"
+            | "venv"
+            | ".venv"
+            | ".tox"
+    ) || name == "tmp"
+        || name.starts_with("tmp_")
+        || name.starts_with("tmp-")
+        || name.starts_with("tmp.")
 }
 
 #[allow(dead_code)]
@@ -278,5 +297,17 @@ mod tests {
 
         assert_eq!(resolved.files, vec![first, second]);
         assert!(resolved.missing_literal_files.is_empty());
+    }
+
+    #[test]
+    fn should_skip_dir_name_excludes_scratch_and_cache_dirs() {
+        assert!(should_skip_dir_name("tmp"));
+        assert!(should_skip_dir_name("tmp_eval"));
+        assert!(should_skip_dir_name("tmp-build"));
+        assert!(should_skip_dir_name("tmp.cache"));
+        assert!(should_skip_dir_name("__pycache__"));
+        assert!(should_skip_dir_name(".pytest_cache"));
+        assert!(!should_skip_dir_name("src"));
+        assert!(!should_skip_dir_name("runtime"));
     }
 }

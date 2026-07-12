@@ -6,7 +6,7 @@ It demonstrates:
 
 - a local service budget model for request, queue, memory, and session capacity
 - app-local gate logic that compares those budgets against the canonical `fzbounds` framework report
-- direct package import of `fzbounds.inspect_json()` through a compiler-known framework dependency declared as `fzbounds = {}`
+- direct package import of typed `fzbounds.api.*` inspection accessors for service logic, with JSON kept only for explicit output payloads
 - dependency lock/vendor wiring through `[deps]` so the example tracks the framework as a modular package
 - package-aware direct file validation, so `fz check examples/bounds_service/src/services/mod.fzy --json` behaves like a real package check instead of an isolated-file parse
 

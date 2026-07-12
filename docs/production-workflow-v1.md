@@ -42,7 +42,7 @@ Run strict deterministic validation first:
 
 ```bash
 fz doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json
-fz test --det --strict tests/example.fozzy.json tests/memory.pass.fozzy.json --json
+fz test --det --strict-verify tests/example.fozzy.json tests/memory.pass.fozzy.json --json
 ```
 
 Record and validate a real trace:
@@ -97,7 +97,7 @@ For trait/generic language slices, include the dedicated scenario lifecycle:
 
 ```bash
 fz doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed 4242 --json
-fz test --det --strict tests/trait_generic.pass.fozzy.json --json
+fz test --det --strict-verify tests/trait_generic.pass.fozzy.json --json
 fz run tests/trait_generic.pass.fozzy.json --det --record artifacts/trait-generic.trace.fozzy --json
 fz trace verify artifacts/trait-generic.trace.fozzy --strict --json
 fz replay artifacts/trait-generic.trace.fozzy --json
@@ -129,7 +129,7 @@ This gate includes:
 - strict `fz fmt` and `fz doc gen` smokes
 - pedantic hotspot closure
 - unsafe-budget enforcement
-- `NOJSON.md` policy integrity gate plus targeted architecture checks for typed-internals / JSON-boundary rules
+- `NOJSON.md` policy integrity gate for the typed-internals / JSON-boundary contract
 
 ## 5. Release
 

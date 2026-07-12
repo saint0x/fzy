@@ -19,15 +19,15 @@ fz test examples/fullstack --strict-verify --seed 4242 --json
 fz run examples/fullstack --strict-verify --seed 4242 --json
 
 # deterministic lifecycle sample
-fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json
-fozzy test --det --strict tests/example.fozzy.json --json
-fozzy run tests/example.fozzy.json --det --record artifacts/example.trace.fozzy --json
-fozzy trace verify artifacts/example.trace.fozzy --strict --json
-fozzy replay artifacts/example.trace.fozzy --json
-fozzy ci artifacts/example.trace.fozzy --json
+fz doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json
+fz test --det --strict-verify tests/example.fozzy.json --json
+fz run tests/example.fozzy.json --det --record artifacts/example.trace.fozzy --json
+fz trace verify artifacts/example.trace.fozzy --strict --json
+fz replay artifacts/example.trace.fozzy --json
+fz ci artifacts/example.trace.fozzy --json
 
 # host-backed run sample
-fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+fz run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
 ```
 
 ## Traits/Generics Example Validation
@@ -36,8 +36,8 @@ fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --htt
 fz check tests/fixtures/trait_generic/main.fzy --json
 fz parity tests/fixtures/trait_generic/main.fzy --seed 4242 --json
 fz equivalence tests/fixtures/trait_generic/main.fzy --seed 4242 --json
-fozzy doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed 4242 --json
-fozzy test --det --strict tests/trait_generic.pass.fozzy.json --json
+fz doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed 4242 --json
+fz test --det --strict-verify tests/trait_generic.pass.fozzy.json --json
 ```
 
 See the language contract at `docs/traits-generics-contract-v1.md`.

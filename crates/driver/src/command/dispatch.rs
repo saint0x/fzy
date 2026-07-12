@@ -720,6 +720,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             root,
             scenario_root,
             profile,
+            limit,
+            offset,
+            max_matched_scenarios,
         } => {
             let config = scenario_config()?;
             let output = fzscenario::map_command(
@@ -730,9 +733,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     min_risk: 60,
                     profile: parse_topology_profile(&profile)?,
                     shrink_policy: fzscenario::ShrinkCoveragePolicy::NoKnownFailures,
-                    limit: 100,
-                    offset: 0,
-                    max_matched_scenarios: 25,
+                    limit,
+                    offset,
+                    max_matched_scenarios,
                 },
             )
             .map_err(scenario_error)?;

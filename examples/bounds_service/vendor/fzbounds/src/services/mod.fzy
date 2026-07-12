@@ -1,87 +1,267 @@
 use budget;
 use runtime;
-use regions;
-use arena;
-use containers;
 use integration;
-
+use model;
+struct DoctorReport {
+    framework: str,
+    version: str,
+    default_mode: str,
+    surface_score: i32,
+    integrations: integration.IntegrationCatalog,
+}
+struct RuntimeDemoReport {
+    demo: str,
+    runtime: model.RuntimeState,
+}
+struct RegionSummary {
+    name: str,
+    budget_bytes: i32,
+    used_bytes: i32,
+    peak_bytes: i32,
+    overflows: i32,
+    allocation_count: i32,
+    closed: i32,
+}
+struct ArenaSummary {
+    capacity_bytes: i32,
+    used_bytes: i32,
+    peak_bytes: i32,
+    allocations: i32,
+    resets: i32,
+    overflows: i32,
+    last_error: str,
+}
+struct ListSummary {
+    capacity: i32,
+    len: i32,
+    peak_len: i32,
+    overflows: i32,
+    last_error: str,
+}
+struct QueueSummary {
+    capacity: i32,
+    len: i32,
+    peak_len: i32,
+    head: i32,
+    overflows: i32,
+    last_error: str,
+}
+struct BufferSummary {
+    capacity_bytes: i32,
+    used_bytes: i32,
+    peak_bytes: i32,
+    overflows: i32,
+    last_error: str,
+}
+struct InspectReport {
+    framework: str,
+    runtime: model.RuntimeState,
+    request_region: RegionSummary,
+    arena: ArenaSummary,
+    users: ListSummary,
+    jobs: QueueSummary,
+    strings: BufferSummary,
+    integrations: integration.IntegrationProfiles,
+}
 fn json_i32(value: i32) -> str {
     return str.from_i32(value)
 }
-
 fn base_surface_score() -> i32 {
     return str.len(metrics_text()) + budget.surface_score() + runtime.surface_score()
 }
-
-fn doctor_json() -> str {
+fn doctor() -> DoctorReport {
+    return DoctorReport {
+        framework: "fzbounds",
+        version: "0.1.0",
+        default_mode: runtime.mode_strict(),
+        surface_score: base_surface_score(),
+        integrations: integration.catalog(),
+    }
+}
+fn doctor_report_json(value: DoctorReport) -> str {
     let payload = map.new()
-    discard map.set(payload, "framework", json.str("fzbounds"))
-    discard map.set(payload, "version", json.str("0.1.0"))
-    discard map.set(payload, "default_mode", json.str(runtime.mode_strict()))
+    discard map.set(payload, "framework", json.str(value.framework))
+    discard map.set(payload, "version", json.str(value.version))
+    discard map.set(payload, "default_mode", json.str(value.default_mode))
     discard map.set(payload, "budget", budget.json())
-    discard map.set(payload, "surface_score", json_i32(base_surface_score()))
-    discard map.set(payload, "integrations", "[\"fzweb\",\"fzjobs\",\"fzauth\",\"fzrealtime\"]")
+    discard map.set(payload, "surface_score", json_i32(value.surface_score))
+    discard map.set(payload, "integrations", integration.catalog_json(value.integrations))
     return json.object(payload)
 }
-
-fn strict_demo_json() -> str {
+fn doctor_json() -> str {
+    return doctor_report_json(doctor())
+}
+fn strict_demo() -> RuntimeDemoReport {
     let mut state = runtime.make(budget.default_budget(), runtime.mode_strict())
     state = runtime.allocate(state, 2048, "boot", "warm")
     state = runtime.freeze(state)
     state = runtime.allocate(state, 128, "request", "late_alloc")
+    return RuntimeDemoReport {
+        demo: "strict",
+        runtime: state,
+    }
+}
+fn runtime_demo_json(value: RuntimeDemoReport) -> str {
     let payload = map.new()
-    discard map.set(payload, "demo", json.str("strict"))
-    discard map.set(payload, "runtime", runtime.inspection_json(state))
+    discard map.set(payload, "demo", json.str(value.demo))
+    discard map.set(payload, "runtime", runtime.inspection_json(value.runtime))
     return json.object(payload)
 }
-
-fn audit_demo_json() -> str {
+fn strict_demo_json() -> str {
+    return runtime_demo_json(strict_demo())
+}
+fn audit_demo() -> RuntimeDemoReport {
     let small = budget.make(4096, 8, 8, 8, 8, 8, 8, 8, 8, 8)
     let mut state = runtime.make(small, runtime.mode_audit())
     state = runtime.allocate(state, 3072, "boot", "cache")
     state = runtime.freeze(state)
     state = runtime.allocate(state, 2048, "request", "body")
+    return RuntimeDemoReport {
+        demo: "audit",
+        runtime: state,
+    }
+}
+fn audit_demo_json() -> str {
+    return runtime_demo_json(audit_demo())
+}
+fn region_summary_json(value: RegionSummary) -> str {
     let payload = map.new()
-    discard map.set(payload, "demo", json.str("audit"))
-    discard map.set(payload, "runtime", runtime.inspection_json(state))
+    discard map.set(payload, "name", json.str(value.name))
+    discard map.set(payload, "budget_bytes", json_i32(value.budget_bytes))
+    discard map.set(payload, "used_bytes", json_i32(value.used_bytes))
+    discard map.set(payload, "peak_bytes", json_i32(value.peak_bytes))
+    discard map.set(payload, "overflows", json_i32(value.overflows))
+    discard map.set(payload, "allocation_count", json_i32(value.allocation_count))
+    discard map.set(payload, "closed", if value.closed == 1 { "true" } else { "false" })
     return json.object(payload)
 }
-
-fn inspect_json() -> str {
+fn arena_summary_json(value: ArenaSummary) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity_bytes", json_i32(value.capacity_bytes))
+    discard map.set(payload, "used_bytes", json_i32(value.used_bytes))
+    discard map.set(payload, "peak_bytes", json_i32(value.peak_bytes))
+    discard map.set(payload, "allocations", json_i32(value.allocations))
+    discard map.set(payload, "resets", json_i32(value.resets))
+    discard map.set(payload, "overflows", json_i32(value.overflows))
+    discard map.set(payload, "last_error", json.str(value.last_error))
+    return json.object(payload)
+}
+fn list_summary_json(value: ListSummary) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity", json_i32(value.capacity))
+    discard map.set(payload, "len", json_i32(value.len))
+    discard map.set(payload, "peak_len", json_i32(value.peak_len))
+    discard map.set(payload, "overflows", json_i32(value.overflows))
+    discard map.set(payload, "last_error", json.str(value.last_error))
+    return json.object(payload)
+}
+fn queue_summary_json(value: QueueSummary) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity", json_i32(value.capacity))
+    discard map.set(payload, "len", json_i32(value.len))
+    discard map.set(payload, "peak_len", json_i32(value.peak_len))
+    discard map.set(payload, "head", json_i32(value.head))
+    discard map.set(payload, "overflows", json_i32(value.overflows))
+    discard map.set(payload, "last_error", json.str(value.last_error))
+    return json.object(payload)
+}
+fn buffer_summary_json(value: BufferSummary) -> str {
+    let payload = map.new()
+    discard map.set(payload, "capacity_bytes", json_i32(value.capacity_bytes))
+    discard map.set(payload, "used_bytes", json_i32(value.used_bytes))
+    discard map.set(payload, "peak_bytes", json_i32(value.peak_bytes))
+    discard map.set(payload, "overflows", json_i32(value.overflows))
+    discard map.set(payload, "last_error", json.str(value.last_error))
+    return json.object(payload)
+}
+fn inspect() -> InspectReport {
     let mut state = runtime.make(budget.production_budget(), runtime.mode_strict())
     state = runtime.allocate(state, 8192, "boot", "service_boot")
     state = runtime.freeze(state)
     state = runtime.allocate(state, 3072, "request", "request_region")
-
+    let profiles = integration.profiles()
+    return InspectReport {
+        framework: "fzbounds",
+        runtime: state,
+        request_region: RegionSummary {
+            name: "request",
+            budget_bytes: 65536,
+            used_bytes: 3072,
+            peak_bytes: 3072,
+            overflows: 0,
+            allocation_count: 2,
+            closed: 1,
+        },
+        arena: ArenaSummary {
+            capacity_bytes: 8192,
+            used_bytes: 3072,
+            peak_bytes: 3072,
+            allocations: 2,
+            resets: 0,
+            overflows: 0,
+            last_error: "",
+        },
+        users: ListSummary {
+            capacity: 2,
+            len: 2,
+            peak_len: 2,
+            overflows: 1,
+            last_error: "list capacity exceeded",
+        },
+        jobs: QueueSummary {
+            capacity: 2,
+            len: 2,
+            peak_len: 2,
+            head: 0,
+            overflows: 1,
+            last_error: "queue capacity exceeded",
+        },
+        strings: BufferSummary {
+            capacity_bytes: 16,
+            used_bytes: 11,
+            peak_bytes: 11,
+            overflows: 1,
+            last_error: "buffer capacity exceeded",
+        },
+        integrations: profiles,
+    }
+}
+fn inspect_report_json(value: InspectReport) -> str {
     let payload = map.new()
-    discard map.set(payload, "framework", json.str("fzbounds"))
-    discard map.set(payload, "runtime", runtime.inspection_json(state))
-    discard map.set(payload, "request_region", "{\"name\":\"request\",\"budget_bytes\":65536,\"used_bytes\":3072,\"peak_bytes\":3072,\"overflows\":0,\"allocation_count\":2,\"closed\":true}")
-    discard map.set(payload, "arena", "{\"capacity_bytes\":8192,\"used_bytes\":3072,\"peak_bytes\":3072,\"allocations\":2,\"resets\":0,\"overflows\":0,\"last_error\":\"\"}")
-    discard map.set(payload, "users", "{\"capacity\":2,\"len\":2,\"peak_len\":2,\"overflows\":1,\"last_error\":\"list capacity exceeded\"}")
-    discard map.set(payload, "jobs", "{\"capacity\":2,\"len\":2,\"peak_len\":2,\"head\":0,\"overflows\":1,\"last_error\":\"queue capacity exceeded\"}")
-    discard map.set(payload, "strings", "{\"capacity_bytes\":16,\"used_bytes\":11,\"peak_bytes\":11,\"overflows\":1,\"last_error\":\"buffer capacity exceeded\"}")
-    discard map.set(payload, "fzweb", integration.fzweb_request_json())
-    discard map.set(payload, "jobs_profile", integration.jobs_worker_json())
-    discard map.set(payload, "auth_profile", integration.auth_store_json())
-    discard map.set(payload, "realtime_profile", integration.realtime_room_json())
-    discard map.set(payload, "arena_profile", integration.arena_bootstrap_json())
+    discard map.set(payload, "framework", json.str(value.framework))
+    discard map.set(payload, "runtime", runtime.inspection_json(value.runtime))
+    discard map.set(payload, "request_region", region_summary_json(value.request_region))
+    discard map.set(payload, "arena", arena_summary_json(value.arena))
+    discard map.set(payload, "users", list_summary_json(value.users))
+    discard map.set(payload, "jobs", queue_summary_json(value.jobs))
+    discard map.set(payload, "strings", buffer_summary_json(value.strings))
+    discard map.set(payload, "fzweb", integration.fzweb_profile_json(value.integrations.fzweb))
+    discard map.set(payload, "jobs_profile", integration.jobs_profile_json(value.integrations.jobs))
+    discard map.set(payload, "auth_profile", integration.auth_profile_json(value.integrations.auth))
+    discard map.set(payload, "realtime_profile", integration.realtime_profile_json(value.integrations.realtime))
+    discard map.set(payload, "arena_profile", integration.arena_profile_json(value.integrations.arena))
     return json.object(payload)
 }
-
+fn inspect_json() -> str {
+    return inspect_report_json(inspect())
+}
+fn fzweb() -> integration.FzwebProfile {
+    return integration.profiles().fzweb
+}
+fn fzweb_json() -> str {
+    return integration.fzweb_profile_json(fzweb())
+}
 fn metrics_text() -> str {
     let mut state = runtime.make(budget.default_budget(), runtime.mode_strict())
     state = runtime.allocate(state, 2048, "boot", "warm")
     state = runtime.freeze(state)
     state = runtime.allocate(state, 128, "request", "late_alloc")
-    let runtime_json = json.parse(runtime.inspection_json(state))
-    let line1 = str.concat("bounds_memory_used ", json.get_str(runtime_json, "memory_used"))
-    let line2 = str.concat("bounds_memory_peak ", json.get_str(runtime_json, "memory_peak"))
-    let line3 = str.concat("bounds_overflow_total ", json.get_str(runtime_json, "overflows_total"))
-    let line4 = str.concat("bounds_allocations_total ", json.get_str(runtime_json, "allocations_total"))
+    let line1 = str.concat("bounds_memory_used ", str.from_i32(state.memory_used))
+    let line2 = str.concat("bounds_memory_peak ", str.from_i32(state.memory_peak))
+    let line3 = str.concat("bounds_overflow_total ", str.from_i32(state.overflows_total))
+    let line4 = str.concat("bounds_allocations_total ", str.from_i32(state.allocations_total))
     return str.concat(line1, "\n", line2, "\n", line3, "\n", line4)
 }
-
 fn surface_score() -> i32 {
     return str.len(doctor_json()) + base_surface_score()
 }

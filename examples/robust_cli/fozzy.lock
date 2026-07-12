@@ -1,12 +1,12 @@
 {
-  "dependencyGraphHash": "317cb03de394e0eafce25d1e57f4335aca2ad3614605cbbfbf00556d955b4467",
+  "schemaVersion": "fozzylang.lock.v0",
+  "dependencyGraphHash": "cfca206ab32ed88bc285e37c02d7672a052a20a34bdd9b6e02e04d65d9ad0544",
   "graph": {
-    "deps": [],
     "package": {
-      "manifestHash": "e5142ee9807f6ca65e29a7ed62a4f92cf71c3b6beb49254e8aaebd3ae94d2172",
       "name": "robust_cli",
-      "version": "0.1.0"
-    }
-  },
-  "schemaVersion": "fozzylang.lock.v0"
+      "version": "0.1.0",
+      "manifestHash": "e5142ee9807f6ca65e29a7ed62a4f92cf71c3b6beb49254e8aaebd3ae94d2172"
+    },
+    "deps": []
+  }
 }

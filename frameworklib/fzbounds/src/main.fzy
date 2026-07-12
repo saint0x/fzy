@@ -16,3 +16,36 @@ fn main() -> i32 {
     discard api.touch()
     return cli.run()
 }
+fn library_name() -> str {
+    return api.library_name()
+}
+fn touch() -> i32 {
+    return api.touch()
+}
+fn doctor_json() -> str {
+    return api.doctor_json()
+}
+fn inspect_json() -> str {
+    return api.inspect_json()
+}
+fn inspect_runtime_mode() -> str {
+    return api.inspect_runtime_mode()
+}
+fn inspect_runtime_max_memory_bytes() -> i32 {
+    return api.inspect_runtime_max_memory_bytes()
+}
+fn inspect_runtime_max_queue_entries() -> i32 {
+    return api.inspect_runtime_max_queue_entries()
+}
+fn inspect_fzweb_request_budget_bytes() -> i32 {
+    return api.inspect_fzweb_request_budget_bytes()
+}
+fn inspect_fzweb_header_capacity() -> i32 {
+    return api.inspect_fzweb_header_capacity()
+}
+fn inspect_fzweb_body_capacity_bytes() -> i32 {
+    return api.inspect_fzweb_body_capacity_bytes()
+}
+fn inspect_auth_session_capacity() -> i32 {
+    return api.inspect_auth_session_capacity()
+}

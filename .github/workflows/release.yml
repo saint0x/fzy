@@ -7,7 +7,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - name: Production ship gate
+        run: ./scripts/ship_release_gate.sh
+      - name: Exit criteria gate
+        run: ./scripts/exit_criteria_gate.sh
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:

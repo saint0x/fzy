@@ -2,16 +2,14 @@ use core.log;
 use core.process;
 use core.term;
 use core.text;
-
+use integration;
 use services;
-
 fn log_fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let fields = map.new()
     discard map.set(fields, k1, v1)
     discard map.set(fields, k2, v2)
     return log.fields(fields)
 }
-
 fn print_help() -> i32 {
     discard term.print_line("fzbounds")
     discard term.print_line("  doctor       print production budget and surface summary")
@@ -21,17 +19,49 @@ fn print_help() -> i32 {
     discard term.print_line("  fzweb        print the bounded fzweb request profile")
     return 0
 }
-
 fn print_json(payload: str) -> i32 {
     discard term.print_line(text.indent(payload, "  "))
     return 0
 }
-
 fn print_plain_json(payload: str) -> i32 {
     discard term.print_line(payload)
     return 0
 }
-
+fn print_doctor(compact: i32) -> i32 {
+    let report = services.doctor()
+    if compact == 1 {
+        return print_plain_json(services.doctor_report_json(report))
+    }
+    return print_json(services.doctor_report_json(report))
+}
+fn print_strict_demo(compact: i32) -> i32 {
+    let report = services.strict_demo()
+    if compact == 1 {
+        return print_plain_json(services.runtime_demo_json(report))
+    }
+    return print_json(services.runtime_demo_json(report))
+}
+fn print_audit_demo(compact: i32) -> i32 {
+    let report = services.audit_demo()
+    if compact == 1 {
+        return print_plain_json(services.runtime_demo_json(report))
+    }
+    return print_json(services.runtime_demo_json(report))
+}
+fn print_inspect(compact: i32) -> i32 {
+    let report = services.inspect()
+    if compact == 1 {
+        return print_plain_json(services.inspect_report_json(report))
+    }
+    return print_json(services.inspect_report_json(report))
+}
+fn print_fzweb(compact: i32) -> i32 {
+    let profile = services.fzweb()
+    if compact == 1 {
+        return print_plain_json(services.fzweb_json())
+    }
+    return print_json(integration.fzweb_profile_json(profile))
+}
 fn run() -> i32 {
     let command = process.argv_or(1, "inspect")
     if command == "help" || command == "--help" {
@@ -40,36 +70,36 @@ fn run() -> i32 {
     }
     if command == "doctor-json" {
         log.quiet()
-        return print_plain_json(services.doctor_json())
+        return print_doctor(1)
     }
     if command == "doctor" {
         log.info("fzbounds.doctor", log_fields2("framework", "fzbounds", "command", command))
-        return print_json(services.doctor_json())
+        return print_doctor(0)
     }
     if command == "strict-demo-json" {
         log.quiet()
-        return print_plain_json(services.strict_demo_json())
+        return print_strict_demo(1)
     }
     if command == "strict-demo" {
         log.info("fzbounds.demo", log_fields2("framework", "fzbounds", "mode", "strict"))
-        return print_json(services.strict_demo_json())
+        return print_strict_demo(0)
     }
     if command == "audit-demo-json" {
         log.quiet()
-        return print_plain_json(services.audit_demo_json())
+        return print_audit_demo(1)
     }
     if command == "audit-demo" {
         log.info("fzbounds.demo", log_fields2("framework", "fzbounds", "mode", "audit"))
-        return print_json(services.audit_demo_json())
+        return print_audit_demo(0)
     }
     if command == "inspect-json" {
         log.quiet()
-        return print_plain_json(services.inspect_json())
+        return print_inspect(1)
     }
     if command == "fzweb" {
         log.info("fzbounds.integration", log_fields2("framework", "fzbounds", "target", "fzweb"))
-        return print_json(services.inspect_json())
+        return print_fzweb(0)
     }
     log.info("fzbounds.inspect", log_fields2("framework", "fzbounds", "command", command))
-    return print_json(services.inspect_json())
+    return print_inspect(0)
 }

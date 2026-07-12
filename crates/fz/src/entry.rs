@@ -378,6 +378,10 @@ fn parse_command(args: &[String]) -> Result<Command> {
                     .unwrap_or_else(|| PathBuf::from("tests")),
                 profile: parse_string_flag(args, "--profile")?
                     .unwrap_or_else(|| "pedantic".to_string()),
+                limit: parse_usize_flag(args, "--limit")?.unwrap_or(100),
+                offset: parse_usize_flag(args, "--offset")?.unwrap_or(0),
+                max_matched_scenarios: parse_usize_flag(args, "--max-matched-scenarios")?
+                    .unwrap_or(25),
             }),
             _ => {
                 print_help();
@@ -640,6 +644,20 @@ fn parse_u16_flag(args: &[String], flag: &str) -> Result<Option<u16>> {
     }
 }
 
+fn parse_usize_flag(args: &[String], flag: &str) -> Result<Option<usize>> {
+    if let Some(index) = args.iter().position(|a| a == flag) {
+        let raw = args
+            .get(index + 1)
+            .ok_or_else(|| anyhow::anyhow!("missing value for {flag}"))?;
+        let value = raw
+            .parse::<usize>()
+            .with_context(|| format!("invalid value for {flag}: {raw}"))?;
+        Ok(Some(value))
+    } else {
+        Ok(None)
+    }
+}
+
 fn parse_string_flag(args: &[String], flag: &str) -> Result<Option<String>> {
     if let Some(index) = args.iter().position(|a| a == flag) {
         let raw = args
@@ -889,9 +907,32 @@ mod tests {
             "tests".to_string(),
             "--profile".to_string(),
             "pedantic".to_string(),
+            "--limit".to_string(),
+            "17".to_string(),
+            "--offset".to_string(),
+            "42".to_string(),
+            "--max-matched-scenarios".to_string(),
+            "9".to_string(),
         ];
         let command = parse_command(&args).expect("map suites should parse");
-        assert!(matches!(command, Command::MapSuites { .. }));
+        match command {
+            Command::MapSuites {
+                root,
+                scenario_root,
+                profile,
+                limit,
+                offset,
+                max_matched_scenarios,
+            } => {
+                assert_eq!(root, PathBuf::from("."));
+                assert_eq!(scenario_root, PathBuf::from("tests"));
+                assert_eq!(profile, "pedantic");
+                assert_eq!(limit, 17);
+                assert_eq!(offset, 42);
+                assert_eq!(max_matched_scenarios, 9);
+            }
+            _ => panic!("expected map suites command"),
+        }
     }
 
     #[test]

@@ -2,56 +2,22 @@ use fzbounds;
 use model;
 use runtime;
 
-fn parse_i32(text: str) -> i32 {
-    let trimmed = str.trim(text)
-    if trimmed == "" {
-        return 0
-    }
-    let mut idx = 0
-    let mut sign = 1
-    if str.slice(trimmed, 0, 1) == "-" {
-        sign = -1
-        idx = 1
-    }
-    let mut value = 0
-    while idx < str.len(trimmed) {
-        let ch = str.slice(trimmed, idx, idx + 1)
-        if ch == "0" { value = (value * 10) + 0 }
-        if ch == "1" { value = (value * 10) + 1 }
-        if ch == "2" { value = (value * 10) + 2 }
-        if ch == "3" { value = (value * 10) + 3 }
-        if ch == "4" { value = (value * 10) + 4 }
-        if ch == "5" { value = (value * 10) + 5 }
-        if ch == "6" { value = (value * 10) + 6 }
-        if ch == "7" { value = (value * 10) + 7 }
-        if ch == "8" { value = (value * 10) + 8 }
-        if ch == "9" { value = (value * 10) + 9 }
-        idx = idx + 1
-    }
-    return value * sign
-}
-
 fn framework_report_value() -> model.FrameworkReport {
     let inspect_raw = fzbounds.inspect_json()
-    let inspect = json.parse(inspect_raw)
-    let fzweb = json.parse(json.get_str(inspect, "fzweb"))
-    let runtime_payload = json.parse(json.get_str(inspect, "runtime"))
-    let runtime_budget = json.parse(json.get_str(runtime_payload, "budget"))
-    let auth_profile = json.parse(json.get_str(inspect, "auth_profile"))
     return model.framework_report(
         "ok",
         inspect_raw,
         model.framework_fzweb(
-            parse_i32(json.get_str(fzweb, "request_budget_bytes")),
-            parse_i32(json.get_str(fzweb, "header_capacity")),
-            parse_i32(json.get_str(fzweb, "body_capacity_bytes")),
+            fzbounds.api.inspect_fzweb_request_budget_bytes(),
+            fzbounds.api.inspect_fzweb_header_capacity(),
+            fzbounds.api.inspect_fzweb_body_capacity_bytes(),
         ),
         model.framework_runtime(
-            json.get_str(runtime_payload, "mode"),
-            parse_i32(json.get_str(runtime_payload, "max_memory_bytes")),
-            model.framework_budget(parse_i32(json.get_str(runtime_budget, "max_queue_entries"))),
+            fzbounds.api.inspect_runtime_mode(),
+            fzbounds.api.inspect_runtime_max_memory_bytes(),
+            model.framework_budget(fzbounds.api.inspect_runtime_max_queue_entries()),
         ),
-        model.framework_auth_profile(parse_i32(json.get_str(auth_profile, "session_capacity"))),
+        model.framework_auth_profile(fzbounds.api.inspect_auth_session_capacity()),
     )
 }
 

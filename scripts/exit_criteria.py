@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Dict, List, Tuple
+import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 STATE_PATH = ROOT / "release" / "exit_criteria_state.json"
@@ -120,7 +121,12 @@ def record_rc(args: argparse.Namespace) -> int:
 
     proc = run(
         [
-            "fozzy",
+            "cargo",
+            "run",
+            "-q",
+            "-p",
+            "fz",
+            "--",
             "map",
             "suites",
             "--root",
@@ -178,14 +184,25 @@ def record_local_repro(args: argparse.Namespace) -> int:
     commit = run(["git", "rev-parse", "HEAD"]).stdout.strip()
     tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="fozzylang-clean-repro-"))
     try:
-        run(["git", "worktree", "add", "--detach", str(tmp_dir), "HEAD"], check=True)
+        archive_path = tmp_dir / "source.tar"
+        with archive_path.open("wb") as handle:
+            subprocess.run(
+                ["git", "archive", "--format=tar", "HEAD"],
+                cwd=str(ROOT),
+                check=True,
+                stdout=handle,
+            )
+        extract_dir = tmp_dir / "checkout"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_path) as tar:
+            tar.extractall(path=extract_dir)
 
-        gate_path = tmp_dir / "scripts" / "ship_release_gate.sh"
+        gate_path = extract_dir / "scripts" / "ship_release_gate.sh"
         if not gate_path.exists():
-            gate_path = tmp_dir / "scripts" / "fozzy_production_gate.sh"
+            gate_path = extract_dir / "scripts" / "fozzy_production_gate.sh"
         proc = subprocess.run(
             [str(gate_path)],
-            cwd=str(tmp_dir),
+            cwd=str(extract_dir),
             text=True,
             capture_output=True,
         )
@@ -199,12 +216,6 @@ def record_local_repro(args: argparse.Namespace) -> int:
             "stderrTail": "\n".join(proc.stderr.splitlines()[-40:]),
         }
     finally:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", str(tmp_dir)],
-            cwd=str(ROOT),
-            text=True,
-            capture_output=True,
-        )
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     state = load_state()

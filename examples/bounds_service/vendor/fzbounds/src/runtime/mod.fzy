@@ -1,46 +1,41 @@
 use core.time;
-
 use model;
-
-fn mode_off() -> str { return "off" }
-fn mode_warn() -> str { return "warn" }
-fn mode_audit() -> str { return "audit" }
-fn mode_strict() -> str { return "strict" }
-
-fn json_i32(value: i32) -> str {
-    return str.from_i32(value)
+fn mode_off() -> str {
+    return "off"
 }
-
+fn mode_warn() -> str {
+    return "warn"
+}
+fn mode_audit() -> str {
+    return "audit"
+}
+fn mode_strict() -> str {
+    return "strict"
+}
 fn make(budget: model.Budget, mode: str) -> model.RuntimeState {
     return model.runtime_state(budget, mode)
 }
-
 fn freeze(state: model.RuntimeState) -> model.RuntimeState {
     return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, 1, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
 }
-
 fn inject_overflow(state: model.RuntimeState, region: str) -> model.RuntimeState {
     return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, region, state.injected_alloc_fail)
 }
-
 fn inject_allocation_failure(state: model.RuntimeState) -> model.RuntimeState {
     return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, 1)
 }
-
 fn peak_of(left: i32, right: i32) -> i32 {
     if left >= right {
         return left
     }
     return right
 }
-
 fn is_strict(state: model.RuntimeState) -> i32 {
     if state.mode == mode_strict() {
         return 1
     }
     return 0
 }
-
 fn allows_runtime_allocation(state: model.RuntimeState) -> i32 {
     if state.mode == mode_off() {
         return 1
@@ -53,87 +48,76 @@ fn allows_runtime_allocation(state: model.RuntimeState) -> i32 {
     }
     return 0
 }
-
 fn record_audit(state: model.RuntimeState, message: str) -> model.RuntimeState {
-    let event = map.new()
-    discard map.set(event, "message", json.str(message))
-    discard map.set(event, "timestamp_ms", json_i32(time.monotonic_ms()))
-    discard list.push(state.audit_events, json.object(event))
-    return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
+    let events = model.audit_log_append(state.audit_events, message, time.monotonic_ms())
+    return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, events, state.injected_region, state.injected_alloc_fail)
 }
-
 fn record_overflow(state: model.RuntimeState, resource: str, capacity: i32, attempt: i32, region: str, message: str, rejected: i32) -> model.RuntimeState {
     let event = model.overflow_event(resource, capacity, attempt, region, message, time.monotonic_ms(), rejected)
-    discard list.push(state.overflow_events, model.overflow_json(event))
-    let mut next = model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total + 1, state.rejected_total + rejected, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
+    let events = model.overflow_log_append(state.overflow_events, event)
+    let mut next = model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total + 1, state.rejected_total + rejected, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, events, state.audit_events, state.injected_region, state.injected_alloc_fail)
     if state.mode == mode_audit() || state.mode == mode_warn() {
         next = record_audit(next, message)
     }
     return next
 }
-
 fn allocate(state: model.RuntimeState, bytes: i32, region: str, resource: str) -> model.RuntimeState {
     if bytes <= 0 {
         return state
     }
-
     if state.injected_alloc_fail == 1 {
         return record_overflow(state, resource, state.max_memory_bytes, state.memory_used + bytes, region, "allocation failure injected", 1)
     }
-
     if state.injected_region != "" && state.injected_region == region {
         return record_overflow(state, resource, state.max_memory_bytes, state.memory_used + bytes, region, "overflow injected", 1)
     }
-
     let attempt = state.memory_used + bytes
-    let over_budget = if attempt > state.max_memory_bytes { 1 } else { 0 }
-    let frozen_violation = if state.frozen == 1 && is_strict(state) == 1 { 1 } else { 0 }
-
+    let over_budget = if attempt > state.max_memory_bytes {
+        1
+    } else {
+        0
+    }
+    let frozen_violation = if state.frozen == 1 && is_strict(state) == 1 {
+        1
+    } else {
+        0
+    }
     if frozen_violation == 1 {
         return record_overflow(state, resource, state.max_memory_bytes, attempt, region, "allocation detected after freeze", 1)
     }
-
     if over_budget == 1 && is_strict(state) == 1 {
         return record_overflow(state, resource, state.max_memory_bytes, attempt, region, "bounds exceeded", 1)
     }
-
     let mut next_used = attempt
     if state.mode == mode_off() {
         next_used = state.memory_used + bytes
     }
-
     let mut next = model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, next_used, peak_of(state.memory_peak, next_used), state.allocations_total + 1, state.overflows_total, state.rejected_total, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
-
     if over_budget == 1 {
         next = record_overflow(next, resource, state.max_memory_bytes, attempt, region, "bounds exceeded", 0)
     }
     return next
 }
-
 fn record_region(state: model.RuntimeState, region: model.Region) -> model.RuntimeState {
-    discard list.push(state.closed_regions, model.region_json(region))
+    let closed_regions = model.region_log_append(state.closed_regions, region)
     let next_count = state.region_count + 1
-    return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, next_count, peak_of(state.region_peak, next_count), state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
+    return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, next_count, peak_of(state.region_peak, next_count), state.assert_failures_total, closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
 }
-
 fn assert_no_heap_growth(before_bytes: i32, after_bytes: i32) -> i32 {
     if after_bytes <= before_bytes {
         return 1
     }
     return 0
 }
-
 fn assert_capacity(len: i32, capacity: i32) -> i32 {
     if len <= capacity {
         return 1
     }
     return 0
 }
-
 fn inspection_json(state: model.RuntimeState) -> str {
     return model.runtime_json(state)
 }
-
 fn surface_score() -> i32 {
     let base = make(model.budget_record(1024, 4, 4, 4, 4, 4, 4, 4, 4, 4), mode_strict())
     let frozen = freeze(base)

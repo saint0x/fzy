@@ -11,7 +11,7 @@ usage() {
   cat <<'EOF'
 scripts/build_release_archive.sh [options]
 
-Builds a release archive containing the `fz` binary and top-level docs.
+Builds a release archive containing the `fz` CLI, the compatibility `fozzy` alias, and top-level docs.
 
 Options:
   --target <triple>   Cargo target triple to build
@@ -60,6 +60,7 @@ mkdir -p "$STAGE_DIR" "$DIST_DIR"
 cargo build --locked -p fz --release --target "$TARGET"
 
 cp "target/$TARGET/release/fz" "$STAGE_DIR/fz"
+cp "target/$TARGET/release/fozzy" "$STAGE_DIR/fozzy"
 cp "$ROOT/README.md" "$STAGE_DIR/README.md"
 cp "$ROOT/USAGE.md" "$STAGE_DIR/USAGE.md"
 cp "$ROOT/INSTALL.md" "$STAGE_DIR/INSTALL.md"

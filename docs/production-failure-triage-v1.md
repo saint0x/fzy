@@ -39,7 +39,7 @@ Fix workflow:
 3. Route randomness through deterministic scheduler/seeded paths.
 4. Re-run doctor with same seed and runs.
 
-### `fz test --det --strict` failure
+### `fz test --det --strict-verify` failure
 
 Symptoms:
 
