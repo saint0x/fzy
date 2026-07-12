@@ -1,8 +1,16 @@
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct TaskTransferEvent {
+    function: String,
+    callee: String,
+    args: Vec<String>,
+    result: String,
+}
+
 pub(crate) fn collect_task_transfer_events(
     function: &hir::TypedFunction,
-) -> Vec<serde_json::Value> {
+) -> Vec<TaskTransferEvent> {
     let mut out = Vec::new();
     collect_task_transfer_events_from_stmts(&function.name, &function.body, &mut out);
     out
@@ -11,7 +19,7 @@ pub(crate) fn collect_task_transfer_events(
 fn collect_task_transfer_events_from_stmts(
     function_name: &str,
     body: &[ast::Stmt],
-    out: &mut Vec<serde_json::Value>,
+    out: &mut Vec<TaskTransferEvent>,
 ) {
     for stmt in body {
         match stmt {
@@ -55,7 +63,7 @@ fn collect_task_transfer_events_from_stmts(
 fn collect_task_transfer_events_from_expr(
     function_name: &str,
     expr: &ast::Expr,
-    out: &mut Vec<serde_json::Value>,
+    out: &mut Vec<TaskTransferEvent>,
 ) {
     match expr {
         ast::Expr::Call { callee, args }
@@ -70,12 +78,15 @@ fn collect_task_transfer_events_from_expr(
                     | "task.parallel_map"
             ) =>
         {
-            out.push(serde_json::json!({
-                "function": function_name,
-                "callee": callee,
-                "args": args.iter().map(memory_report_expr_origin).collect::<Vec<_>>(),
-                "result": "accepted",
-            }));
+            out.push(TaskTransferEvent {
+                function: function_name.to_string(),
+                callee: callee.clone(),
+                args: args
+                    .iter()
+                    .map(memory_report_expr_origin)
+                    .collect::<Vec<_>>(),
+                result: "accepted".to_string(),
+            });
         }
         ast::Expr::UnsafeBlock { body, .. } => {
             collect_task_transfer_events_from_stmts(function_name, body, out);

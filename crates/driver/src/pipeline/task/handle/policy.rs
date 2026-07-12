@@ -1,9 +1,30 @@
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct TaskHandlePolicyRecord {
+    function: String,
+    #[serde(rename = "handle")]
+    handle_name: String,
+    origin: String,
+    policy: String,
+    #[serde(rename = "terminalOperations")]
+    terminal_operations: Vec<String>,
+    #[serde(rename = "currentState")]
+    current_state: String,
+    #[serde(rename = "resultReadsBeforeTerminal")]
+    result_reads_before_terminal: usize,
+    #[serde(rename = "resultReadsAfterTerminal")]
+    result_reads_after_terminal: usize,
+    #[serde(rename = "resultReads")]
+    result_reads: usize,
+    #[serde(rename = "strictReady")]
+    strict_ready: bool,
+}
+
 pub(crate) fn collect_task_handle_policy_events(
     function: &hir::TypedFunction,
     terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
-) -> Vec<serde_json::Value> {
+) -> Vec<TaskHandlePolicyRecord> {
     let mut started = BTreeMap::<String, String>::new();
     let mut terminal = BTreeMap::<String, Vec<String>>::new();
     let mut result_reads_before_terminal = BTreeMap::<String, usize>::new();
@@ -32,34 +53,45 @@ pub(crate) fn collect_task_handle_policy_events(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| "missing".to_string());
-            let reads_before = result_reads_before_terminal.get(&name).copied().unwrap_or(0);
+            let reads_before = result_reads_before_terminal
+                .get(&name)
+                .copied()
+                .unwrap_or(0);
             let reads_after = result_reads_after_terminal.get(&name).copied().unwrap_or(0);
-            let current_state = if reads_after > 0 {
-                "invalid_result_after_terminal"
-            } else {
-                match unique_terminals.as_slice() {
-                    [] => "missing_terminal",
-                    [single] if single.starts_with("join") => "joined",
-                    [single] if single.starts_with("detach") => "detached",
-                    [single] if single.starts_with("cancel_task") => "cancelled",
-                    [_] => "active",
-                    _ => "invalid_multiple_terminal",
-                }
-            };
-            serde_json::json!({
-                "function": function.name,
-                "handle": name,
-                "origin": origin,
-                "policy": policy,
-                "terminalOperations": unique_terminals,
-                "currentState": current_state,
-                "resultReadsBeforeTerminal": reads_before,
-                "resultReadsAfterTerminal": reads_after,
-                "resultReads": reads_before + reads_after,
-                "strictReady": current_state != "missing_terminal" && current_state != "invalid_multiple_terminal" && current_state != "invalid_result_after_terminal",
-            })
+            let current_state = classify_task_handle_state(&unique_terminals, reads_after);
+            let result_reads = reads_before + reads_after;
+            let strict_ready = !matches!(
+                current_state.as_str(),
+                "missing_terminal" | "invalid_multiple_terminal" | "invalid_result_after_terminal"
+            );
+            TaskHandlePolicyRecord {
+                function: function.name.clone(),
+                handle_name: name,
+                origin,
+                policy,
+                terminal_operations: unique_terminals,
+                current_state,
+                result_reads_before_terminal: reads_before,
+                result_reads_after_terminal: reads_after,
+                result_reads,
+                strict_ready,
+            }
         })
         .collect()
+}
+
+fn classify_task_handle_state(unique_terminals: &[String], reads_after: usize) -> String {
+    if reads_after > 0 {
+        return "invalid_result_after_terminal".to_string();
+    }
+    match unique_terminals {
+        [] => "missing_terminal".to_string(),
+        [single] if single.starts_with("join") => "joined".to_string(),
+        [single] if single.starts_with("detach") => "detached".to_string(),
+        [single] if single.starts_with("cancel_task") => "cancelled".to_string(),
+        [_] => "active".to_string(),
+        _ => "invalid_multiple_terminal".to_string(),
+    }
 }
 
 pub(crate) fn collect_task_handle_policy_stmt(

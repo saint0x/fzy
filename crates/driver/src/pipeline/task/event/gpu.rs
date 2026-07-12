@@ -1,9 +1,25 @@
 use super::*;
 
-pub(crate) fn collect_gpu_event_policy_events(
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GpuEventPolicyRecord {
+    pub(crate) function: String,
+    pub(crate) event: String,
+    pub(crate) origin: String,
+    pub(crate) policy: String,
+    pub(crate) terminal_operations: Vec<String>,
+    pub(crate) current_state: String,
+    pub(crate) wait_policy: String,
+    pub(crate) wait_bounded: bool,
+    pub(crate) deadline_scope: String,
+    pub(crate) cancellation_policy: String,
+    pub(crate) strict_ready: bool,
+}
+
+pub(crate) fn collect_gpu_event_policy_records(
     function: &hir::TypedFunction,
     terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
-) -> Vec<serde_json::Value> {
+) -> Vec<GpuEventPolicyRecord> {
     let mut started = BTreeMap::<String, String>::new();
     let mut terminal = BTreeMap::<String, Vec<String>>::new();
     let mut wait_bounds = BTreeMap::<String, Vec<bool>>::new();
@@ -23,12 +39,7 @@ pub(crate) fn collect_gpu_event_policy_events(
         .into_iter()
         .map(|(name, origin)| {
             let terminals = terminal.get(&name).cloned().unwrap_or_default();
-            let mut unique_terminals = Vec::<String>::new();
-            for op in terminals {
-                if !unique_terminals.contains(&op) {
-                    unique_terminals.push(op);
-                }
-            }
+            let unique_terminals = unique_terminal_operations(terminals);
             let waits = wait_bounds.get(&name).cloned().unwrap_or_default();
             let all_waits_bounded = waits.iter().all(|value| *value);
             let current_state = match unique_terminals.as_slice() {
@@ -44,21 +55,34 @@ pub(crate) fn collect_gpu_event_policy_events(
             } else {
                 "missing_timeout_or_deadline".to_string()
             };
-            serde_json::json!({
-                "function": function.name,
-                "event": name,
-                "origin": origin,
-                "policy": unique_terminals.first().cloned().unwrap_or_else(|| "missing".to_string()),
-                "terminalOperations": unique_terminals,
-                "currentState": current_state,
-                "waitPolicy": wait_policy,
-                "waitBounded": !waits.is_empty() && all_waits_bounded,
-                "deadlineScope": "task_local",
-                "cancellationPolicy": "deadline_bound_wait_then_cleanup",
-                "strictReady": current_state == "waited",
-            })
+            GpuEventPolicyRecord {
+                function: function.name.clone(),
+                event: name,
+                origin,
+                policy: unique_terminals
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "missing".to_string()),
+                terminal_operations: unique_terminals,
+                wait_bounded: !waits.is_empty() && all_waits_bounded,
+                wait_policy,
+                deadline_scope: "task_local".to_string(),
+                cancellation_policy: "deadline_bound_wait_then_cleanup".to_string(),
+                strict_ready: current_state == "waited",
+                current_state,
+            }
         })
         .collect()
+}
+
+fn unique_terminal_operations(terminals: Vec<String>) -> Vec<String> {
+    let mut unique_terminals = Vec::<String>::new();
+    for op in terminals {
+        if !unique_terminals.contains(&op) {
+            unique_terminals.push(op);
+        }
+    }
+    unique_terminals
 }
 
 pub(crate) fn collect_gpu_event_creation(

@@ -1,9 +1,21 @@
 use super::*;
 
-pub(crate) fn collect_task_group_policy_events(
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskGroupPolicyRecord {
+    pub(crate) function: String,
+    pub(crate) group: String,
+    pub(crate) policy: String,
+    pub(crate) terminal_operations: Vec<String>,
+    pub(crate) current_state: String,
+    pub(crate) strict_ready: bool,
+    pub(crate) result_read_after_terminal_allowed: bool,
+}
+
+pub(crate) fn collect_task_group_policy_records(
     function: &hir::TypedFunction,
     terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
-) -> Vec<serde_json::Value> {
+) -> Vec<TaskGroupPolicyRecord> {
     let mut started = BTreeSet::<String>::new();
     let mut terminal = BTreeMap::<String, Vec<String>>::new();
     for stmt in &function.body {
@@ -13,12 +25,7 @@ pub(crate) fn collect_task_group_policy_events(
         .into_iter()
         .map(|name| {
             let terminals = terminal.get(&name).cloned().unwrap_or_default();
-            let mut unique_terminals = Vec::<String>::new();
-            for op in terminals {
-                if !unique_terminals.contains(&op) {
-                    unique_terminals.push(op);
-                }
-            }
+            let unique_terminals = unique_terminal_operations(terminals);
             let current_state = match unique_terminals.as_slice() {
                 [] => "missing_terminal".to_string(),
                 [single] if single.starts_with("task.group_join_all") => "joined_all".to_string(),
@@ -27,17 +34,31 @@ pub(crate) fn collect_task_group_policy_events(
                 [_] => "active".to_string(),
                 _ => "invalid_multiple_terminal".to_string(),
             };
-            serde_json::json!({
-                "function": function.name,
-                "group": name,
-                "policy": unique_terminals.first().cloned().unwrap_or_else(|| "missing".to_string()),
-                "terminalOperations": unique_terminals,
-                "currentState": current_state,
-                "strictReady": current_state != "missing_terminal" && current_state != "invalid_multiple_terminal",
-                "resultReadAfterTerminalAllowed": false,
-            })
+            TaskGroupPolicyRecord {
+                function: function.name.clone(),
+                group: name,
+                policy: unique_terminals
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "missing".to_string()),
+                terminal_operations: unique_terminals,
+                strict_ready: current_state != "missing_terminal"
+                    && current_state != "invalid_multiple_terminal",
+                current_state,
+                result_read_after_terminal_allowed: false,
+            }
         })
         .collect()
+}
+
+fn unique_terminal_operations(terminals: Vec<String>) -> Vec<String> {
+    let mut unique_terminals = Vec::<String>::new();
+    for op in terminals {
+        if !unique_terminals.contains(&op) {
+            unique_terminals.push(op);
+        }
+    }
+    unique_terminals
 }
 
 #[derive(Debug, Clone)]
