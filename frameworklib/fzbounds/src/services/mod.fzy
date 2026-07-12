@@ -7,6 +7,7 @@ struct DoctorReport {
     version: str,
     default_mode: str,
     surface_score: i32,
+    integrations: integration.IntegrationCatalog,
 }
 struct RuntimeDemoReport {
     demo: str,
@@ -60,11 +61,7 @@ struct InspectReport {
     users: ListSummary,
     jobs: QueueSummary,
     strings: BufferSummary,
-    fzweb: integration.FzwebProfile,
-    jobs_profile: integration.JobsProfile,
-    auth_profile: integration.AuthProfile,
-    realtime_profile: integration.RealtimeProfile,
-    arena_profile: integration.ArenaProfile,
+    integrations: integration.IntegrationProfiles,
 }
 fn json_i32(value: i32) -> str {
     return str.from_i32(value)
@@ -72,20 +69,13 @@ fn json_i32(value: i32) -> str {
 fn base_surface_score() -> i32 {
     return str.len(metrics_text()) + budget.surface_score() + runtime.surface_score()
 }
-fn integration_json() -> str {
-    let payload = list.new()
-    discard list.push(payload, json.str("fzweb"))
-    discard list.push(payload, json.str("fzjobs"))
-    discard list.push(payload, json.str("fzauth"))
-    discard list.push(payload, json.str("fzrealtime"))
-    return json.array(payload)
-}
 fn doctor() -> DoctorReport {
     return DoctorReport {
         framework: "fzbounds",
         version: "0.1.0",
         default_mode: runtime.mode_strict(),
         surface_score: base_surface_score(),
+        integrations: integration.catalog(),
     }
 }
 fn doctor_report_json(value: DoctorReport) -> str {
@@ -95,7 +85,7 @@ fn doctor_report_json(value: DoctorReport) -> str {
     discard map.set(payload, "default_mode", json.str(value.default_mode))
     discard map.set(payload, "budget", budget.json())
     discard map.set(payload, "surface_score", json_i32(value.surface_score))
-    discard map.set(payload, "integrations", integration_json())
+    discard map.set(payload, "integrations", integration.catalog_json(value.integrations))
     return json.object(payload)
 }
 fn doctor_json() -> str {
@@ -189,6 +179,7 @@ fn inspect() -> InspectReport {
     state = runtime.allocate(state, 8192, "boot", "service_boot")
     state = runtime.freeze(state)
     state = runtime.allocate(state, 3072, "request", "request_region")
+    let profiles = integration.profiles()
     return InspectReport {
         framework: "fzbounds",
         runtime: state,
@@ -232,11 +223,7 @@ fn inspect() -> InspectReport {
             overflows: 1,
             last_error: "buffer capacity exceeded",
         },
-        fzweb: integration.fzweb_request(),
-        jobs_profile: integration.jobs_worker(),
-        auth_profile: integration.auth_store(),
-        realtime_profile: integration.realtime_room(),
-        arena_profile: integration.arena_bootstrap(),
+        integrations: profiles,
     }
 }
 fn inspect_report_json(value: InspectReport) -> str {
@@ -248,15 +235,21 @@ fn inspect_report_json(value: InspectReport) -> str {
     discard map.set(payload, "users", list_summary_json(value.users))
     discard map.set(payload, "jobs", queue_summary_json(value.jobs))
     discard map.set(payload, "strings", buffer_summary_json(value.strings))
-    discard map.set(payload, "fzweb", integration.fzweb_profile_json(value.fzweb))
-    discard map.set(payload, "jobs_profile", integration.jobs_profile_json(value.jobs_profile))
-    discard map.set(payload, "auth_profile", integration.auth_profile_json(value.auth_profile))
-    discard map.set(payload, "realtime_profile", integration.realtime_profile_json(value.realtime_profile))
-    discard map.set(payload, "arena_profile", integration.arena_profile_json(value.arena_profile))
+    discard map.set(payload, "fzweb", integration.fzweb_profile_json(value.integrations.fzweb))
+    discard map.set(payload, "jobs_profile", integration.jobs_profile_json(value.integrations.jobs))
+    discard map.set(payload, "auth_profile", integration.auth_profile_json(value.integrations.auth))
+    discard map.set(payload, "realtime_profile", integration.realtime_profile_json(value.integrations.realtime))
+    discard map.set(payload, "arena_profile", integration.arena_profile_json(value.integrations.arena))
     return json.object(payload)
 }
 fn inspect_json() -> str {
     return inspect_report_json(inspect())
+}
+fn fzweb() -> integration.FzwebProfile {
+    return integration.profiles().fzweb
+}
+fn fzweb_json() -> str {
+    return integration.fzweb_profile_json(fzweb())
 }
 fn metrics_text() -> str {
     let mut state = runtime.make(budget.default_budget(), runtime.mode_strict())

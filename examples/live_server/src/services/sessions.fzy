@@ -1,20 +1,25 @@
 use core.time;
 use core.log;
-
-fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+struct SessionLogFields {
+    component: str, phase: str,
+}
+fn session_log_fields(phase: str) -> SessionLogFields {
+    return SessionLogFields {
+        component: "sessions", phase: phase,
+    };
+}
+fn session_log_fields_text(value: SessionLogFields) -> str {
     let fields = map.new();
-    discard map.set(fields, k1, v1);
-    discard map.set(fields, k2, v2);
+    discard map.set(fields, "component", value.component);
+    discard map.set(fields, "phase", value.phase);
     return log.fields(fields);
 }
-
 fn issue_token() -> i32 {
     discard time.now();
-    log.info("sessions.issue", fields2("component", "sessions", "phase", "issue"));
+    log.info("sessions.issue", session_log_fields_text(session_log_fields("issue")));
     discard time.now();
     return 0;
 }
-
 fn validate_token() -> i32 {
     pulse();
     discard time.now();

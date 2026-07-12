@@ -2,32 +2,36 @@ use core.fs;
 use core.time;
 use core.proc;
 use core.log;
-
-fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+struct TelemetryLogFields {
+    component: str, phase: str,
+}
+fn telemetry_log_fields(phase: str) -> TelemetryLogFields {
+    return TelemetryLogFields {
+        component: "telemetry", phase: phase,
+    };
+}
+fn telemetry_log_fields_text(value: TelemetryLogFields) -> str {
     let fields = map.new();
-    discard map.set(fields, k1, v1);
-    discard map.set(fields, k2, v2);
+    discard map.set(fields, "component", value.component);
+    discard map.set(fields, "phase", value.phase);
     return log.fields(fields);
 }
-
 fn bootstrap_metrics() -> i32 {
     let telemetry_file_ref = fs.open("live_server.telemetry.log");
     defer fs.close(telemetry_file_ref);
-    log.info("telemetry.bootstrap", fields2("component", "telemetry", "phase", "bootstrap"));
+    log.info("telemetry.bootstrap", telemetry_log_fields_text(telemetry_log_fields("bootstrap")));
     discard fs.write(telemetry_file_ref, "telemetry.bootstrap\n");
     discard time.now();
     return 0;
 }
-
 fn log_latency_bucket() -> i32 {
     let telemetry_file_ref = fs.open("live_server.telemetry.log");
     defer fs.close(telemetry_file_ref);
-    log.info("telemetry.latency", fields2("component", "telemetry", "phase", "latency"));
+    log.info("telemetry.latency", telemetry_log_fields_text(telemetry_log_fields("latency")));
     discard time.now();
     discard fs.write(telemetry_file_ref, "telemetry.latency\n");
     return 0;
 }
-
 fn log_perf_snapshot() -> i32 {
     let telemetry_file_ref = fs.open("live_server.telemetry.log");
     defer fs.close(telemetry_file_ref);
@@ -35,15 +39,14 @@ fn log_perf_snapshot() -> i32 {
     defer proc.close(perf_proc_owned);
     discard proc.exec_timeout(perf_proc_owned);
     discard fs.write(telemetry_file_ref, "telemetry.perf\n");
-    log.info("telemetry.perf", fields2("component", "telemetry", "phase", "perf"));
+    log.info("telemetry.perf", telemetry_log_fields_text(telemetry_log_fields("perf")));
     discard time.now();
     return 0;
 }
-
 fn flush_runtime_stats() -> i32 {
     let telemetry_file_ref = fs.open("live_server.telemetry.log");
     defer fs.close(telemetry_file_ref);
-    log.info("telemetry.flush", fields2("component", "telemetry", "phase", "flush"));
+    log.info("telemetry.flush", telemetry_log_fields_text(telemetry_log_fields("flush")));
     discard fs.write(telemetry_file_ref, "telemetry.flush\n");
     discard fs.flush(telemetry_file_ref);
     discard fs.fsync(telemetry_file_ref);

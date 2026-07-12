@@ -6,7 +6,7 @@ Consume it like a normal package dependency:
 
 - declare `fzbounds = {}` under `[deps]`
 - import it in source with `use fzbounds;`
-- call the public surface such as `fzbounds.inspect_json()` or `fzbounds.doctor_json()`
+- call the public boundary emitters such as `fzbounds.inspect_json()` or `fzbounds.doctor_json()`
 
 Compiler DX note:
 
@@ -19,19 +19,27 @@ Compiler DX note:
 - Freeze-aware accounting so boot-time growth and runtime growth are modeled separately.
 - Bounded arena, list, map, queue, channel, and buffer helpers with inspectable overflow state.
 - Region lifecycle support with per-region allocation counts, peaks, timing, and validation.
-- First-class telemetry and integration reports for `fzweb`, jobs, auth/session, and realtime-style workloads.
+- Typed-first service and integration flows that carry structured reports until the named JSON emitters.
+- First-class telemetry and integration profiles for `fzweb`, jobs, auth/session, and realtime-style workloads.
+
+## Architecture
+
+- `src/integration/mod.fzy` owns typed integration catalog/profile builders. JSON emission lives in named emitter helpers such as `catalog_json`, `fzweb_profile_json`, and `jobs_profile_json`.
+- `src/services/mod.fzy` composes typed service reports (`DoctorReport`, `RuntimeDemoReport`, `InspectReport`) from runtime state and typed integration bundles, then exposes named emitters for CLI and package boundaries.
+- `src/cli/mod.fzy` dispatches commands through typed service builders first and only renders JSON at the terminal boundary.
+- Internal flow stays on structs; JSON is a boundary format, not the working representation.
 
 ## Layout (Grouped by Concern)
 
-- `src/model/mod.fzy`: shared state structs and boundary serializers.
+- `src/model/mod.fzy`: shared state structs and lower-level runtime records.
 - `src/budget/mod.fzy`: budget constructors and profile helpers.
 - `src/runtime/mod.fzy`: runtime mode, freeze, allocation accounting, overflow recording, and assertions.
 - `src/regions/mod.fzy`: bounded region lifecycle and validation helpers.
 - `src/arena/mod.fzy`: fixed-capacity arena accounting.
 - `src/containers/mod.fzy`: bounded list/map/queue/channel/buffer abstractions.
-- `src/integration/mod.fzy`: framework-shaped integration examples for higher-level packages.
-- `src/services/mod.fzy`: packaged reports, demos, and deterministic surface helpers.
-- `src/cli/mod.fzy`: binary UX for `doctor`, `inspect`, `strict-demo`, `audit-demo`, and `fzweb`.
+- `src/integration/mod.fzy`: typed integration catalogs, integration profiles, and their boundary emitters.
+- `src/services/mod.fzy`: typed report assembly plus named JSON emitters for package and CLI boundaries.
+- `src/cli/mod.fzy`: binary UX for `doctor`, `inspect`, `strict-demo`, `audit-demo`, and `fzweb`, rendered from typed flows.
 - `src/main.fzy`: packaged deterministic smoke surface.
 
 ## Core API
@@ -42,7 +50,9 @@ Compiler DX note:
 - `regions.open`, `regions.allocate`, `regions.close`, `regions.validate`
 - `arena.make`, `arena.alloc`, `arena.reset`
 - `containers.list_make`, `containers.map_make`, `containers.queue_make`, `containers.channel_make`, `containers.buffer_make`
-- `services.doctor_json`, `services.inspect_json`, `services.strict_demo_json`, `services.audit_demo_json`, `services.metrics_text`
+- `integration.catalog`, `integration.profiles`, `integration.catalog_json`
+- `services.doctor`, `services.inspect`, `services.strict_demo`, `services.audit_demo`
+- `services.doctor_json`, `services.inspect_json`, `services.strict_demo_json`, `services.audit_demo_json`, `services.fzweb_json`, `services.metrics_text`
 
 ## Production Checks
 

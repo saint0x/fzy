@@ -1,27 +1,32 @@
 use core.fs;
 use core.time;
 use core.log;
-
-fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+struct MetricLogFields {
+    component: str, phase: str,
+}
+fn metric_log_fields(phase: str) -> MetricLogFields {
+    return MetricLogFields {
+        component: "metrics", phase: phase,
+    };
+}
+fn metric_log_fields_text(value: MetricLogFields) -> str {
     let fields = map.new();
-    discard map.set(fields, k1, v1);
-    discard map.set(fields, k2, v2);
+    discard map.set(fields, "component", value.component);
+    discard map.set(fields, "phase", value.phase);
     return log.fields(fields);
 }
-
 fn record_req() -> i32 {
     let metrics_file_ref = fs.open("live_server.metrics.log");
     defer fs.close(metrics_file_ref);
-    log.info("metrics.req", fields2("component", "metrics", "phase", "req"));
+    log.info("metrics.req", metric_log_fields_text(metric_log_fields("req")));
     discard fs.write(metrics_file_ref, "metrics.req\n");
     discard time.now();
     return 0;
 }
-
 fn record_err() -> i32 {
     let metrics_file_ref = fs.open("live_server.metrics.log");
     defer fs.close(metrics_file_ref);
-    log.warn("metrics.err", fields2("component", "metrics", "phase", "err"));
+    log.warn("metrics.err", metric_log_fields_text(metric_log_fields("err")));
     discard fs.write(metrics_file_ref, "metrics.err\n");
     discard time.now();
     return 0;

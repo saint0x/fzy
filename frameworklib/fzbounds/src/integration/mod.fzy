@@ -27,8 +27,37 @@ struct ArenaProfile {
     arena_capacity_bytes: i32,
     boot_allocated_bytes: i32,
 }
+struct IntegrationCatalog {
+    web: str,
+    jobs: str,
+    auth: str,
+    realtime: str,
+}
+struct IntegrationProfiles {
+    fzweb: FzwebProfile,
+    jobs: JobsProfile,
+    auth: AuthProfile,
+    realtime: RealtimeProfile,
+    arena: ArenaProfile,
+}
 fn json_i32(value: i32) -> str {
     return str.from_i32(value)
+}
+fn catalog() -> IntegrationCatalog {
+    return IntegrationCatalog {
+        web: "fzweb",
+        jobs: "fzjobs",
+        auth: "fzauth",
+        realtime: "fzrealtime",
+    }
+}
+fn catalog_json(value: IntegrationCatalog) -> str {
+    let payload = list.new()
+    discard list.push(payload, json.str(value.web))
+    discard list.push(payload, json.str(value.jobs))
+    discard list.push(payload, json.str(value.auth))
+    discard list.push(payload, json.str(value.realtime))
+    return json.array(payload)
 }
 fn fzweb_request() -> FzwebProfile {
     return FzwebProfile {
@@ -122,4 +151,13 @@ fn arena_profile_json(value: ArenaProfile) -> str {
 }
 fn arena_bootstrap_json() -> str {
     return arena_profile_json(arena_bootstrap())
+}
+fn profiles() -> IntegrationProfiles {
+    return IntegrationProfiles {
+        fzweb: fzweb_request(),
+        jobs: jobs_worker(),
+        auth: auth_store(),
+        realtime: realtime_room(),
+        arena: arena_bootstrap(),
+    }
 }

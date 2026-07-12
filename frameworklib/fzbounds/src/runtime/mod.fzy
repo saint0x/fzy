@@ -12,9 +12,6 @@ fn mode_audit() -> str {
 fn mode_strict() -> str {
     return "strict"
 }
-fn json_i32(value: i32) -> str {
-    return str.from_i32(value)
-}
 fn make(budget: model.Budget, mode: str) -> model.RuntimeState {
     return model.runtime_state(budget, mode)
 }
@@ -52,16 +49,13 @@ fn allows_runtime_allocation(state: model.RuntimeState) -> i32 {
     return 0
 }
 fn record_audit(state: model.RuntimeState, message: str) -> model.RuntimeState {
-    let event = map.new()
-    discard map.set(event, "message", json.str(message))
-    discard map.set(event, "timestamp_ms", json_i32(time.monotonic_ms()))
-    discard list.push(state.audit_events, json.object(event))
-    return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
+    let events = model.audit_log_append(state.audit_events, message, time.monotonic_ms())
+    return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, events, state.injected_region, state.injected_alloc_fail)
 }
 fn record_overflow(state: model.RuntimeState, resource: str, capacity: i32, attempt: i32, region: str, message: str, rejected: i32) -> model.RuntimeState {
     let event = model.overflow_event(resource, capacity, attempt, region, message, time.monotonic_ms(), rejected)
-    discard list.push(state.overflow_events, model.overflow_json(event))
-    let mut next = model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total + 1, state.rejected_total + rejected, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
+    let events = model.overflow_log_append(state.overflow_events, event)
+    let mut next = model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total + 1, state.rejected_total + rejected, state.region_count, state.region_peak, state.assert_failures_total, state.closed_regions, events, state.audit_events, state.injected_region, state.injected_alloc_fail)
     if state.mode == mode_audit() || state.mode == mode_warn() {
         next = record_audit(next, message)
     }
@@ -105,9 +99,9 @@ fn allocate(state: model.RuntimeState, bytes: i32, region: str, resource: str) -
     return next
 }
 fn record_region(state: model.RuntimeState, region: model.Region) -> model.RuntimeState {
-    discard list.push(state.closed_regions, model.region_json(region))
+    let closed_regions = model.region_log_append(state.closed_regions, region)
     let next_count = state.region_count + 1
-    return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, next_count, peak_of(state.region_peak, next_count), state.assert_failures_total, state.closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
+    return model.runtime_state_full(state.budget, state.mode, state.max_memory_bytes, state.frozen, state.memory_used, state.memory_peak, state.allocations_total, state.overflows_total, state.rejected_total, next_count, peak_of(state.region_peak, next_count), state.assert_failures_total, closed_regions, state.overflow_events, state.audit_events, state.injected_region, state.injected_alloc_fail)
 }
 fn assert_no_heap_growth(before_bytes: i32, after_bytes: i32) -> i32 {
     if after_bytes <= before_bytes {

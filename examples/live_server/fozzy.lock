@@ -1,12 +1,12 @@
 {
-  "dependencyGraphHash": "240986bd007c39b401769f287451bf06d899567661fc6f0518a66abd06beb336",
+  "schemaVersion": "fozzylang.lock.v0",
+  "dependencyGraphHash": "e1a8ad6cb82fe80629d340c5bd697cac3b023575f69c28f6f1dd83607b8f68b4",
   "graph": {
-    "deps": [],
     "package": {
-      "manifestHash": "1b36e7390f755612a21eeec9b3f563423cee7ca89bd0fd582d1b8ddaaffdbe26",
       "name": "live_server",
-      "version": "0.1.0"
-    }
-  },
-  "schemaVersion": "fozzylang.lock.v0"
+      "version": "0.1.0",
+      "manifestHash": "1b36e7390f755612a21eeec9b3f563423cee7ca89bd0fd582d1b8ddaaffdbe26"
+    },
+    "deps": []
+  }
 }

@@ -2,21 +2,27 @@ use core.thread;
 use core.time;
 use core.fs;
 use core.log;
-
-fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+struct RuntimeStatsLogFields {
+    component: str, phase: str,
+}
+fn runtime_stats_log_fields(phase: str) -> RuntimeStatsLogFields {
+    return RuntimeStatsLogFields {
+        component: "runtime.stats", phase: phase,
+    };
+}
+fn runtime_stats_log_fields_text(value: RuntimeStatsLogFields) -> str {
     let fields = map.new();
-    discard map.set(fields, k1, v1);
-    discard map.set(fields, k2, v2);
+    discard map.set(fields, "component", value.component);
+    discard map.set(fields, "phase", value.phase);
     return log.fields(fields);
 }
-
 fn sample() -> i32 {
     let stats_file_ref = fs.open("live_server.runtime.stats");
     defer fs.close(stats_file_ref);
     checkpoint();
-    log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_a"));
-    log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_b"));
-    log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_c"));
+    log.info("runtime.stats", runtime_stats_log_fields_text(runtime_stats_log_fields("sample_a")));
+    log.info("runtime.stats", runtime_stats_log_fields_text(runtime_stats_log_fields("sample_b")));
+    log.info("runtime.stats", runtime_stats_log_fields_text(runtime_stats_log_fields("sample_c")));
     discard time.now();
     discard fs.write(stats_file_ref, "runtime.stats.sample\n");
     yield();

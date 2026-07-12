@@ -1,6 +1,36 @@
 use core.http;
 use core.time;
-
+struct UserRequest {
+    user: str,
+}
+struct UserResponse {
+    ok: i32, user: str,
+}
+fn user_request(user: str) -> UserRequest {
+    return UserRequest {
+        user: user,
+    };
+}
+fn user_request_from_body(body: JsonHandle) -> UserRequest {
+    return user_request(json.get_str(body, "user"));
+}
+fn user_response(ok: i32, user: str) -> UserResponse {
+    return UserResponse {
+        ok: ok, user: user,
+    };
+}
+fn bool_text(value: i32) -> str {
+    if value == 1 {
+        return "true";
+    }
+    return "false";
+}
+fn user_response_json(value: UserResponse) -> str {
+    let payload = map.new();
+    discard map.set(payload, "ok", json.str(bool_text(value.ok)));
+    discard map.set(payload, "user", json.str(value.user));
+    return json.object(payload);
+}
 fn listen_public() -> i32 {
     let listener_owned: HttpHandle = http.bind("127.0.0.1:8080");
     http.listen(listener_owned);
@@ -8,24 +38,19 @@ fn listen_public() -> i32 {
     discard time.now();
     return 0;
 }
-
 fn route_health() -> i32 {
     let conn_owned: HttpHandle = http.accept();
     http.read(conn_owned);
     http.write(conn_owned, 200, "ok");
     return 0;
 }
-
 fn route_users() -> i32 {
     let conn_owned: HttpHandle = http.accept();
     timeout(1000);
     http.read(conn_owned);
-    let body = http.body_json(conn_owned);
-    let user = json.get_str(body, "user");
-    let payload = map.new();
-    discard map.set(payload, "ok", "true");
-    discard map.set(payload, "user", json.str(user));
-    http.write_json(conn_owned, 200, json.object(payload));
+    let request = user_request_from_body(http.body_json(conn_owned));
+    let response = user_response(1, request.user);
+    http.write_json(conn_owned, 200, user_response_json(response));
     cancel();
     return 0;
 }

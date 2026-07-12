@@ -1,12 +1,12 @@
 {
-  "dependencyGraphHash": "e9f6dbe4f51ebfdf825d31fc9d26156ee30d27c1d99b59d8334bfe28b15f1e45",
+  "schemaVersion": "fozzylang.lock.v0",
+  "dependencyGraphHash": "582510372fe1a641adfb339c2aa54dabdece0e119b7f38938238541f29d4c236",
   "graph": {
-    "deps": [],
     "package": {
-      "manifestHash": "408b06ba6620d2f7fcc7840a7aa93ad4f7d7ab6a6564b4d99c17863d0397cf01",
       "name": "fzbounds",
-      "version": "0.1.0"
-    }
-  },
-  "schemaVersion": "fozzylang.lock.v0"
+      "version": "0.1.0",
+      "manifestHash": "408b06ba6620d2f7fcc7840a7aa93ad4f7d7ab6a6564b4d99c17863d0397cf01"
+    },
+    "deps": []
+  }
 }

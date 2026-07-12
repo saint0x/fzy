@@ -18,7 +18,8 @@ fn fzweb_budget() -> model.Budget {
     return make(32 * 1024 * 1024, 2048, 4096, 1024, 4096, 512, 20000, 512, 512, 4096)
 }
 fn json() -> str {
-    return model.budget_json(production_budget())
+    let item = production_budget()
+    return model.budget_json(item)
 }
 fn surface_score() -> i32 {
     let item = production_budget()
