@@ -830,12 +830,139 @@ fn removed_api_type_diagnostics_surface_fix_text() {
         .expect("grouped type diagnostic should be present");
     assert_eq!(
         diagnostic.fix.as_deref(),
-        Some("replace fixed-arity call with `json.object(#{\"k\": json.str(\"v\")})`")
+        Some(
+            "replace fixed-arity call by building a map with `map.new()/map.set(...)`, then pass that map to `json.object(...)` only at the boundary"
+        )
     );
     assert!(diagnostic
         .suggested_fixes
         .iter()
-        .any(|fix| fix.contains("json.object")));
+        .any(|fix| fix.contains("map.new()/map.set(...)")));
+}
+
+#[test]
+fn grouped_nojson_decode_chain_errors_include_boundary_fix() {
+    let module = fir::FirModule {
+        name: "m".to_string(),
+        effects: core::CapabilitySet::default(),
+        required_effects: core::CapabilitySet::default(),
+        unknown_effects: vec![],
+        nodes: 1,
+        entry_return_type: None,
+        entry_return_const_i32: None,
+        entry_has_return_expr: false,
+        linear_resources: Vec::new(),
+        deferred_resources: Vec::new(),
+        matches_without_wildcard: 0,
+        match_unreachable_arms: 0,
+        match_duplicate_catchall_arms: 0,
+        entry_requires: Vec::new(),
+        entry_ensures: Vec::new(),
+        host_syscall_sites: 0,
+        unsafe_sites: 0,
+        unsafe_reasoned_sites: 0,
+        unsafe_contract_sites: Vec::new(),
+        reference_sites: 0,
+        alloc_sites: 0,
+        free_sites: 0,
+        extern_c_abi_functions: 0,
+        repr_c_layout_items: 0,
+        generic_instantiations: Vec::new(),
+        generic_specializations: Vec::new(),
+        call_graph: Vec::new(),
+        functions: Vec::new(),
+        typed_functions: Vec::new(),
+        typed_globals: Vec::new(),
+        struct_defs: std::collections::HashMap::new(),
+        enum_defs: std::collections::HashMap::new(),
+        type_errors: 1,
+        type_error_details: vec![
+            "NOJSON: `json.parse(http.body(...))`-style internal decode chaining is forbidden in production code; decode once at the boundary with `http.body_json(...)`/`http.body_bind(...)` or map the transport body into typed domain values before internal logic".to_string(),
+        ],
+        function_capability_requirements: Vec::new(),
+        ownership_violations: Vec::new(),
+        unsafe_context_violations: Vec::new(),
+        capability_token_violations: Vec::new(),
+        thread_boundary_violations: Vec::new(),
+        trait_violations: Vec::new(),
+        reference_lifetime_violations: Vec::new(),
+        linear_type_violations: Vec::new(),
+    };
+    let report = verify(&module);
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("NOJSON"))
+        .expect("grouped type diagnostic should be present");
+    assert_eq!(
+        diagnostic.fix.as_deref(),
+        Some(
+            "replace the decode chain with `http.body_json(...)`/`http.body_bind(...)`, then translate the boundary payload into typed domain values before internal use"
+        )
+    );
+}
+
+#[test]
+fn removed_log_fields_arity_guidance_uses_map_builder_fix() {
+    let module = fir::FirModule {
+        name: "m".to_string(),
+        effects: core::CapabilitySet::default(),
+        required_effects: core::CapabilitySet::default(),
+        unknown_effects: vec![],
+        nodes: 1,
+        entry_return_type: None,
+        entry_return_const_i32: None,
+        entry_has_return_expr: false,
+        linear_resources: Vec::new(),
+        deferred_resources: Vec::new(),
+        matches_without_wildcard: 0,
+        match_unreachable_arms: 0,
+        match_duplicate_catchall_arms: 0,
+        entry_requires: Vec::new(),
+        entry_ensures: Vec::new(),
+        host_syscall_sites: 0,
+        unsafe_sites: 0,
+        unsafe_reasoned_sites: 0,
+        unsafe_contract_sites: Vec::new(),
+        reference_sites: 0,
+        alloc_sites: 0,
+        free_sites: 0,
+        extern_c_abi_functions: 0,
+        repr_c_layout_items: 0,
+        generic_instantiations: Vec::new(),
+        generic_specializations: Vec::new(),
+        call_graph: Vec::new(),
+        functions: Vec::new(),
+        typed_functions: Vec::new(),
+        typed_globals: Vec::new(),
+        struct_defs: std::collections::HashMap::new(),
+        enum_defs: std::collections::HashMap::new(),
+        type_errors: 1,
+        type_error_details: vec![
+            "unresolved call target `log.fields2` (autofix: use `log.fields(map_handle)` instead)"
+                .to_string(),
+        ],
+        function_capability_requirements: Vec::new(),
+        ownership_violations: Vec::new(),
+        unsafe_context_violations: Vec::new(),
+        capability_token_violations: Vec::new(),
+        thread_boundary_violations: Vec::new(),
+        trait_violations: Vec::new(),
+        reference_lifetime_violations: Vec::new(),
+        linear_type_violations: Vec::new(),
+    };
+    let report = verify(&module);
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("type-check failed"))
+        .expect("grouped type diagnostic should be present");
+    assert_eq!(
+        diagnostic.fix.as_deref(),
+        Some(
+            "replace removed arity helper by building a map with `map.new()/map.set(...)`, then pass that map to `log.fields(...)`"
+        )
+    );
 }
 
 #[test]

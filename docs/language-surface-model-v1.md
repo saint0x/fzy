@@ -19,7 +19,6 @@ Examples:
 
 ```fzy
 let home = env.get("HOME")
-let payload = json.object(#{"ok": json.raw("true")})
 let size = str.len(home)
 ```
 
@@ -27,6 +26,7 @@ Notes:
 
 - `use core.env;` and `use core.str;` are marker imports for builtin namespaces, not sibling module imports.
 - `proc.*` and `term.*` are always callable as runtime intrinsic namespaces. `use core.process;` and `use core.term;` import higher-level stdlib facades.
+- `json.*` is always available as a boundary namespace for transport/artifact encoding and decoding; it is not the recommended source of truth for internal service architecture.
 
 ## 2. `use core.*` Facades
 

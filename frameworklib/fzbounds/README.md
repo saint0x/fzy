@@ -23,7 +23,7 @@ Compiler DX note:
 
 ## Layout (Grouped by Concern)
 
-- `src/model/mod.fzy`: shared state structs and JSON encoders.
+- `src/model/mod.fzy`: shared state structs and boundary serializers.
 - `src/budget/mod.fzy`: budget constructors and profile helpers.
 - `src/runtime/mod.fzy`: runtime mode, freeze, allocation accounting, overflow recording, and assertions.
 - `src/regions/mod.fzy`: bounded region lifecycle and validation helpers.

@@ -5,7 +5,7 @@
 It demonstrates:
 
 - signed session envelopes with `core.security`
-- model-first request classification plus JSON tool catalogs
+- model-first request classification plus typed tool catalog state with explicit boundary serialization
 - audit-trail persistence through `core.storage`
 - transcript-friendly CLI behavior with a narrow command story
 - `spawn_ctx(...)` + `thread.context_id()` for bounded parallel work

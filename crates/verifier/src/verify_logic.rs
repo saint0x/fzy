@@ -789,13 +789,20 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
 
 fn apply_type_fix_hints(mut diag: Diagnostic, detail: &str) -> Diagnostic {
     if detail.contains("unresolved call target `json.object") && detail.contains("autofix") {
-        diag =
-            diag.with_fix("replace fixed-arity call with `json.object(#{\"k\": json.str(\"v\")})`");
+        diag = diag.with_fix(
+            "replace fixed-arity call by building a map with `map.new()/map.set(...)`, then pass that map to `json.object(...)` only at the boundary",
+        );
     } else if detail.contains("unresolved call target `json.array") && detail.contains("autofix") {
         diag = diag.with_fix("replace fixed-arity call with `json.array([item1, item2])`");
     } else if detail.contains("unresolved call target `log.fields") && detail.contains("autofix") {
-        diag = diag
-            .with_fix("replace removed arity helper with `log.fields(#{\"k\": json.str(\"v\")})`");
+        diag = diag.with_fix(
+            "replace removed arity helper by building a map with `map.new()/map.set(...)`, then pass that map to `log.fields(...)`",
+        );
+    } else if detail.contains("NOJSON: `json.parse(http.body(...))`-style internal decode chaining")
+    {
+        diag = diag.with_fix(
+            "replace the decode chain with `http.body_json(...)`/`http.body_bind(...)`, then translate the boundary payload into typed domain values before internal use",
+        );
     }
     diag
 }

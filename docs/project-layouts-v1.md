@@ -57,8 +57,8 @@ src/
 Guidance:
 
 - Put route/schema/handler registration in one route catalog path.
-- Keep transport-specific JSON shaping in `api/` or response helpers, not in business logic.
-- Prefer object-literal JSON construction (`json.object(#{...})`) for static payloads.
+- Keep transport-specific JSON shaping in `api/` or response helpers, not in business logic; `model/`, `services/`, and `runtime/` should keep typed source-of-truth state per `NOJSON.md`.
+- Keep response/request DTOs and boundary encoders near the transport edge; do not let JSON builder code become the data model for the service.
 
 ## GPU Compute App
 

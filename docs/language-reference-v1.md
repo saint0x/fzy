@@ -376,10 +376,11 @@ Semantics:
   - `path.stem(path)`
   - `path.extension(path)`
 
-## JSON And Logging Ergonomics
+## Boundary JSON And Logging Ergonomics
 
 - First-class object literals are supported and lower to canonical map primitives:
   - `#{ "component": json.str("api"), "phase": json.str("boot") }`
+- Typed structs/enums remain the source of truth for internal state; JSON builders exist for transport, persistence interchange, and operator-facing machine output.
 - Object literal keys must be quoted strings.
 - Canonical string assembly uses `str.concat(...)`.
   - `str.concat("a", "b")`
@@ -389,10 +390,10 @@ Semantics:
 - Canonical substring extraction uses end-exclusive slicing:
   - `str.slice(value, start, end_exclusive)`
   - `str.slice("name", 1, 3)` yields `"am"`
-- Dynamic JSON builders are canonical:
+- Dynamic JSON builders are boundary tools:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
-- Dynamic parsed-JSON iteration is first-class:
+- Dynamic parsed-JSON iteration is first-class at the boundary:
   - `json.keys(json_handle)` for object key iteration
   - `json.to_map(json_handle)` for object shapes whose values are strings
   - `json.to_list(json_handle)` for array shapes whose items are strings
@@ -401,6 +402,8 @@ Semantics:
   - Reserve `term.write_err` / `term.eprint*` for real errors or control-channel messages.
 - For inbound HTTP JSON, `http.body_json(conn)` is the canonical production path.
   - Prefer `let body = http.body_json(conn)` over `json.parse(http.body(conn))`.
+  - Convert boundary data into typed request/domain values before service logic runs.
+  - Do not keep normal service logic on `JsonHandle` state after the boundary decode step.
   - Use `http.body(conn)` when you explicitly need the raw transport body as text.
   - Use the raw-body path for generic protocol surfaces, signature-sensitive payloads, or custom transport bridges where exact incoming text matters.
   - Typical handler shape:
@@ -408,15 +411,19 @@ Semantics:
 ```fzy
 use core.http;
 
+struct MessageRequest {
+    message: str,
+}
+
 fn handle(conn: HttpHandle) -> i32 {
     http.read(conn)
     let body = http.body_json(conn)
-    let message = json.get_str(body, "message")
-    let keys = json.keys(body)
+    let req = MessageRequest { message: json.get_str(body, "message") }
+    let field_count = list.len(json.keys(body))
     let payload = map.new()
     discard map.set(payload, "ok", json.raw("true"))
-    discard map.set(payload, "message", json.str(message))
-    discard map.set(payload, "field_count", json.str(str.from_i32(list.len(keys))))
+    discard map.set(payload, "message", json.str(req.message))
+    discard map.set(payload, "field_count", json.str(str.from_i32(field_count)))
     return http.write_json(conn, 200, json.object(payload))
 }
 ```

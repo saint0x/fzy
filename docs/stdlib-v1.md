@@ -91,8 +91,9 @@ The v1 stdlib provides production baseline primitives for:
 - Request/response size and timeout limits are bounded by default.
 - Error semantics preserve parse vs timeout vs IO separation.
 - Inbound JSON request handling should prefer `http.body_json(conn)` over `http.body(conn)` plus `json.parse(...)`.
+- Decode at the HTTP boundary, then project immediately into typed request/domain state before business logic runs.
 - `http.body(conn)` remains the raw-text escape hatch for non-JSON or signature-sensitive payloads.
-- Typed JSON payload helpers are available in `core.http`:
+- Boundary JSON payload helpers are available in `core.http`:
   - `JsonPayload`
   - `json_payload_new/set_str/set_raw/encode`
   - `write_json_payload`
@@ -475,9 +476,9 @@ Transcript guidance:
   - `io.list_dir(path)`
   - `io.list_dir_entries(path)`
 
-### `collections` + JSON
+### `collections` + Boundary JSON
 
-- Dynamic list/map handle APIs are first-class for runtime-safe composition:
+- Dynamic list/map handle APIs are first-class for runtime-safe typed composition:
   - `list.new/push/pop/len/get/set/clear/join`
   - `map.new/set/get/has/delete/keys/len`
 - Canonical string assembly uses `str.concat(...)` for multi-part string construction.
@@ -485,10 +486,10 @@ Transcript guidance:
 - Small-value conversion helpers are first-class:
   - `str.from_i32(value)`
   - `str.from_bool(flag)`
-- JSON composition uses dynamic builders:
+- JSON composition is a boundary concern:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
-- Parsed JSON object/array bridges are first-class:
+- Parsed JSON object/array bridges exist to cross the boundary, not to replace typed domain structures:
   - `json.keys(json_handle)` iterates arbitrary object keys
   - `json.to_map(json_handle)` bridges string-valued objects into `MapHandle`
   - `json.to_list(json_handle)` bridges string arrays into `ListHandle`
@@ -498,9 +499,11 @@ Transcript guidance:
 http.read(conn)
 let body = http.body_json(conn)
 let name = json.get_str(body, "name")
+let req = CreateUserRequest { name: name }
+let result = create_user(req)
 let payload = map.new()
 discard map.set(payload, "ok", json.raw("true"))
-discard map.set(payload, "name", json.str(name))
+discard map.set(payload, "name", json.str(result.name))
 http.write_json(conn, 200, json.object(payload))
 ```
 
@@ -529,7 +532,7 @@ let route_base = path.basename(route_file)
   - `http.header_set("accept", "text/event-stream")`
   - `http.post_json_stream(...)` or `http.request_stream(...)`
   - line-oriented event parsing with `http.stream_read_line(...)`
-- Object literals (`#{ ... }`) lower to canonical map handles and are intended for small payload ergonomics.
+- Object literals (`#{ ... }`) lower to canonical map handles and are intended for small boundary payload ergonomics.
 - Use `http.body(conn)` plus manual parse only when you need raw protocol text or exact transport preservation.
 
 ### `security`
@@ -540,13 +543,13 @@ let route_base = path.basename(route_file)
 
 ### `log` and `error`
 
-- `log` surface supports structured fields and JSON-mode logging contracts for production services.
+- `log` surface supports structured fields and JSON-mode boundary logging contracts for production services.
 - Canonical structured fields path is `log.fields(map_handle)`.
 - `error` surface standardizes typed error classification, retryability, and status normalization.
 
 ### `util`
 
-- Shared ergonomic helpers for common app patterns:
+- Shared ergonomic helpers for common app patterns at typed-domain and boundary edges:
   - `log_fields2`, `log_fields3`
   - `json_object2`, `json_array2`
   - `http_write_json_map`, `http_post_json_capture_map`

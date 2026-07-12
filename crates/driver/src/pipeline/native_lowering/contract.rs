@@ -297,6 +297,14 @@ pub(crate) fn strict_stdlib_capability_policy_diagnostics(
             match expr {
                 ast::Expr::Call { callee, args } => {
                     match callee.as_str() {
+                        "json.object" => {
+                            if let Some(ast::Expr::ObjectLiteral(_)) = args.first() {
+                                self.warn(
+                                    "strict stdlib policy: `json.object(#{...})` models domain data as ad-hoc JSON",
+                                    "Prefer typed structs/enums or a named boundary mapper for production code; reserve raw JSON object literals for narrow boundary adapters and logging shims.",
+                                );
+                            }
+                        }
                         "json.raw" => {
                             if let Some(arg) = args.first() {
                                 match arg {
@@ -531,5 +539,47 @@ pub(crate) fn eval_contract_const_bool(expr: &ast::Expr) -> Option<bool> {
             _ => eval_const_i32_expr(expr, &empty_const_strings).map(|value| value != 0),
         },
         _ => eval_const_i32_expr(expr, &empty_const_strings).map(|value| value != 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_mode_warns_on_json_object_literals_for_domain_modeling() {
+        let source = r#"
+            fn main() -> i32 {
+                let payload = json.object(#{"ok": json.raw("true"), "msg": json.str("hi")});
+                if payload == "" {
+                    return 1;
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let diagnostics = strict_stdlib_capability_policy_diagnostics(&module);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("`json.object(#{...})` models domain data as ad-hoc JSON")
+        }));
+    }
+
+    #[test]
+    fn strict_mode_allows_log_fields_object_literals_without_nojson_warning() {
+        let source = r#"
+            fn main() -> i32 {
+                discard log.fields(#{"component": json.str("boot"), "phase": json.str("init")});
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let diagnostics = strict_stdlib_capability_policy_diagnostics(&module);
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("`json.object(#{...})` models domain data as ad-hoc JSON")
+        }));
     }
 }

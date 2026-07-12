@@ -74,6 +74,20 @@ pub(crate) fn validate_async_semantics(
     }
 }
 
+fn expr_strip_groups(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Group(inner) => expr_strip_groups(inner),
+        _ => expr,
+    }
+}
+
+fn expr_is_http_body_decode_source(expr: &Expr) -> bool {
+    match expr_strip_groups(expr) {
+        Expr::Call { callee, .. } => matches!(callee.as_str(), "http.body" | "http.body_read"),
+        _ => false,
+    }
+}
+
 pub(crate) struct TypeCheckEnv<'a> {
     pub(crate) current_namespace: &'a str,
     pub(crate) fn_sigs: &'a HashMap<String, (Vec<Type>, Type)>,
@@ -1376,7 +1390,7 @@ pub(crate) fn infer_expr_type(
                         && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
                     {
                         detail.push_str(
-                            "; autofix: replace with `json.object(#{\"k\": json.str(\"v\")})` and expand fields as needed",
+                            "; autofix: build a map (`let payload = map.new(); map.set(payload, \"k\", json.str(\"v\"));`) and pass it to `json.object(payload)` at the boundary",
                         );
                     }
                 } else if let Some(arity_suffix) = base_callee.strip_prefix("json.array") {
@@ -1392,7 +1406,7 @@ pub(crate) fn infer_expr_type(
                         && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
                     {
                         detail.push_str(
-                            "; autofix: replace with `log.fields(#{\"k\": json.str(\"v\")})`",
+                            "; autofix: build a map (`let fields = map.new(); map.set(fields, \"k\", json.str(\"v\"));`) and pass it to `log.fields(fields)`",
                         );
                     }
                 } else if let Some(hint) = builtin_namespace_hint(base_callee) {
@@ -1423,6 +1437,16 @@ pub(crate) fn infer_expr_type(
             let mut arg_types = Vec::with_capacity(args.len());
             for arg in args {
                 arg_types.push(infer_expr_type(arg, scopes, env, state));
+            }
+            if base_callee == "json.parse"
+                && args.first().is_some_and(expr_is_http_body_decode_source)
+            {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    "NOJSON: `json.parse(http.body(...))`-style internal decode chaining is forbidden in production code; decode once at the boundary with `http.body_json(...)`/`http.body_bind(...)` or map the transport body into typed domain values before internal logic".to_string(),
+                );
+                return Some(ret);
             }
             let signature_arg_types = coerce_gpu_upload_arg_types(
                 scopes,
@@ -2895,4 +2919,50 @@ pub(crate) fn monomorphize_typed_functions(
     typed_functions.extend(generated);
     generic_specializations.clear();
     generic_specializations.extend(seen);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_json_parse_http_body_decode_chains() {
+        let source = r#"
+            use core.http;
+
+            fn main() -> i32 {
+                let conn = http.accept();
+                let payload = json.parse(http.body(conn));
+                discard payload;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed.type_error_details.iter().any(|detail| {
+            detail.contains("NOJSON")
+                && detail.contains("json.parse(http.body(...))")
+                && detail.contains("http.body_json")
+        }));
+    }
+
+    #[test]
+    fn removed_json_object_arity_guidance_uses_boundary_map_builder() {
+        let source = r#"
+            fn main() -> i32 {
+                let payload = json.object3("a", json.str("1"), "b", json.str("2"), "c", json.str("3"));
+                discard payload;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed.type_error_details.iter().any(|detail| {
+            detail.contains("autofix")
+                && detail.contains("map.new()")
+                && detail.contains("json.object(payload)")
+        }));
+    }
 }

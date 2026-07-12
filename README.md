@@ -4,6 +4,8 @@ General-purpose systems language and production toolchain with a memory-safe-by-
 
 fzy ships one production CLI, `fz`, for both compiler workflows and deterministic validation. Correctness, determinism, replay, incident artifacts, and production evidence are part of the normal workflow rather than an afterthought. For a quick visual tour of the language, open the shipped [FZL showcase](./fzl-showcase.html) in your browser with `open fzl-showcase.html`. For the short argument for why you might pick it, see [WHYFZY.md](./WHYFZY.md).
 
+Repository architecture policy is typed internally and JSON at real boundaries only. `NOJSON.md` is the production contract for that rule across compiler/runtime internals, examples, and repo-facing design work.
+
 ## Start Here
 
 - Install: `INSTALL.md`
@@ -11,6 +13,7 @@ fzy ships one production CLI, `fz`, for both compiler workflows and deterministi
 - Why fzy: `WHYFZY.md`
 - Syntax and command examples: `CODE.md`
 - Production workflow: `docs/production-workflow-v1.md`
+- Typed-internals / JSON-boundary policy: `NOJSON.md`
 - GPU programming and validation: `docs/gpu-v1.md`
 - Safety and trust model: `docs/system-safety-trust-model-v1.md`
 - Unsafe authoring: `docs/unsafe-contract-authoring-v1.md`
@@ -138,7 +141,7 @@ Implemented and validated today:
 - recursive multi-file module loading from `mod` declarations
 - C header generation from exported `pubext c fn` signatures
 - RPC schema, client, and server stub generation via `fz rpc gen`
-- modern language/runtime surface across ADTs, pattern matching, traits, generics, JSON, process, terminal, logging, filesystem/path, and outbound streaming HTTP
+- modern language/runtime surface across ADTs, pattern matching, traits, generics, typed domain modeling, process, terminal, logging, filesystem/path, boundary JSON, and outbound streaming HTTP
 - production crypto/security surface via `core.crypto` and `core.security`, including secure random, hashing, HMAC, constant-time compare, and URL-safe encodings
 - `fzweb` production web framework modules for app routing, cookies, sessions, multipart uploads, persistence, SSE, websockets, and OpenAPI export
 - `fz run` executes native output directly with live text streaming or JSON capture
@@ -153,10 +156,11 @@ Implemented and validated today:
 fzy is set up to support these production claims today:
 
 - the shipped safe-language surface is memory-safe by default within the documented verifier/compiler rule scope, with explicit audited unsafe boundaries and opt-in ownership-tracked manual memory management
+- internal compiler/runtime/tooling semantics remain a typed source of truth, with JSON reserved for external boundaries, generated artifacts, and operator-facing machine output
 - `alloc(...)` / `free(...)` stay in safe code when the compiler can still verify ownership, provenance, and cleanup execution
 - verifiable correctness through the verifier, diagnostics, deterministic testing, replay, and CI artifacts
 - deterministic execution through recorded traces, replay, and scheduler control
-- general-purpose systems coverage across async/tasks, RPC, ADTs, traits/generics, process control, terminal I/O, logging, filesystem/path, JSON work, and streaming HTTP
+- general-purpose systems coverage across async/tasks, RPC, ADTs, traits/generics, process control, terminal I/O, logging, filesystem/path, typed internal state, boundary JSON, and streaming HTTP
 - production web/service coverage through `fzweb` plus security primitives that keep session/cookie/auth flows inside the supported runtime surface
 
 See also:
@@ -164,6 +168,7 @@ See also:
 - `docs/system-safety-trust-model-v1.md`
 - `docs/production-memory-model-v1.md`
 - `docs/production-workflow-v1.md`
+- `NOJSON.md`
 
 ## Build And Test
 
@@ -240,7 +245,7 @@ Runtime defaults and surfaced behavior:
 - `.env` or `FZ_DOTENV_PATH` is loaded once before env/HTTP operations
 - text logs are the default; JSON logs are opt-in via `log.set_json(1)`
 - standard library surface includes `core.process`, `core.term`, `core.thread`, `core.log`, `core.text`, `core.io`, `core.path`, and `core.util`
-- terminal-safe string escapes, structured log fields, JSON builders, JSON key iteration, and map-backed object literals are first-class
+- terminal-safe string escapes, structured log fields, typed collection builders, boundary-JSON helpers, and map-backed object literals are first-class
 - process helpers support argv/env builders plus spawn/run flows with wait/stdout/stderr/exit inspection
 - `core.crypto` and `core.security` cover secure random, digests, HMAC, URL-safe encodings, and constant-time comparisons for production auth/session flows
 - `fzweb` ships concern-grouped framework modules plus built-in routes for health, readiness, metrics, inspect, search, cookies, sessions, uploads, events, websockets, item CRUD, OpenAPI, and static assets
