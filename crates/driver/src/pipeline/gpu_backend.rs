@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{anyhow, Result};
 use diagnostics::{Diagnostic, Severity};
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GpuBackendKind {
@@ -78,24 +79,64 @@ pub(crate) struct GpuBackendAdapter {
     pub(crate) reason: &'static str,
 }
 
-pub(crate) fn gpu_backend_report_json() -> serde_json::Value {
-    let adapters = GpuBackendKind::ALL
-        .into_iter()
-        .map(|kind| {
-            let adapter = kind.adapter();
-            (
-                kind.as_str().to_string(),
-                serde_json::json!({
-                    "architectureStatus": adapter.architecture_status,
-                    "executionStatus": adapter.execution_status,
-                    "hostSupport": adapter.host_support,
-                    "executableNow": adapter.executable_now,
-                    "reason": adapter.reason,
-                }),
-            )
+#[derive(Debug, Clone)]
+pub(crate) struct GpuBackendReportEntry {
+    pub(crate) architecture_status: &'static str,
+    pub(crate) execution_status: &'static str,
+    pub(crate) host_support: &'static str,
+    pub(crate) executable_now: bool,
+    pub(crate) reason: &'static str,
+}
+
+impl GpuBackendReportEntry {
+    fn from_adapter(adapter: GpuBackendAdapter) -> Self {
+        Self {
+            architecture_status: adapter.architecture_status,
+            execution_status: adapter.execution_status,
+            host_support: adapter.host_support,
+            executable_now: adapter.executable_now,
+            reason: adapter.reason,
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        serde_json::json!({
+            "architectureStatus": self.architecture_status,
+            "executionStatus": self.execution_status,
+            "hostSupport": self.host_support,
+            "executableNow": self.executable_now,
+            "reason": self.reason,
         })
-        .collect::<serde_json::Map<_, _>>();
-    serde_json::Value::Object(adapters)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GpuBackendReport {
+    pub(crate) adapters: Vec<(GpuBackendKind, GpuBackendReportEntry)>,
+}
+
+impl GpuBackendReport {
+    pub(crate) fn to_json(&self) -> Value {
+        let adapters = self
+            .adapters
+            .iter()
+            .map(|(kind, entry)| (kind.as_str().to_string(), entry.to_json()))
+            .collect::<Map<_, _>>();
+        Value::Object(adapters)
+    }
+}
+
+pub(crate) fn gpu_backend_report() -> GpuBackendReport {
+    GpuBackendReport {
+        adapters: GpuBackendKind::ALL
+            .into_iter()
+            .map(|kind| (kind, GpuBackendReportEntry::from_adapter(kind.adapter())))
+            .collect(),
+    }
+}
+
+pub(crate) fn gpu_backend_report_json() -> serde_json::Value {
+    gpu_backend_report().to_json()
 }
 
 pub(crate) fn resolve_gpu_backend(

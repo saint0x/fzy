@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use serde_json::Value;
 
 pub(crate) const SHARED_GPU_LAUNCH_ABI_VERSION: &str = "fozzylang.gpu_launch_abi.v1";
 
@@ -20,8 +21,37 @@ pub(crate) struct SharedGpuKernelContract {
     pub(crate) capability_flags: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SharedGpuLaunchGeometry {
+    pub(crate) grid_dimensions: Vec<&'static str>,
+    pub(crate) block_dimensions: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SharedGpuBackendLimitProfile {
+    pub(crate) module_format: &'static str,
+    pub(crate) execution_model: Option<&'static str>,
+    pub(crate) entry_point_encoding: Option<&'static str>,
+    pub(crate) entry_directive: Option<&'static str>,
+    pub(crate) parameter_state_space: Option<&'static str>,
+    pub(crate) launch_geometry: SharedGpuLaunchGeometry,
+    pub(crate) argument_encoding: &'static str,
+    pub(crate) supported_layout_class_version: &'static str,
+    pub(crate) supported_scalar_param_types: Vec<&'static str>,
+    pub(crate) supported_slice_element_types: Vec<&'static str>,
+    pub(crate) unsupported_shape_policy: &'static str,
+    pub(crate) runtime_status: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SharedGpuBackendLimitProfiles {
+    pub(crate) metal: SharedGpuBackendLimitProfile,
+    pub(crate) spirv: SharedGpuBackendLimitProfile,
+    pub(crate) nvptx: SharedGpuBackendLimitProfile,
+}
+
 impl SharedGpuLayoutClass {
-    pub(crate) fn to_json(&self) -> serde_json::Value {
+    pub(crate) fn to_json(&self) -> Value {
         serde_json::json!({
             "name": self.name,
             "valueType": self.value_type,
@@ -32,7 +62,7 @@ impl SharedGpuLayoutClass {
 }
 
 impl SharedGpuKernelContract {
-    pub(crate) fn to_json(&self) -> serde_json::Value {
+    pub(crate) fn to_json(&self) -> Value {
         serde_json::json!({
             "abiVersion": self.abi_version,
             "paramLayout": self.param_layout,
@@ -40,6 +70,96 @@ impl SharedGpuKernelContract {
             "layoutClassRefs": self.layout_classes.iter().map(|class| class.name.clone()).collect::<Vec<_>>(),
             "kernelCapabilityFlags": self.capability_flags,
         })
+    }
+}
+
+impl SharedGpuLaunchGeometry {
+    pub(crate) fn to_json(&self) -> Value {
+        serde_json::json!({
+            "gridDimensions": self.grid_dimensions,
+            "blockDimensions": self.block_dimensions,
+        })
+    }
+}
+
+impl SharedGpuBackendLimitProfile {
+    pub(crate) fn to_json(&self) -> Value {
+        let mut object = serde_json::Map::new();
+        object.insert(
+            "moduleFormat".to_string(),
+            Value::String(self.module_format.to_string()),
+        );
+        if let Some(execution_model) = self.execution_model {
+            object.insert(
+                "executionModel".to_string(),
+                Value::String(execution_model.to_string()),
+            );
+        }
+        if let Some(entry_point_encoding) = self.entry_point_encoding {
+            object.insert(
+                "entryPointEncoding".to_string(),
+                Value::String(entry_point_encoding.to_string()),
+            );
+        }
+        if let Some(entry_directive) = self.entry_directive {
+            object.insert(
+                "entryDirective".to_string(),
+                Value::String(entry_directive.to_string()),
+            );
+        }
+        if let Some(parameter_state_space) = self.parameter_state_space {
+            object.insert(
+                "parameterStateSpace".to_string(),
+                Value::String(parameter_state_space.to_string()),
+            );
+        }
+        object.insert("launchGeometry".to_string(), self.launch_geometry.to_json());
+        object.insert(
+            "argumentEncoding".to_string(),
+            Value::String(self.argument_encoding.to_string()),
+        );
+        object.insert(
+            "supportedLayoutClassVersion".to_string(),
+            Value::String(self.supported_layout_class_version.to_string()),
+        );
+        object.insert(
+            "supportedScalarParamTypes".to_string(),
+            serde_json::json!(self.supported_scalar_param_types),
+        );
+        object.insert(
+            "supportedSliceElementTypes".to_string(),
+            serde_json::json!(self.supported_slice_element_types),
+        );
+        object.insert(
+            "unsupportedShapePolicy".to_string(),
+            Value::String(self.unsupported_shape_policy.to_string()),
+        );
+        object.insert(
+            "runtimeStatus".to_string(),
+            Value::String(self.runtime_status.to_string()),
+        );
+        Value::Object(object)
+    }
+}
+
+impl SharedGpuBackendLimitProfiles {
+    pub(crate) fn to_json(&self) -> Value {
+        serde_json::json!({
+            "metal": self.metal.to_json(),
+            "spirv": self.spirv.to_json(),
+            "nvptx": self.nvptx.to_json(),
+        })
+    }
+
+    pub(crate) fn for_backend(
+        &self,
+        kind: super::gpu_backend::GpuBackendKind,
+    ) -> &SharedGpuBackendLimitProfile {
+        match kind {
+            super::gpu_backend::GpuBackendKind::Metal => &self.metal,
+            super::gpu_backend::GpuBackendKind::Spirv => &self.spirv,
+            super::gpu_backend::GpuBackendKind::Nvptx => &self.nvptx,
+        }
     }
 }
 
@@ -64,74 +184,85 @@ pub(crate) fn shared_gpu_kernel_contract(
     })
 }
 
-pub(crate) fn shared_gpu_layout_catalog_json() -> serde_json::Value {
-    serde_json::json!([
-        shared_gpu_scalar_layout_class("i32").to_json(),
-        shared_gpu_scalar_layout_class("u32").to_json(),
-        shared_gpu_scalar_layout_class("f32").to_json(),
-        shared_gpu_slice_layout_class("f32", "readonly", "ro").to_json(),
-        shared_gpu_slice_layout_class("f32", "writeonly", "wo").to_json(),
-        shared_gpu_slice_layout_class("f32", "readwrite", "rw").to_json(),
-        shared_gpu_slice_layout_class("i32", "readonly", "ro").to_json(),
-        shared_gpu_slice_layout_class("i32", "writeonly", "wo").to_json(),
-        shared_gpu_slice_layout_class("i32", "readwrite", "rw").to_json(),
-        shared_gpu_slice_layout_class("u32", "readonly", "ro").to_json(),
-        shared_gpu_slice_layout_class("u32", "writeonly", "wo").to_json(),
-        shared_gpu_slice_layout_class("u32", "readwrite", "rw").to_json(),
-    ])
+pub(crate) fn shared_gpu_layout_catalog() -> Vec<SharedGpuLayoutClass> {
+    vec![
+        shared_gpu_scalar_layout_class("i32"),
+        shared_gpu_scalar_layout_class("u32"),
+        shared_gpu_scalar_layout_class("f32"),
+        shared_gpu_slice_layout_class("f32", "readonly", "ro"),
+        shared_gpu_slice_layout_class("f32", "writeonly", "wo"),
+        shared_gpu_slice_layout_class("f32", "readwrite", "rw"),
+        shared_gpu_slice_layout_class("i32", "readonly", "ro"),
+        shared_gpu_slice_layout_class("i32", "writeonly", "wo"),
+        shared_gpu_slice_layout_class("i32", "readwrite", "rw"),
+        shared_gpu_slice_layout_class("u32", "readonly", "ro"),
+        shared_gpu_slice_layout_class("u32", "writeonly", "wo"),
+        shared_gpu_slice_layout_class("u32", "readwrite", "rw"),
+    ]
 }
 
-pub(crate) fn shared_gpu_backend_limit_profiles_json() -> serde_json::Value {
-    serde_json::json!({
-        "metal": shared_gpu_backend_limit_profile_json("metal.compute_source", Some("host_lifecycle_and_kernel_launch_live")),
-        "spirv": {
-            "moduleFormat": "spirv.binary_module",
-            "executionModel": "GLCompute",
-            "entryPointEncoding": "OpEntryPoint",
-            "launchGeometry": shared_launch_geometry_json(),
-            "argumentEncoding": "fzy_native_scalar_and_handle_abi",
-            "supportedLayoutClassVersion": SHARED_GPU_LAUNCH_ABI_VERSION,
-            "supportedScalarParamTypes": ["i32", "u32", "f32"],
-            "supportedSliceElementTypes": ["f32", "i32", "u32"],
-            "unsupportedShapePolicy": "reject_outside_shared_contract",
-            "runtimeStatus": "declared_not_executable",
+pub(crate) fn shared_gpu_backend_limit_profiles() -> SharedGpuBackendLimitProfiles {
+    SharedGpuBackendLimitProfiles {
+        metal: shared_gpu_backend_limit_profile(
+            "metal.compute_source",
+            Some("host_lifecycle_and_kernel_launch_live"),
+        ),
+        spirv: SharedGpuBackendLimitProfile {
+            module_format: "spirv.binary_module",
+            execution_model: Some("GLCompute"),
+            entry_point_encoding: Some("OpEntryPoint"),
+            entry_directive: None,
+            parameter_state_space: None,
+            launch_geometry: shared_launch_geometry(),
+            argument_encoding: "fzy_native_scalar_and_handle_abi",
+            supported_layout_class_version: SHARED_GPU_LAUNCH_ABI_VERSION,
+            supported_scalar_param_types: vec!["i32", "u32", "f32"],
+            supported_slice_element_types: vec!["f32", "i32", "u32"],
+            unsupported_shape_policy: "reject_outside_shared_contract",
+            runtime_status: "declared_not_executable",
         },
-        "nvptx": {
-            "moduleFormat": "ptx.assembly_text",
-            "entryDirective": ".entry",
-            "parameterStateSpace": ".param",
-            "launchGeometry": shared_launch_geometry_json(),
-            "argumentEncoding": "fzy_native_scalar_and_handle_abi",
-            "supportedLayoutClassVersion": SHARED_GPU_LAUNCH_ABI_VERSION,
-            "supportedScalarParamTypes": ["i32", "u32", "f32"],
-            "supportedSliceElementTypes": ["f32", "i32", "u32"],
-            "unsupportedShapePolicy": "reject_outside_shared_contract",
-            "runtimeStatus": "declared_not_executable",
+        nvptx: SharedGpuBackendLimitProfile {
+            module_format: "ptx.assembly_text",
+            execution_model: None,
+            entry_point_encoding: None,
+            entry_directive: Some(".entry"),
+            parameter_state_space: Some(".param"),
+            launch_geometry: shared_launch_geometry(),
+            argument_encoding: "fzy_native_scalar_and_handle_abi",
+            supported_layout_class_version: SHARED_GPU_LAUNCH_ABI_VERSION,
+            supported_scalar_param_types: vec!["i32", "u32", "f32"],
+            supported_slice_element_types: vec!["f32", "i32", "u32"],
+            unsupported_shape_policy: "reject_outside_shared_contract",
+            runtime_status: "declared_not_executable",
         },
-    })
+    }
 }
 
-fn shared_gpu_backend_limit_profile_json(
+fn shared_gpu_backend_limit_profile(
     module_format: &'static str,
     runtime_status: Option<&'static str>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "moduleFormat": module_format,
-        "launchGeometry": shared_launch_geometry_json(),
-        "argumentEncoding": "fzy_native_scalar_and_handle_abi",
-        "supportedLayoutClassVersion": SHARED_GPU_LAUNCH_ABI_VERSION,
-        "supportedScalarParamTypes": ["i32", "u32", "f32"],
-        "supportedSliceElementTypes": ["f32", "i32", "u32"],
-        "unsupportedShapePolicy": "reject_outside_shared_contract",
-        "runtimeStatus": runtime_status.unwrap_or("declared_not_executable"),
-    })
+) -> SharedGpuBackendLimitProfile {
+    SharedGpuBackendLimitProfile {
+        module_format,
+        execution_model: None,
+        entry_point_encoding: None,
+        entry_directive: None,
+        parameter_state_space: None,
+        launch_geometry: shared_launch_geometry(),
+        argument_encoding: "fzy_native_scalar_and_handle_abi",
+        supported_layout_class_version: SHARED_GPU_LAUNCH_ABI_VERSION,
+        supported_scalar_param_types: vec!["i32", "u32", "f32"],
+        supported_slice_element_types: vec!["f32", "i32", "u32"],
+        unsupported_shape_policy: "reject_outside_shared_contract",
+        runtime_status: runtime_status.unwrap_or("declared_not_executable"),
+    }
 }
 
-fn shared_launch_geometry_json() -> serde_json::Value {
-    serde_json::json!({
-        "gridDimensions": ["x"],
-        "blockDimensions": ["x"],
-    })
+fn shared_launch_geometry() -> SharedGpuLaunchGeometry {
+    SharedGpuLaunchGeometry {
+        grid_dimensions: vec!["x"],
+        block_dimensions: vec!["x"],
+    }
 }
 
 fn shared_gpu_layout_class(

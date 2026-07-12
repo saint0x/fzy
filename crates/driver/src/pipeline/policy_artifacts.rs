@@ -26,17 +26,19 @@ pub(super) fn write_safety_artifacts(
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed creating safety artifact dir: {}", out_dir.display()))?;
 
-    let memory_json = build_memory_report_json(fir);
+    let memory_report = build_memory_report(fir);
+    let memory_json = serde_json::to_value(&memory_report)?;
     write_artifact_if_changed(
         &out_dir.join("memory-report.json"),
         &serde_json::to_vec_pretty(&memory_json)?,
     )?;
     write_artifact_if_changed(
         &out_dir.join("memory-report.md"),
-        render_memory_report_markdown(&memory_json).as_bytes(),
+        render_memory_report_markdown(&memory_report).as_bytes(),
     )?;
 
-    let unsafe_json = build_unsafe_report_json(fir);
+    let unsafe_report = build_unsafe_report(fir);
+    let unsafe_json = serde_json::to_value(&unsafe_report)?;
     write_artifact_if_changed(
         &out_dir.join("unsafe-report.json"),
         &serde_json::to_vec_pretty(&unsafe_json)?,
@@ -82,7 +84,8 @@ pub(super) fn write_safety_artifacts(
         &serde_json::to_vec_pretty(&handle_contracts_json)?,
     )?;
 
-    let gpu_kernel_package_json = gpu::build_gpu_kernel_package_json(typed);
+    let gpu_kernel_package = gpu::build_gpu_kernel_package(typed);
+    let gpu_kernel_package_json = gpu_kernel_package.to_json();
     std::fs::write(
         out_dir.join("gpu-kernel-package.json"),
         serde_json::to_vec_pretty(&gpu_kernel_package_json)?,
@@ -95,7 +98,7 @@ pub(super) fn write_safety_artifacts(
     })?;
     std::fs::write(
         out_dir.join("gpu-kernel-package.md"),
-        gpu::render_gpu_kernel_package_markdown(&gpu_kernel_package_json),
+        gpu::render_gpu_kernel_package_markdown(&gpu_kernel_package),
     )
     .with_context(|| {
         format!(
@@ -104,34 +107,37 @@ pub(super) fn write_safety_artifacts(
         )
     })?;
 
-    let language_policy_json = lang::build_language_policy_json(manifest);
+    let language_policy = lang::build_language_policy_report(manifest);
+    let language_policy_json = serde_json::to_value(&language_policy)?;
     write_artifact_if_changed(
         &out_dir.join("language-policy.json"),
         &serde_json::to_vec_pretty(&language_policy_json)?,
     )?;
     write_artifact_if_changed(
         &out_dir.join("language-policy.md"),
-        lang::render_language_policy_markdown(&language_policy_json).as_bytes(),
+        lang::render_language_policy_markdown(&language_policy).as_bytes(),
     )?;
 
-    let release_policy_json = release::build_release_policy_json();
+    let release_policy = release::build_release_policy_report();
+    let release_policy_json = serde_json::to_value(&release_policy)?;
     write_artifact_if_changed(
         &out_dir.join("release-policy.json"),
         &serde_json::to_vec_pretty(&release_policy_json)?,
     )?;
     write_artifact_if_changed(
         &out_dir.join("release-policy.md"),
-        release::render_release_policy_markdown(&release_policy_json).as_bytes(),
+        release::render_release_policy_markdown(&release_policy).as_bytes(),
     )?;
 
-    let stdlib_policy_json = stdlib::build_stdlib_capability_policy_json();
+    let stdlib_policy = stdlib::build_stdlib_capability_policy_report();
+    let stdlib_policy_json = serde_json::to_value(&stdlib_policy)?;
     write_artifact_if_changed(
         &out_dir.join("stdlib-capability-policy.json"),
         &serde_json::to_vec_pretty(&stdlib_policy_json)?,
     )?;
     write_artifact_if_changed(
         &out_dir.join("stdlib-capability-policy.md"),
-        stdlib::render_stdlib_capability_policy_markdown(&stdlib_policy_json).as_bytes(),
+        stdlib::render_stdlib_capability_policy_markdown(&stdlib_policy).as_bytes(),
     )?;
 
     Ok(())

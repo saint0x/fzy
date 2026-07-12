@@ -1,3 +1,61 @@
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct StdlibCapabilityPolicyReport {
+    #[serde(rename = "schemaVersion")]
+    schema_version: &'static str,
+    versions: super::compat::CompatibilityVersions,
+    #[serde(rename = "capabilityPolicy")]
+    capability_policy: CapabilityPolicy,
+    #[serde(rename = "jsonBoundaryRule")]
+    json_boundary_rule: JsonBoundaryRule,
+    modules: Vec<StdlibModuleContract>,
+    #[serde(rename = "strictHazards")]
+    strict_hazards: Vec<StrictHazardPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CapabilityPolicy {
+    propagation: &'static str,
+    #[serde(rename = "tokenDelegation")]
+    token_delegation: &'static str,
+    #[serde(rename = "missingCapabilityPolicy")]
+    missing_capability_policy: &'static str,
+    #[serde(rename = "missingTokenPolicy")]
+    missing_token_policy: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct JsonBoundaryRule {
+    boundary: &'static str,
+    inside: &'static str,
+    #[serde(rename = "strictRawPolicy")]
+    strict_raw_policy: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StdlibModuleContract {
+    module: &'static str,
+    capability: &'static str,
+    #[serde(rename = "ownershipBehavior")]
+    ownership_behavior: &'static str,
+    #[serde(rename = "errorBehavior")]
+    error_behavior: &'static str,
+    #[serde(rename = "linearHandles")]
+    linear_handles: &'static str,
+    #[serde(rename = "cleanupRequirement")]
+    cleanup_requirement: &'static str,
+    #[serde(rename = "threadAsyncSafety")]
+    thread_async_safety: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StrictHazardPolicy {
+    kind: &'static str,
+    severity: &'static str,
+    policy: &'static str,
+}
+
 fn stdlib_contract_rows() -> &'static [(
     &'static str,
     &'static str,
@@ -136,79 +194,81 @@ fn stdlib_hazard_policies() -> &'static [(&'static str, &'static str, &'static s
     ]
 }
 
-pub(super) fn build_stdlib_capability_policy_json() -> serde_json::Value {
-    serde_json::json!({
-        "schemaVersion": "fozzylang.stdlib_capability_policy.v1",
-        "versions": super::compat::compatibility_versions_json(),
-        "capabilityPolicy": {
-            "propagation": "explicit_compiler_checked",
-            "tokenDelegation": "compiler_enforced_subset_only",
-            "missingCapabilityPolicy": "error",
-            "missingTokenPolicy": "error",
+pub(super) fn build_stdlib_capability_policy_report() -> StdlibCapabilityPolicyReport {
+    StdlibCapabilityPolicyReport {
+        schema_version: "fozzylang.stdlib_capability_policy.v1",
+        versions: super::compat::compatibility_versions(),
+        capability_policy: CapabilityPolicy {
+            propagation: "explicit_compiler_checked",
+            token_delegation: "compiler_enforced_subset_only",
+            missing_capability_policy: "error",
+            missing_token_policy: "error",
         },
-        "jsonBoundaryRule": {
-            "boundary": "json_at_boundaries",
-            "inside": "typed_structs_and_enums",
-            "strictRawPolicy": "warn_on_composite_or_dynamic_json_raw",
+        json_boundary_rule: JsonBoundaryRule {
+            boundary: "json_at_boundaries",
+            inside: "typed_structs_and_enums",
+            strict_raw_policy: "warn_on_composite_or_dynamic_json_raw",
         },
-        "modules": stdlib_contract_rows().iter().map(|(module, capability, ownership, error, handles, cleanup, safety)| {
-            serde_json::json!({
-                "module": module,
-                "capability": capability,
-                "ownershipBehavior": ownership,
-                "errorBehavior": error,
-                "linearHandles": handles,
-                "cleanupRequirement": cleanup,
-                "threadAsyncSafety": safety,
+        modules: stdlib_contract_rows()
+            .iter()
+            .map(
+                |(module, capability, ownership, error, handles, cleanup, safety)| {
+                    StdlibModuleContract {
+                        module,
+                        capability,
+                        ownership_behavior: ownership,
+                        error_behavior: error,
+                        linear_handles: handles,
+                        cleanup_requirement: cleanup,
+                        thread_async_safety: safety,
+                    }
+                },
+            )
+            .collect(),
+        strict_hazards: stdlib_hazard_policies()
+            .iter()
+            .map(|(kind, severity, policy)| StrictHazardPolicy {
+                kind,
+                severity,
+                policy,
             })
-        }).collect::<Vec<_>>(),
-        "strictHazards": stdlib_hazard_policies().iter().map(|(kind, severity, policy)| {
-            serde_json::json!({
-                "kind": kind,
-                "severity": severity,
-                "policy": policy,
-            })
-        }).collect::<Vec<_>>(),
-    })
+            .collect(),
+    }
 }
 
-pub(super) fn render_stdlib_capability_policy_markdown(value: &serde_json::Value) -> String {
+pub(super) fn render_stdlib_capability_policy_markdown(
+    report: &StdlibCapabilityPolicyReport,
+) -> String {
     let mut out = String::from("# Stdlib Capability Policy\n\n");
     out.push_str(&format!(
         "- Schema: `{}`\n- Capability propagation: `{}`\n- Token delegation: `{}`\n- JSON boundary rule: `{}` / `{}`\n\n",
-        value["schemaVersion"].as_str().unwrap_or("unknown"),
-        value["capabilityPolicy"]["propagation"].as_str().unwrap_or("unknown"),
-        value["capabilityPolicy"]["tokenDelegation"].as_str().unwrap_or("unknown"),
-        value["jsonBoundaryRule"]["boundary"].as_str().unwrap_or("json_at_boundaries"),
-        value["jsonBoundaryRule"]["inside"].as_str().unwrap_or("typed_structs_and_enums"),
+        report.schema_version,
+        report.capability_policy.propagation,
+        report.capability_policy.token_delegation,
+        report.json_boundary_rule.boundary,
+        report.json_boundary_rule.inside,
     ));
     out.push_str("## Module Contracts\n\n");
     out.push_str("| Module | Capability | Ownership | Errors | Linear Handles | Cleanup | Thread/Async Safety |\n");
     out.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
-    if let Some(modules) = value["modules"].as_array() {
-        for module in modules {
-            out.push_str(&format!(
-                "| `{}` | `{}` | {} | {} | {} | {} | {} |\n",
-                module["module"].as_str().unwrap_or("unknown"),
-                module["capability"].as_str().unwrap_or("unknown"),
-                module["ownershipBehavior"].as_str().unwrap_or("unknown"),
-                module["errorBehavior"].as_str().unwrap_or("unknown"),
-                module["linearHandles"].as_str().unwrap_or("unknown"),
-                module["cleanupRequirement"].as_str().unwrap_or("unknown"),
-                module["threadAsyncSafety"].as_str().unwrap_or("unknown"),
-            ));
-        }
+    for module in &report.modules {
+        out.push_str(&format!(
+            "| `{}` | `{}` | {} | {} | {} | {} | {} |\n",
+            module.module,
+            module.capability,
+            module.ownership_behavior,
+            module.error_behavior,
+            module.linear_handles,
+            module.cleanup_requirement,
+            module.thread_async_safety,
+        ));
     }
     out.push_str("\n## Strict Hazards\n\n");
-    if let Some(hazards) = value["strictHazards"].as_array() {
-        for hazard in hazards {
-            out.push_str(&format!(
-                "- `{}` (`{}`): {}\n",
-                hazard["kind"].as_str().unwrap_or("unknown"),
-                hazard["severity"].as_str().unwrap_or("warning"),
-                hazard["policy"].as_str().unwrap_or("unknown"),
-            ));
-        }
+    for hazard in &report.strict_hazards {
+        out.push_str(&format!(
+            "- `{}` (`{}`): {}\n",
+            hazard.kind, hazard.severity, hazard.policy,
+        ));
     }
     out
 }

@@ -20,16 +20,20 @@ pub(super) fn compatibility_versions_json() -> serde_json::Value {
     compat::compatibility_versions_json()
 }
 
-pub(super) fn build_memory_report_json(fir: &fir::FirModule) -> serde_json::Value {
-    mem::build_memory_report_json(fir)
+pub(super) fn compatibility_versions() -> compat::CompatibilityVersions {
+    compat::compatibility_versions()
 }
 
-pub(super) fn render_memory_report_markdown(value: &serde_json::Value) -> String {
-    mem::render_memory_report_markdown(value)
+pub(super) fn build_memory_report(fir: &fir::FirModule) -> mem::MemoryReport {
+    mem::build_memory_report(fir)
 }
 
-pub(super) fn build_unsafe_report_json(fir: &fir::FirModule) -> serde_json::Value {
-    unsafe_report::build_unsafe_report_json(fir)
+pub(super) fn render_memory_report_markdown(report: &mem::MemoryReport) -> String {
+    mem::render_memory_report_markdown(report)
+}
+
+pub(super) fn build_unsafe_report(fir: &fir::FirModule) -> unsafe_report::UnsafeReport {
+    unsafe_report::build_unsafe_report(fir)
 }
 
 pub(super) fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
