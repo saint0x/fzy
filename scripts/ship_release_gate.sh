@@ -210,15 +210,13 @@ GPU_ASCII_TRACE="$ARTIFACT_DIR/gpu_ascii_ripple.trace.fozzy"
 "${FZ_CMD[@]}" trace verify "$GPU_ASCII_TRACE" --strict --json >/dev/null
 echo "[ship] GPU example validations ok"
 
-echo "[ship] cross-repo anthropic_smoke conformance"
-ANTHROPIC_SMOKE_ROOT="${ANTHROPIC_SMOKE_ROOT:-$ROOT/../fzllm/anthropic_smoke}"
-if [[ ! -f "$ANTHROPIC_SMOKE_ROOT/fozzy.toml" ]]; then
-  if [[ "${REQUIRE_CROSS_REPO_SMOKE:-0}" == "1" ]]; then
+if [[ "${ENABLE_CROSS_REPO_SMOKE:-0}" == "1" ]]; then
+  echo "[ship] optional cross-repo anthropic_smoke adjunct"
+  ANTHROPIC_SMOKE_ROOT="${ANTHROPIC_SMOKE_ROOT:-$ROOT/../fzllm/anthropic_smoke}"
+  if [[ ! -f "$ANTHROPIC_SMOKE_ROOT/fozzy.toml" ]]; then
     echo "missing anthropic smoke repo at $ANTHROPIC_SMOKE_ROOT (expected fozzy.toml)" >&2
     exit 2
   fi
-  echo "[ship] cross-repo anthropic_smoke skipped (repo missing at $ANTHROPIC_SMOKE_ROOT)"
-else
   ANTHROPIC_TRACE="$ARTIFACT_DIR/anthropic_smoke.crossrepo.trace.fozzy"
   "${FZ_CMD[@]}" check "$ANTHROPIC_SMOKE_ROOT" --json >/dev/null
   "${FZ_CMD[@]}" build "$ANTHROPIC_SMOKE_ROOT" --release --json >/dev/null

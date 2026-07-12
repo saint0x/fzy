@@ -6,7 +6,7 @@ Consume it like a normal package dependency:
 
 - declare `fzbounds = {}` under `[deps]`
 - import it in source with `use fzbounds;`
-- keep service logic on typed accessors such as `fzbounds.api.inspect_fzweb_request_budget_bytes()` and reserve `fzbounds.inspect_json()` / `doctor_json()` for explicit output boundaries
+- consume the stable package boundary emitters such as `fzbounds.inspect_json()` and `fzbounds.doctor_json()` when importing the framework into another package
 
 Compiler DX note:
 
@@ -53,7 +53,6 @@ Compiler DX note:
 - `integration.catalog`, `integration.profiles`, `integration.catalog_json`
 - `services.doctor`, `services.inspect`, `services.strict_demo`, `services.audit_demo`
 - `services.doctor_json`, `services.inspect_json`, `services.strict_demo_json`, `services.audit_demo_json`, `services.fzweb_json`, `services.metrics_text`
-- typed boundary helpers under `api.*`, such as `api.inspect_runtime_mode`, `api.inspect_runtime_max_memory_bytes`, `api.inspect_runtime_max_queue_entries`, `api.inspect_fzweb_request_budget_bytes`, and `api.inspect_auth_session_capacity`
 
 ## Production Checks
 

@@ -226,6 +226,27 @@ fn inspect() -> InspectReport {
         integrations: profiles,
     }
 }
+fn inspect_runtime_mode_value() -> str {
+    return runtime.mode_strict()
+}
+fn inspect_runtime_max_memory_bytes_value() -> i32 {
+    return budget.production_budget().max_memory_bytes
+}
+fn inspect_runtime_max_queue_entries_value() -> i32 {
+    return budget.production_budget().max_queue_entries
+}
+fn inspect_fzweb_request_budget_bytes_value() -> i32 {
+    return integration.fzweb_request().request_budget_bytes
+}
+fn inspect_fzweb_header_capacity_value() -> i32 {
+    return integration.fzweb_request().header_capacity
+}
+fn inspect_fzweb_body_capacity_bytes_value() -> i32 {
+    return integration.fzweb_request().body_capacity_bytes
+}
+fn inspect_auth_session_capacity_value() -> i32 {
+    return integration.auth_store().session_capacity
+}
 fn inspect_report_json(value: InspectReport) -> str {
     let payload = map.new()
     discard map.set(payload, "framework", json.str(value.framework))
@@ -235,11 +256,11 @@ fn inspect_report_json(value: InspectReport) -> str {
     discard map.set(payload, "users", list_summary_json(value.users))
     discard map.set(payload, "jobs", queue_summary_json(value.jobs))
     discard map.set(payload, "strings", buffer_summary_json(value.strings))
-    discard map.set(payload, "fzweb", integration.fzweb_profile_json(value.integrations.fzweb))
-    discard map.set(payload, "jobs_profile", integration.jobs_profile_json(value.integrations.jobs))
-    discard map.set(payload, "auth_profile", integration.auth_profile_json(value.integrations.auth))
-    discard map.set(payload, "realtime_profile", integration.realtime_profile_json(value.integrations.realtime))
-    discard map.set(payload, "arena_profile", integration.arena_profile_json(value.integrations.arena))
+    discard map.set(payload, "fzweb", integration.fzweb_request_json())
+    discard map.set(payload, "jobs_profile", integration.jobs_worker_json())
+    discard map.set(payload, "auth_profile", integration.auth_store_json())
+    discard map.set(payload, "realtime_profile", integration.realtime_room_json())
+    discard map.set(payload, "arena_profile", integration.arena_bootstrap_json())
     return json.object(payload)
 }
 fn inspect_json() -> str {

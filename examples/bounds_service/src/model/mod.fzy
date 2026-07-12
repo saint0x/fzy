@@ -9,34 +9,6 @@ struct ServiceConfig {
     warm_memory_bytes: i32,
 }
 
-struct FrameworkBudget {
-    max_queue_entries: i32,
-}
-
-struct FrameworkRuntime {
-    mode: str,
-    max_memory_bytes: i32,
-    budget: FrameworkBudget,
-}
-
-struct FrameworkFzweb {
-    request_budget_bytes: i32,
-    header_capacity: i32,
-    body_capacity_bytes: i32,
-}
-
-struct FrameworkAuthProfile {
-    session_capacity: i32,
-}
-
-struct FrameworkReport {
-    status: str,
-    inspect_raw: str,
-    fzweb: FrameworkFzweb,
-    runtime: FrameworkRuntime,
-    auth_profile: FrameworkAuthProfile,
-}
-
 struct AlignmentReport {
     status: str,
     request_budget_ok: i32,
@@ -57,7 +29,7 @@ struct DoctorSummary {
 struct FrameworkSummary {
     framework: str,
     local_contract: ServiceConfig,
-    framework_report: FrameworkReport,
+    framework_report: str,
     alignment: AlignmentReport,
 }
 
@@ -79,12 +51,12 @@ fn config() -> ServiceConfig {
     return ServiceConfig {
         service_name: "bounds_service",
         runtime_mode: "strict",
-        request_budget_bytes: 32768,
-        header_capacity: 48,
-        body_capacity_bytes: 32768,
+        request_budget_bytes: 64 * 1024,
+        header_capacity: 64,
+        body_capacity_bytes: 64 * 1024,
         worker_queue_capacity: 256,
-        session_capacity: 50000,
-        warm_memory_bytes: 4096,
+        session_capacity: 100000,
+        warm_memory_bytes: 8192,
     }
 }
 
@@ -99,44 +71,6 @@ fn local_contract_json(cfg: ServiceConfig) -> str {
     discard map.set(payload, "session_capacity", json_i32(cfg.session_capacity))
     discard map.set(payload, "warm_memory_bytes", json_i32(cfg.warm_memory_bytes))
     return json.object(payload)
-}
-
-fn framework_budget(max_queue_entries: i32) -> FrameworkBudget {
-    return FrameworkBudget {
-        max_queue_entries: max_queue_entries,
-    }
-}
-
-fn framework_runtime(mode: str, max_memory_bytes: i32, budget: FrameworkBudget) -> FrameworkRuntime {
-    return FrameworkRuntime {
-        mode: mode,
-        max_memory_bytes: max_memory_bytes,
-        budget: budget,
-    }
-}
-
-fn framework_fzweb(request_budget_bytes: i32, header_capacity: i32, body_capacity_bytes: i32) -> FrameworkFzweb {
-    return FrameworkFzweb {
-        request_budget_bytes: request_budget_bytes,
-        header_capacity: header_capacity,
-        body_capacity_bytes: body_capacity_bytes,
-    }
-}
-
-fn framework_auth_profile(session_capacity: i32) -> FrameworkAuthProfile {
-    return FrameworkAuthProfile {
-        session_capacity: session_capacity,
-    }
-}
-
-fn framework_report(status: str, inspect_raw: str, fzweb: FrameworkFzweb, runtime: FrameworkRuntime, auth_profile: FrameworkAuthProfile) -> FrameworkReport {
-    return FrameworkReport {
-        status: status,
-        inspect_raw: inspect_raw,
-        fzweb: fzweb,
-        runtime: runtime,
-        auth_profile: auth_profile,
-    }
 }
 
 fn alignment(
@@ -169,7 +103,7 @@ fn doctor(framework: str, local_contract: ServiceConfig, boot_score: i32) -> Doc
     }
 }
 
-fn framework_summary(framework: str, local_contract: ServiceConfig, framework_report: FrameworkReport, alignment: AlignmentReport) -> FrameworkSummary {
+fn framework_summary(framework: str, local_contract: ServiceConfig, framework_report: str, alignment: AlignmentReport) -> FrameworkSummary {
     return FrameworkSummary {
         framework: framework,
         local_contract: local_contract,
@@ -186,11 +120,11 @@ fn gate(status: str, local_contract: ServiceConfig, alignment: AlignmentReport) 
     }
 }
 
-fn framework_report_json(value: FrameworkReport) -> str {
+fn framework_report_json(status: str, inspect_raw: str) -> str {
     let payload = map.new()
-    discard map.set(payload, "status", json.str(value.status))
-    discard map.set(payload, "inspect", value.inspect_raw)
-    discard map.set(payload, "inspect_raw", json.str(value.inspect_raw))
+    discard map.set(payload, "status", json.str(status))
+    discard map.set(payload, "inspect", inspect_raw)
+    discard map.set(payload, "inspect_raw", json.str(inspect_raw))
     return json.object(payload)
 }
 
@@ -219,7 +153,7 @@ fn framework_json(value: FrameworkSummary) -> str {
     let payload = map.new()
     discard map.set(payload, "framework", json.str(value.framework))
     discard map.set(payload, "local_contract", local_contract_json(value.local_contract))
-    discard map.set(payload, "framework_report", framework_report_json(value.framework_report))
+    discard map.set(payload, "framework_report", value.framework_report)
     discard map.set(payload, "alignment", alignment_json(value.alignment))
     return json.object(payload)
 }

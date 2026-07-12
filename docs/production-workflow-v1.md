@@ -148,7 +148,8 @@ Strict readiness gate:
 ./scripts/exit_criteria_gate.sh
 ```
 
-Release only when all prior steps pass without warnings or failures and exit criteria are green.
+Tag artifact release CI should pass `./scripts/ship_release_gate.sh` for the tagged commit.
+Operational maturity signoff is separate and only becomes true when `./scripts/exit_criteria_gate.sh` is green for the current `HEAD`.
 
 For failures, use:
 

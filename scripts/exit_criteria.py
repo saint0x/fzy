@@ -17,16 +17,6 @@ PLAN_PATH = ROOT / "PLAN.md"
 
 SCHEMA_VERSION = "fozzylang.exit_criteria.v1"
 
-BLOCKER_SECTIONS = [
-    "### Release Gate Unification (Blockers)",
-    "### Systems Language Semantics Parity",
-    "### Memory Safety Hardening Depth",
-    "### Bidirectional Trace/Interop Closure",
-    "### Tooling + DX Solidification (High Value, Not Overkill)",
-    "### Core Stdlib Expansion Priorities (`core`)",
-]
-
-
 def run(cmd: List[str], cwd: pathlib.Path = ROOT, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=str(cwd), check=check, text=True, capture_output=True)
 
@@ -151,6 +141,7 @@ def record_rc(args: argparse.Namespace) -> int:
         {
             "id": rc_id,
             "date": date,
+            "commit": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
             "requiredHotspotCount": required,
             "uncoveredHotspotCount": uncovered,
             "recordedAt": utc_now_iso(),
@@ -230,23 +221,30 @@ def parse_section_checklist_status() -> Dict[str, Dict[str, Any]]:
     text = PLAN_PATH.read_text(encoding="utf-8")
     lines = text.splitlines()
     result: Dict[str, Dict[str, Any]] = {}
-    for section in BLOCKER_SECTIONS:
-        start = None
-        for idx, line in enumerate(lines):
-            if line.strip() == section:
-                start = idx + 1
-                break
-        if start is None:
-            result[section] = {"found": False, "open": []}
+    headings: List[Tuple[str, int]] = []
+    for idx, line in enumerate(lines):
+        if line.startswith("### "):
+            headings.append((line.strip(), idx))
+    for pos, (section, start_idx) in enumerate(headings):
+        end = headings[pos + 1][1] if pos + 1 < len(headings) else len(lines)
+        body = lines[start_idx + 1 : end]
+        checklist_lines = [line.strip() for line in body if line.strip().startswith("- [")]
+        if not checklist_lines:
             continue
-        end = len(lines)
-        for idx in range(start, len(lines)):
-            if lines[idx].startswith("### "):
-                end = idx
-                break
-        open_items = [line.strip() for line in lines[start:end] if line.strip().startswith("- [ ]")]
+        open_items = [line for line in checklist_lines if line.startswith("- [ ]")]
         result[section] = {"found": True, "open": open_items}
     return result
+
+
+def current_head_commit() -> str:
+    return run(["git", "rev-parse", "HEAD"]).stdout.strip()
+
+
+def latest_local_repro_for_commit(local_rows: List[Dict[str, Any]], commit: str) -> Dict[str, Any] | None:
+    matching = [row for row in local_rows if row.get("commit") == commit]
+    if not matching:
+        return None
+    return sorted(matching, key=lambda row: row.get("recordedAt", ""))[-1]
 
 
 def compute_green_streak_days(daily_rows: List[Dict[str, Any]]) -> int:
@@ -288,6 +286,7 @@ def compute_green_streak_days(daily_rows: List[Dict[str, Any]]) -> int:
 def compute_status() -> Dict[str, Any]:
     state = load_state()
     section_status = parse_section_checklist_status()
+    head_commit = current_head_commit()
 
     green_streak_days = compute_green_streak_days(state.get("daily", []))
     green_14 = green_streak_days >= 14
@@ -301,9 +300,10 @@ def compute_status() -> Dict[str, Any]:
         rc_two = all(int(item.get("uncoveredHotspotCount", 1)) == 0 for item in last_two)
 
     local_rows = sorted(state.get("localRepro", []), key=lambda row: row.get("recordedAt", ""))
-    local_ok = bool(local_rows and local_rows[-1].get("ok") is True)
+    latest_local_for_head = latest_local_repro_for_commit(local_rows, head_commit)
+    local_ok = bool(latest_local_for_head and latest_local_for_head.get("ok") is True)
 
-    blocker_sections_complete = all(
+    blocker_sections_complete = bool(section_status) and all(
         info.get("found") and len(info.get("open", [])) == 0 for info in section_status.values()
     )
 
@@ -324,7 +324,9 @@ def compute_status() -> Dict[str, Any]:
             },
             "localCleanCheckoutReproducibility": {
                 "ok": local_ok,
+                "headCommit": head_commit,
                 "latest": local_rows[-1] if local_rows else None,
+                "latestForHead": latest_local_for_head,
             },
             "blockerSectionsComplete": {
                 "ok": blocker_sections_complete,

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "fozzylang.lock.v0",
-  "dependencyGraphHash": "a87511aabe7582165e082fe12327e1cfaf65012c13fe638930ba1acbe882828f",
+  "dependencyGraphHash": "f7efc74c155c828d523618ee98888ffb3490800f66d1b9975d149c9210cc5a44",
   "graph": {
     "package": {
       "name": "bounds_service",
@@ -17,7 +17,7 @@
           "version": "0.1.0"
         },
         "manifestHash": "408b06ba6620d2f7fcc7840a7aa93ad4f7d7ab6a6564b4d99c17863d0397cf01",
-        "sourceHash": "d098d20d0da77480dbdf07d03cfb61cdaaf17636cc3bd481f871e404065d4235"
+        "sourceHash": "7deaff64dd1573f78014213165d4e0b69648d9ae1b1f6a49e34313959cb27e05"
       }
     ]
   }

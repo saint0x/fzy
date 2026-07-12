@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import platform
 import subprocess
 import sys
 
@@ -17,6 +18,19 @@ def cargo_bin() -> str:
     if STABLE_CARGO.exists():
         return str(STABLE_CARGO)
     return os.environ.get("CARGO", "cargo")
+
+
+def cargo_prefix() -> list[str]:
+    cargo = cargo_bin()
+    if sys.platform != "darwin" or platform.machine() != "x86_64":
+        return [cargo]
+    try:
+        desc = subprocess.check_output(["file", cargo], text=True).strip()
+    except Exception:
+        return [cargo]
+    if "arm64" in desc and "x86_64" not in desc:
+        return ["/usr/bin/arch", "-arm64", cargo]
+    return [cargo]
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -40,17 +54,21 @@ def ensure_ok(payload: dict, label: str):
 
 
 def verify():
-    check = run([cargo_bin(), "run", "-q", "-p", "fz", "--", "check", str(PROJECT), "--json"])
+    cargo = cargo_prefix()
+
+    check = run(cargo + ["run", "-q", "-p", "fz", "--", "check", str(PROJECT), "--json"])
     check_payload = parse_json(check.stdout)
     if check.returncode != 0:
         raise RuntimeError(f"bounds_service check failed: stdout={check.stdout} stderr={check.stderr}")
     ensure_ok(check_payload, "check")
 
-    vendor = run([cargo_bin(), "run", "-q", "-p", "fz", "--", "vendor", str(PROJECT), "--json"])
+    vendor = run(cargo + ["run", "-q", "-p", "fz", "--", "vendor", str(PROJECT), "--json"])
     if vendor.returncode != 0:
         raise RuntimeError(f"bounds_service vendor failed: stdout={vendor.stdout} stderr={vendor.stderr}")
 
-    build = run([cargo_bin(), "run", "-q", "-p", "fz", "--", "build", str(PROJECT), "--backend", "llvm", "--json"])
+    build = run(
+        cargo + ["run", "-q", "-p", "fz", "--", "build", str(PROJECT), "--backend", "llvm", "--json"]
+    )
     build_payload = parse_json(build.stdout)
     if build.returncode != 0:
         raise RuntimeError(f"bounds_service build failed: stdout={build.stdout} stderr={build.stderr}")
@@ -65,7 +83,10 @@ def verify():
     doctor_payload = parse_json(doctor.stdout)
     local_contract = doctor_payload.get("local_contract", {})
     assert doctor_payload.get("framework") == "bounds_service", doctor_payload
-    assert local_contract.get("request_budget_bytes") == 32768, doctor_payload
+    assert local_contract.get("request_budget_bytes") == 65536, doctor_payload
+    assert local_contract.get("header_capacity") == 64, doctor_payload
+    assert local_contract.get("body_capacity_bytes") == 65536, doctor_payload
+    assert local_contract.get("session_capacity") == 100000, doctor_payload
 
     gate = subprocess.run([output, "gate-json"], cwd=ROOT, capture_output=True, text=True)
     if gate.returncode != 0:

@@ -2,33 +2,57 @@ use fzbounds;
 use model;
 use runtime;
 
-fn framework_report_value() -> model.FrameworkReport {
-    let inspect_raw = fzbounds.inspect_json()
-    return model.framework_report(
-        "ok",
-        inspect_raw,
-        model.framework_fzweb(
-            fzbounds.api.inspect_fzweb_request_budget_bytes(),
-            fzbounds.api.inspect_fzweb_header_capacity(),
-            fzbounds.api.inspect_fzweb_body_capacity_bytes(),
-        ),
-        model.framework_runtime(
-            fzbounds.api.inspect_runtime_mode(),
-            fzbounds.api.inspect_runtime_max_memory_bytes(),
-            model.framework_budget(fzbounds.api.inspect_runtime_max_queue_entries()),
-        ),
-        model.framework_auth_profile(fzbounds.api.inspect_auth_session_capacity()),
-    )
+fn parse_i32(text: str) -> i32 {
+    let trimmed = str.trim(text)
+    if trimmed == "" {
+        return 0
+    }
+    let mut idx = 0
+    let mut sign = 1
+    if str.slice(trimmed, 0, 1) == "-" {
+        sign = -1
+        idx = 1
+    }
+    let mut value = 0
+    while idx < str.len(trimmed) {
+        let ch = str.slice(trimmed, idx, idx + 1)
+        if ch == "0" { value = (value * 10) + 0 }
+        if ch == "1" { value = (value * 10) + 1 }
+        if ch == "2" { value = (value * 10) + 2 }
+        if ch == "3" { value = (value * 10) + 3 }
+        if ch == "4" { value = (value * 10) + 4 }
+        if ch == "5" { value = (value * 10) + 5 }
+        if ch == "6" { value = (value * 10) + 6 }
+        if ch == "7" { value = (value * 10) + 7 }
+        if ch == "8" { value = (value * 10) + 8 }
+        if ch == "9" { value = (value * 10) + 9 }
+        idx = idx + 1
+    }
+    return value * sign
 }
 
-fn alignment_value(local: model.ServiceConfig, framework: model.FrameworkReport) -> model.AlignmentReport {
-    let request_ok = if local.request_budget_bytes <= framework.fzweb.request_budget_bytes { 1 } else { 0 }
-    let header_ok = if local.header_capacity <= framework.fzweb.header_capacity { 1 } else { 0 }
-    let body_ok = if local.body_capacity_bytes <= framework.fzweb.body_capacity_bytes { 1 } else { 0 }
-    let queue_ok = if local.worker_queue_capacity <= framework.runtime.budget.max_queue_entries { 1 } else { 0 }
-    let session_ok = if local.session_capacity <= framework.auth_profile.session_capacity { 1 } else { 0 }
-    let memory_ok = if local.warm_memory_bytes <= framework.runtime.max_memory_bytes { 1 } else { 0 }
-    let observed_mode = framework.runtime.mode
+fn json_i32_field(payload: JsonHandle, key: str) -> i32 {
+    let item = json.get(payload, key)
+    return parse_i32(json.get_str(item, "raw"))
+}
+
+fn framework_report_json_value() -> str {
+    return model.framework_report_json("ok", fzbounds.inspect_json())
+}
+
+fn alignment_value(local: model.ServiceConfig) -> model.AlignmentReport {
+    let inspect = json.parse(fzbounds.inspect_json())
+    let runtime_report = json.get(inspect, "runtime")
+    let runtime_budget = json.get(runtime_report, "budget")
+    let fzweb = json.get(inspect, "fzweb")
+    let auth_profile = json.get(inspect, "auth_profile")
+    let request_ok = if local.request_budget_bytes <= json_i32_field(fzweb, "request_budget_bytes") { 1 } else { 0 }
+    let header_ok = if local.header_capacity <= json_i32_field(fzweb, "header_capacity") { 1 } else { 0 }
+    let body_ok = if local.body_capacity_bytes <= json_i32_field(fzweb, "body_capacity_bytes") { 1 } else { 0 }
+    let queue_ok = if local.worker_queue_capacity <= json_i32_field(runtime_budget, "max_queue_entries") { 1 } else { 0 }
+    let session_ok = if local.session_capacity <= json_i32_field(auth_profile, "session_capacity") { 1 } else { 0 }
+    let memory_ok = if local.warm_memory_bytes <= json_i32_field(runtime_report, "max_memory_bytes") { 1 } else { 0 }
+    let observed_mode = json.get_str(runtime_report, "mode")
     let mode_ok = if observed_mode == "" {
         if local.runtime_mode == "strict" { 1 } else { 0 }
     } else {
@@ -56,8 +80,7 @@ fn doctor_json() -> str {
 
 fn framework_value() -> model.FrameworkSummary {
     let local = model.config()
-    let framework = framework_report_value()
-    return model.framework_summary("bounds_service", local, framework, alignment_value(local, framework))
+    return model.framework_summary("bounds_service", local, framework_report_json_value(), alignment_value(local))
 }
 
 fn framework_json() -> str {
@@ -66,8 +89,7 @@ fn framework_json() -> str {
 
 fn gate_value() -> model.GateSummary {
     let local = model.config()
-    let framework = framework_report_value()
-    let alignment = alignment_value(local, framework)
+    let alignment = alignment_value(local)
     return model.gate(alignment.status, local, alignment)
 }
 
