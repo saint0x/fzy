@@ -2,6 +2,9 @@ use core.storage;
 struct Store {
     handle: KvStoreHandle,
 }
+struct Record {
+    text: str,
+}
 fn open(path: str) -> Store {
     return Store {
         handle: storage.kv_open(path),
@@ -13,16 +16,17 @@ fn namespaced_key(namespace: str, key: str) -> str {
 fn get(store: Store, namespace: str, key: str) -> str {
     return storage.kv_get(store.handle, namespaced_key(namespace, key))
 }
+fn record(text: str) -> Record {
+    return Record {
+        text: text,
+    }
+}
+fn get_record(store: Store, namespace: str, key: str) -> Record {
+    return record(get(store, namespace, key))
+}
 fn put(store: Store, namespace: str, key: str, value: str) -> i32 {
     return storage.kv_put(store.handle, namespaced_key(namespace, key), value)
 }
-fn get_json(store: Store, namespace: str, key: str) -> JsonHandle {
-    let raw = get(store, namespace, key)
-    if raw == "" {
-        return json.parse("{}")
-    }
-    return json.parse(raw)
-}
-fn put_json(store: Store, namespace: str, key: str, payload: str) -> i32 {
-    return put(store, namespace, key, payload)
+fn put_record(store: Store, namespace: str, key: str, value: Record) -> i32 {
+    return put(store, namespace, key, value.text)
 }

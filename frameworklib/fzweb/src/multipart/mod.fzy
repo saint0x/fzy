@@ -5,6 +5,10 @@ struct UploadSummary {
     file_count: i32,
     bytes: i32,
 }
+struct UploadReport {
+    summary: UploadSummary,
+    request_id: str,
+}
 fn summary(field_count: i32, file_count: i32, bytes: i32) -> UploadSummary {
     return UploadSummary {
         field_count: field_count,
@@ -65,11 +69,18 @@ fn parse(conn: HttpHandle, max_bytes: i32) -> UploadSummary {
     }
     return summary(fields, files, str.len(body))
 }
+fn report(summary: UploadSummary, request_id: str) -> UploadReport {
+    return UploadReport {
+        summary: summary,
+        request_id: request_id,
+    }
+}
 fn json_summary(info: UploadSummary, request_id: str) -> str {
+    let payload_value = report(info, request_id)
     let payload = map.new()
-    discard map.set(payload, "fields", json.str(str.from_i32(info.field_count)))
-    discard map.set(payload, "files", json.str(str.from_i32(info.file_count)))
-    discard map.set(payload, "bytes", json.str(str.from_i32(info.bytes)))
-    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "fields", json.str(str.from_i32(payload_value.summary.field_count)))
+    discard map.set(payload, "files", json.str(str.from_i32(payload_value.summary.file_count)))
+    discard map.set(payload, "bytes", json.str(str.from_i32(payload_value.summary.bytes)))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     return json.object(payload)
 }

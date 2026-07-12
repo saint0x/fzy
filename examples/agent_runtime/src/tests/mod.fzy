@@ -1,23 +1,22 @@
 use core.security;
 
 test "det_signed_session" {
-    let session = model.session_json("workspace-main", "operator")
-    let parsed = json.parse(session)
-    let session_id = json.get_str(parsed, "session_id")
-    let auth_mac = json.get_str(parsed, "auth_mac")
+    let session = model.session("workspace-main", "operator")
     if security.verify(
         security.default_signer(),
         "agent-runtime-secret",
-        str.concat("workspace-main", str.concat(":", session_id)),
-        auth_mac,
+        str.concat("workspace-main", str.concat(":", session.session_id)),
+        session.auth_mac,
     ) != 1 {
         checkpoint()
     }
 }
 
 test "det_tool_catalog" {
-    let catalog = model.tool_catalog_json()
-    if str.contains(catalog, "\"parallel_plan\"") == 0 || str.contains(catalog, "\"repo_inspect\"") == 0 {
+    if model.tool_catalog_count() != 3 {
+        checkpoint()
+    }
+    if model.tool_catalog_at(2).id != "parallel_plan" || model.tool_catalog_at(1).id != "repo_inspect" {
         checkpoint()
     }
 }
@@ -29,11 +28,11 @@ test "det_parallel_budget" {
 }
 
 test "det_plan_local_inspect" {
-    let payload = services.plan_json("workspace-main", "operator", "inspect repo files and cite exact paths")
-    if str.contains(payload, "\"mode\":\"local_inspect\"") == 0 {
+    let plan = services.plan_value("workspace-main", "operator", "inspect repo files and cite exact paths")
+    if plan.mode != "local_inspect" {
         checkpoint()
     }
-    if str.contains(payload, "\"auth_ok\":true") == 0 {
+    if plan.auth_ok != 1 {
         checkpoint()
     }
 }

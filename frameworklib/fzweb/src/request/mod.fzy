@@ -23,7 +23,6 @@ struct IntResult {
 }
 struct JsonResult {
     ok: i32,
-    payload: JsonHandle,
     raw: str,
     err: RequestError,
 }
@@ -47,9 +46,6 @@ fn body_eof(conn: HttpHandle) -> i32 {
 }
 fn body_discard(conn: HttpHandle) -> i32 {
     return http.body_discard(conn)
-}
-fn body_json(conn: HttpHandle) -> JsonHandle {
-    return http.body_json(conn)
 }
 fn body_len(conn: HttpHandle) -> i32 {
     return str.len(http.body(conn))
@@ -137,10 +133,9 @@ fn int_err(status: i32, code: str, message: str, details: str) -> IntResult {
         err: error(status, code, message, details),
     }
 }
-fn json_ok(payload: JsonHandle, raw: str) -> JsonResult {
+fn json_ok(raw: str) -> JsonResult {
     return JsonResult {
         ok: 1,
-        payload: payload,
         raw: raw,
         err: no_error(),
     }
@@ -148,7 +143,6 @@ fn json_ok(payload: JsonHandle, raw: str) -> JsonResult {
 fn json_err(status: i32, code: str, message: str, details: str) -> JsonResult {
     return JsonResult {
         ok: 0,
-        payload: json.parse("{}"),
         raw: "",
         err: error(status, code, message, details),
     }
@@ -351,17 +345,26 @@ fn body_json_required(conn: HttpHandle, route_name: str) -> JsonResult {
     if body_is_json_like(conn) == 0 {
         return json_err(400, "invalid_json_body", "request body must be valid JSON text", raw)
     }
-    return json_ok(body_json(conn), raw)
+    return json_ok(raw)
 }
-fn json_required_str(payload: JsonHandle, key: str) -> TextResult {
-    let value = json.get_str(payload, key)
+fn json_required_str(payload: JsonResult, key: str) -> TextResult {
+    let value = json.get_str(json.parse(payload.raw), key)
     if str.trim(value) == "" {
         return text_err(400, "missing_json_field", str.concat("missing json field: ", key), key)
     }
     return text_ok(value)
 }
-fn json_bool_default(payload: JsonHandle, key: str, fallback: i32) -> i32 {
-    let value = json.get_str(payload, key)
+fn json_optional_str(payload: JsonResult, key: str) -> str {
+    if payload.ok == 0 {
+        return ""
+    }
+    return json.get_str(json.parse(payload.raw), key)
+}
+fn json_bool_default(payload: JsonResult, key: str, fallback: i32) -> i32 {
+    if payload.ok == 0 {
+        return fallback
+    }
+    let value = json.get_str(json.parse(payload.raw), key)
     if str.trim(value) == "" {
         return fallback
     }

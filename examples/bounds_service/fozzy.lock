@@ -1,24 +1,24 @@
 {
-  "dependencyGraphHash": "1488fa2680c4a30ac1bcc56460ecadb49ef448cb04f97cf9cfba39e170b1b680",
+  "schemaVersion": "fozzylang.lock.v0",
+  "dependencyGraphHash": "207b48e0d90b5d7c4558d564ae745ebac236428cda7cceb360dfe4c3ef0bea93",
   "graph": {
+    "package": {
+      "name": "bounds_service",
+      "version": "0.1.0",
+      "manifestHash": "e71acd4bab27c7d627d37e5710b102e0f9e654abb272eab3dddebeb8c6be6fb2"
+    },
     "deps": [
       {
-        "canonicalPath": "/Users/deepsaint/Desktop/fozzylang/frameworklib/fzbounds",
-        "manifestHash": "408b06ba6620d2f7fcc7840a7aa93ad4f7d7ab6a6564b4d99c17863d0397cf01",
         "name": "fzbounds",
+        "sourceType": "framework",
+        "canonicalPath": "/Users/deepsaint/Desktop/fozzylang/frameworklib/fzbounds",
         "package": {
           "name": "fzbounds",
           "version": "0.1.0"
         },
-        "sourceHash": "92380c70972133e69f4be101e0ff1b72c30b7585f786c67b9700ba376b90243e",
-        "sourceType": "framework"
+        "manifestHash": "408b06ba6620d2f7fcc7840a7aa93ad4f7d7ab6a6564b4d99c17863d0397cf01",
+        "sourceHash": "5534a9fbd057305a821b9e7f3be43a07230a69b6dfce1653d6992c529c7dc8d8"
       }
-    ],
-    "package": {
-      "manifestHash": "e71acd4bab27c7d627d37e5710b102e0f9e654abb272eab3dddebeb8c6be6fb2",
-      "name": "bounds_service",
-      "version": "0.1.0"
-    }
-  },
-  "schemaVersion": "fozzylang.lock.v0"
+    ]
+  }
 }

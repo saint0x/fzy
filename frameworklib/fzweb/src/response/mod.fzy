@@ -12,6 +12,69 @@ struct ResponsePlan {
     body: str,
     close: i32,
 }
+struct ErrorPayload {
+    code: str,
+    message: str,
+    details: str,
+}
+struct OkPayload {
+    event: str,
+    request_id: str,
+}
+struct ServicePayload {
+    service_name: str,
+    service_version: str,
+    request_id: str,
+}
+struct VersionPayload {
+    service_name: str,
+    service_version: str,
+    request_id: str,
+}
+struct InspectPayload {
+    request_id: str,
+    method: str,
+    path: str,
+    remote: str,
+    accept: str,
+    content_type: str,
+    route_name: str,
+}
+struct SearchPayload {
+    query_text: str,
+    limit: i32,
+    request_id: str,
+}
+struct NamedEchoPayload {
+    name: str,
+    request_id: str,
+}
+struct BindPayload {
+    user: str,
+    active: i32,
+    request_id: str,
+}
+struct ItemPayload {
+    action: str,
+    item_id: str,
+    version: i32,
+    request_id: str,
+}
+struct ItemViewPayload {
+    item_id: str,
+    version: i32,
+    exists: i32,
+    request_id: str,
+}
+struct ItemRecord {
+    item_id: str,
+    version: i32,
+}
+struct ItemsPayload {
+    first: ItemRecord,
+    second: ItemRecord,
+    request_id: str,
+}
 fn header_set(conn: HttpHandle, key: str, value: str) -> i32 {
     return http.response_header_set(conn, key, value)
 }
@@ -70,16 +133,121 @@ fn api_error(status: i32, code: str, message: str, details: str) -> ApiError {
 fn request_error(err: request.RequestError) -> ApiError {
     return api_error(err.status, err.code, err.message, err.details)
 }
+fn bool_text(value: i32) -> str {
+    if value == 1 {
+        return "true"
+    }
+    return "false"
+}
+fn json_number(value: i32) -> str {
+    return json.str(str.from_i32(value))
+}
+fn error_payload(code: str, message: str, details: str) -> ErrorPayload {
+    return ErrorPayload {
+        code: code,
+        message: message,
+        details: details,
+    }
+}
+fn ok_payload(event: str, request_id: str) -> OkPayload {
+    return OkPayload {
+        event: event,
+        request_id: request_id,
+    }
+}
+fn service_payload(service_name: str, service_version: str, request_id: str) -> ServicePayload {
+    return ServicePayload {
+        service_name: service_name,
+        service_version: service_version,
+        request_id: request_id,
+    }
+}
+fn version_payload(service_name: str, service_version: str, request_id: str) -> VersionPayload {
+    return VersionPayload {
+        service_name: service_name,
+        service_version: service_version,
+        request_id: request_id,
+    }
+}
+fn inspect_payload(request_id: str, method: str, path: str, remote: str, accept: str, content_type: str, route_name: str,) -> InspectPayload {
+    return InspectPayload {
+        request_id: request_id,
+        method: method,
+        path: path,
+        remote: remote,
+        accept: accept,
+        content_type: content_type,
+        route_name: route_name,
+    }
+}
+fn search_payload(query_text: str, limit: i32, request_id: str) -> SearchPayload {
+    return SearchPayload {
+        query_text: query_text,
+        limit: limit,
+        request_id: request_id,
+    }
+}
+fn named_echo_payload(name: str, request_id: str) -> NamedEchoPayload {
+    return NamedEchoPayload {
+        name: name,
+        request_id: request_id,
+    }
+}
+fn bind_payload(user: str, active: i32, request_id: str) -> BindPayload {
+    return BindPayload {
+        user: user,
+        active: active,
+        request_id: request_id,
+    }
+}
+fn item_payload(action: str, item_id: str, version: i32, request_id: str) -> ItemPayload {
+    return ItemPayload {
+        action: action,
+        item_id: item_id,
+        version: version,
+        request_id: request_id,
+    }
+}
+fn item_view_payload(item_id: str, version: i32, exists: i32, request_id: str) -> ItemViewPayload {
+    return ItemViewPayload {
+        item_id: item_id,
+        version: version,
+        exists: exists,
+        request_id: request_id,
+    }
+}
+fn item_record(item_id: str, version: i32) -> ItemRecord {
+    return ItemRecord {
+        item_id: item_id,
+        version: version,
+    }
+}
+fn items_payload(request_id: str) -> ItemsPayload {
+    return ItemsPayload {
+        first: item_record("alpha", 1),
+        second: item_record("beta", 2),
+        request_id: request_id,
+    }
+}
 fn error_json(code: str, message: str) -> str {
     return error_body(api_error(400, code, message, ""))
 }
 fn error_body(err: ApiError) -> str {
+    let payload_value = error_payload(err.code, err.message, err.details)
     let payload = map.new()
-    discard map.set(payload, "error", json.str(err.code))
-    discard map.set(payload, "message", json.str(err.message))
-    if err.details != "" {
-        discard map.set(payload, "details", json.str(err.details))
+    discard map.set(payload, "error", json.str(payload_value.code))
+    discard map.set(payload, "message", json.str(payload_value.message))
+    if payload_value.details != "" {
+        discard map.set(payload, "details", json.str(payload_value.details))
     }
+    discard map.set(payload, "framework", json.str("fzweb"))
+    return json.object(payload)
+}
+fn ok_body(payload_value: OkPayload) -> str {
+    let payload = map.new()
+    discard map.set(payload, "status", json.str("ok"))
+    discard map.set(payload, "event", json.str(payload_value.event))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     discard map.set(payload, "framework", json.str("fzweb"))
     return json.object(payload)
 }
@@ -87,101 +255,99 @@ fn error_plan(err: ApiError) -> ResponsePlan {
     return json_plan(err.status, error_body(err))
 }
 fn ok_json(event: str, request_id: str) -> str {
+    return ok_body(ok_payload(event, request_id))
+}
+fn service_body(payload_value: ServicePayload) -> str {
     let payload = map.new()
+    discard map.set(payload, "service", json.str(payload_value.service_name))
+    discard map.set(payload, "version", json.str(payload_value.service_version))
     discard map.set(payload, "status", json.str("ok"))
-    discard map.set(payload, "event", json.str(event))
-    discard map.set(payload, "request_id", json.str(request_id))
-    discard map.set(payload, "framework", json.str("fzweb"))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     return json.object(payload)
 }
 fn service_json(service_name: str, service_version: str, request_id: str) -> str {
+    return service_body(service_payload(service_name, service_version, request_id))
+}
+fn version_body(payload_value: VersionPayload) -> str {
     let payload = map.new()
-    discard map.set(payload, "service", json.str(service_name))
-    discard map.set(payload, "version", json.str(service_version))
-    discard map.set(payload, "status", json.str("ok"))
-    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "service", json.str(payload_value.service_name))
+    discard map.set(payload, "version", json.str(payload_value.service_version))
+    discard map.set(payload, "framework", json.str("fzweb"))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     return json.object(payload)
 }
 fn version_json(service_name: str, service_version: str, request_id: str) -> str {
-    let payload = map.new()
-    discard map.set(payload, "service", json.str(service_name))
-    discard map.set(payload, "version", json.str(service_version))
-    discard map.set(payload, "framework", json.str("fzweb"))
-    discard map.set(payload, "request_id", json.str(request_id))
-    return json.object(payload)
+    return version_body(version_payload(service_name, service_version, request_id))
 }
 fn inspect_json(request_id: str, method: str, path: str, remote: str, accept: str, content_type: str, route_name: str,) -> str {
+    let payload_value = inspect_payload(request_id, method, path, remote, accept, content_type, route_name)
     let payload = map.new()
-    discard map.set(payload, "request_id", json.str(request_id))
-    discard map.set(payload, "method", json.str(method))
-    discard map.set(payload, "path", json.str(path))
-    discard map.set(payload, "remote", json.str(remote))
-    discard map.set(payload, "accept", json.str(accept))
-    discard map.set(payload, "content_type", json.str(content_type))
-    discard map.set(payload, "route", json.str(route_name))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
+    discard map.set(payload, "method", json.str(payload_value.method))
+    discard map.set(payload, "path", json.str(payload_value.path))
+    discard map.set(payload, "remote", json.str(payload_value.remote))
+    discard map.set(payload, "accept", json.str(payload_value.accept))
+    discard map.set(payload, "content_type", json.str(payload_value.content_type))
+    discard map.set(payload, "route", json.str(payload_value.route_name))
     discard map.set(payload, "framework", json.str("fzweb"))
     return json.object(payload)
 }
 fn search_json(query_text: str, limit: i32, request_id: str) -> str {
+    let payload_value = search_payload(query_text, limit, request_id)
     let payload = map.new()
-    discard map.set(payload, "query", json.str(query_text))
-    discard map.set(payload, "limit", json.str(str.from_i32(limit)))
-    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "query", json.str(payload_value.query_text))
+    discard map.set(payload, "limit", json_number(payload_value.limit))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     return json.object(payload)
 }
 fn named_echo_json(name: str, request_id: str) -> str {
+    let payload_value = named_echo_payload(name, request_id)
     let payload = map.new()
-    discard map.set(payload, "name", json.str(name))
-    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "name", json.str(payload_value.name))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     return json.object(payload)
 }
 fn bind_json(user: str, active: i32, request_id: str) -> str {
+    let payload_value = bind_payload(user, active, request_id)
     let payload = map.new()
-    discard map.set(payload, "user", json.str(user))
-    discard map.set(payload, "active", json.str(if active == 1 {
-        "true"
-    } else {
-        "false"
-    }
-    ))
-    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "user", json.str(payload_value.user))
+    discard map.set(payload, "active", json.str(bool_text(payload_value.active)))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     return json.object(payload)
 }
 fn item_json(action: str, item_id: str, version: i32, request_id: str) -> str {
+    let payload_value = item_payload(action, item_id, version, request_id)
     let payload = map.new()
-    discard map.set(payload, "action", json.str(action))
-    discard map.set(payload, "item_id", json.str(item_id))
-    discard map.set(payload, "version", json.str(str.from_i32(version)))
+    discard map.set(payload, "action", json.str(payload_value.action))
+    discard map.set(payload, "item_id", json.str(payload_value.item_id))
+    discard map.set(payload, "version", json_number(payload_value.version))
     discard map.set(payload, "framework", json.str("fzweb"))
-    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     return json.object(payload)
 }
 fn item_view_json(item_id: str, version: i32, exists: i32, request_id: str) -> str {
+    let payload_value = item_view_payload(item_id, version, exists, request_id)
     let payload = map.new()
-    discard map.set(payload, "item_id", json.str(item_id))
-    discard map.set(payload, "version", json.str(str.from_i32(version)))
-    discard map.set(payload, "exists", json.str(if exists == 1 {
-        "true"
-    } else {
-        "false"
-    }
-    ))
-    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "item_id", json.str(payload_value.item_id))
+    discard map.set(payload, "version", json_number(payload_value.version))
+    discard map.set(payload, "exists", json.str(bool_text(payload_value.exists)))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
+    return json.object(payload)
+}
+fn item_record_json(value: ItemRecord) -> str {
+    let payload = map.new()
+    discard map.set(payload, "item_id", json.str(value.item_id))
+    discard map.set(payload, "version", json_number(value.version))
     return json.object(payload)
 }
 fn items_json(request_id: str) -> str {
+    let payload_value = items_payload(request_id)
     let items = list.new()
-    let alpha = map.new()
-    discard map.set(alpha, "item_id", json.str("alpha"))
-    discard map.set(alpha, "version", json.str("1"))
-    discard list.push(items, json.object(alpha))
-    let beta = map.new()
-    discard map.set(beta, "item_id", json.str("beta"))
-    discard map.set(beta, "version", json.str("2"))
-    discard list.push(items, json.object(beta))
+    discard list.push(items, item_record_json(payload_value.first))
+    discard list.push(items, item_record_json(payload_value.second))
     let payload = map.new()
-    discard map.set(payload, "count", json.str("2"))
+    discard map.set(payload, "count", json_number(2))
     discard map.set(payload, "items", json.array(items))
-    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "request_id", json.str(payload_value.request_id))
     return json.object(payload)
 }

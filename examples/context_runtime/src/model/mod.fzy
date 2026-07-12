@@ -1,52 +1,153 @@
+struct MemoryRecord {
+    id: str,
+    scope: str,
+    kind: str,
+    content: str,
+    importance: i32,
+    confidence: i32,
+    pinned: i32,
+    workspace_id: str,
+    session_id: str,
+}
+
+struct MemoryList {
+    count: i32,
+    item0: MemoryRecord,
+    item1: MemoryRecord,
+    item2: MemoryRecord,
+    item3: MemoryRecord,
+}
+
+struct PlannerSummary {
+    selected_count: i32,
+    pinned_count: i32,
+    mode_reason: str,
+    evidence_plan: str,
+}
+
+struct ProtocolContract {
+    task_mode: str,
+    answer_contract: str,
+    must_cite_paths: i32,
+    must_obey_tool_outputs: i32,
+    max_tool_roundtrips: i32,
+}
+
+struct ContextFrame {
+    system_instructions: str,
+    selected_memory: MemoryList,
+    planner: PlannerSummary,
+    protocol: ProtocolContract,
+    user_request: str,
+}
+
+struct CompactSummary {
+    status: str,
+    workspace_id: str,
+    session_id: str,
+    selected_count: i32,
+    summary: str,
+}
+
+struct DoctorSummary {
+    mode: str,
+    selected_count: i32,
+}
+
 fn bool_json(value: i32) -> str {
     return if value == 1 { "true" } else { "false" }
 }
 
-fn memory_json(id: str, scope: str, kind: str, content: str, importance: i32, confidence: i32, pinned: i32, workspace_id: str, session_id: str) -> str {
+fn memory(id: str, scope: str, kind: str, content: str, importance: i32, confidence: i32, pinned: i32, workspace_id: str, session_id: str) -> MemoryRecord {
+    return MemoryRecord {
+        id: id,
+        scope: scope,
+        kind: kind,
+        content: content,
+        importance: importance,
+        confidence: confidence,
+        pinned: pinned,
+        workspace_id: workspace_id,
+        session_id: session_id,
+    }
+}
+
+fn empty_memory() -> MemoryRecord {
+    return memory("", "", "", "", 0, 0, 0, "", "")
+}
+
+fn memory_list() -> MemoryList {
+    return MemoryList {
+        count: 0,
+        item0: empty_memory(),
+        item1: empty_memory(),
+        item2: empty_memory(),
+        item3: empty_memory(),
+    }
+}
+
+fn append_memory(records: MemoryList, value: MemoryRecord) -> MemoryList {
+    if records.count == 0 {
+        return MemoryList { count: 1, item0: value, item1: records.item1, item2: records.item2, item3: records.item3 }
+    }
+    if records.count == 1 {
+        return MemoryList { count: 2, item0: records.item0, item1: value, item2: records.item2, item3: records.item3 }
+    }
+    if records.count == 2 {
+        return MemoryList { count: 3, item0: records.item0, item1: records.item1, item2: value, item3: records.item3 }
+    }
+    if records.count == 3 {
+        return MemoryList { count: 4, item0: records.item0, item1: records.item1, item2: records.item2, item3: value }
+    }
+    return records
+}
+
+fn memory_count(records: MemoryList) -> i32 {
+    return records.count
+}
+
+fn memory_at(records: MemoryList, position: i32) -> MemoryRecord {
+    if position == 0 { return records.item0 }
+    if position == 1 { return records.item1 }
+    if position == 2 { return records.item2 }
+    if position == 3 { return records.item3 }
+    return empty_memory()
+}
+
+fn pinned_count(records: MemoryList) -> i32 {
+    let mut count = 0
+    let mut idx = 0
+    while idx < memory_count(records) {
+        if memory_at(records, idx).pinned == 1 {
+            count += 1
+        }
+        idx += 1
+    }
+    return count
+}
+
+fn memory_json(value: MemoryRecord) -> str {
     let payload = map.new()
-    discard map.set(payload, "id", json.str(id))
-    discard map.set(payload, "scope", json.str(scope))
-    discard map.set(payload, "kind", json.str(kind))
-    discard map.set(payload, "content", json.str(content))
-    discard map.set(payload, "importance", json.str(str.from_i32(importance)))
-    discard map.set(payload, "confidence", json.str(str.from_i32(confidence)))
-    discard map.set(payload, "pinned", json.str(bool_json(pinned)))
-    discard map.set(payload, "workspace_id", json.str(workspace_id))
-    discard map.set(payload, "session_id", json.str(session_id))
+    discard map.set(payload, "id", json.str(value.id))
+    discard map.set(payload, "scope", json.str(value.scope))
+    discard map.set(payload, "kind", json.str(value.kind))
+    discard map.set(payload, "content", json.str(value.content))
+    discard map.set(payload, "importance", json.str(str.from_i32(value.importance)))
+    discard map.set(payload, "confidence", json.str(str.from_i32(value.confidence)))
+    discard map.set(payload, "pinned", json.str(bool_json(value.pinned)))
+    discard map.set(payload, "workspace_id", json.str(value.workspace_id))
+    discard map.set(payload, "session_id", json.str(value.session_id))
     return json.object(payload)
 }
 
-fn digit_value(ch: str) -> i32 {
-    if ch == "0" { return 0 }
-    if ch == "1" { return 1 }
-    if ch == "2" { return 2 }
-    if ch == "3" { return 3 }
-    if ch == "4" { return 4 }
-    if ch == "5" { return 5 }
-    if ch == "6" { return 6 }
-    if ch == "7" { return 7 }
-    if ch == "8" { return 8 }
-    if ch == "9" { return 9 }
-    return 0
-}
-
-fn parse_i32(value: str) -> i32 {
-    if value == "" {
-        return 0
-    }
-    let mut sign = 1
+fn memory_list_json(records: MemoryList) -> str {
+    let items = list.new()
     let mut idx = 0
-    let mut out = 0
-    if str.slice(value, 0, 1) == "-" {
-        sign = -1
-        idx = 1
-    }
-    while idx < str.len(value) {
-        let ch = str.slice(value, idx, idx + 1)
-        out = (out * 10) + digit_value(ch)
+    while idx < memory_count(records) {
+        discard list.push(items, memory_json(memory_at(records, idx)))
         idx += 1
     }
-    return out * sign
+    return json.array(items)
 }
 
 fn request_is_local_inspect(request: str) -> i32 {
@@ -63,22 +164,22 @@ fn request_is_exact_answer(request: str) -> i32 {
     return 0
 }
 
-fn score_memory(parsed: JsonHandle, request: str, workspace_id: str, session_id: str) -> i32 {
-    let mut score = parse_i32(json.get_str(parsed, "importance")) * 10
-    score += parse_i32(json.get_str(parsed, "confidence")) * 5
-    if json.get_str(parsed, "pinned") == "true" {
+fn score_memory(value: MemoryRecord, request: str, workspace_id: str, session_id: str) -> i32 {
+    let mut score = value.importance * 10
+    score += value.confidence * 5
+    if value.pinned == 1 {
         score += 50
     }
-    if json.get_str(parsed, "workspace_id") == workspace_id {
+    if value.workspace_id == workspace_id {
         score += 20
     }
-    if json.get_str(parsed, "session_id") == session_id {
+    if value.session_id == session_id {
         score += 10
     }
-    if str.contains(json.get_str(parsed, "content"), request) == 1 {
+    if str.contains(value.content, request) == 1 {
         score += 25
     }
-    if str.contains(request, json.get_str(parsed, "kind")) == 1 {
+    if str.contains(request, value.kind) == 1 {
         score += 10
     }
     return score
@@ -98,6 +199,99 @@ fn answer_contract(task_mode: str) -> str {
     return if task_mode == "exact_answer" { "exact" } else { "grounded" }
 }
 
-fn max_tool_roundtrips(task_mode: str) -> str {
-    return if task_mode == "local_inspect" { "4" } else { "2" }
+fn max_tool_roundtrips(task_mode: str) -> i32 {
+    return if task_mode == "local_inspect" { 4 } else { 2 }
+}
+
+fn planner(selected_count: i32, pinned_total: i32, request: str) -> PlannerSummary {
+    return PlannerSummary {
+        selected_count: selected_count,
+        pinned_count: pinned_total,
+        mode_reason: str.concat("derived from request mode ", task_mode(request)),
+        evidence_plan: "cite selected memory first, then inspect tools if evidence is incomplete",
+    }
+}
+
+fn planner_json(value: PlannerSummary) -> str {
+    let payload = map.new()
+    discard map.set(payload, "selected_count", json.str(str.from_i32(value.selected_count)))
+    discard map.set(payload, "pinned_count", json.str(str.from_i32(value.pinned_count)))
+    discard map.set(payload, "mode_reason", json.str(value.mode_reason))
+    discard map.set(payload, "evidence_plan", json.str(value.evidence_plan))
+    return json.object(payload)
+}
+
+fn protocol(request: str) -> ProtocolContract {
+    let mode = task_mode(request)
+    return ProtocolContract {
+        task_mode: mode,
+        answer_contract: answer_contract(mode),
+        must_cite_paths: if mode == "local_inspect" { 1 } else { 0 },
+        must_obey_tool_outputs: 1,
+        max_tool_roundtrips: max_tool_roundtrips(mode),
+    }
+}
+
+fn protocol_json(value: ProtocolContract) -> str {
+    let payload = map.new()
+    discard map.set(payload, "task_mode", json.str(value.task_mode))
+    discard map.set(payload, "answer_contract", json.str(value.answer_contract))
+    discard map.set(payload, "must_cite_paths", json.str(bool_json(value.must_cite_paths)))
+    discard map.set(payload, "must_obey_tool_outputs", json.str(bool_json(value.must_obey_tool_outputs)))
+    discard map.set(payload, "max_tool_roundtrips", json.str(str.from_i32(value.max_tool_roundtrips)))
+    return json.object(payload)
+}
+
+fn frame(system_instructions: str, selected_memory: MemoryList, planner_value: PlannerSummary, protocol_value: ProtocolContract, user_request: str) -> ContextFrame {
+    return ContextFrame {
+        system_instructions: system_instructions,
+        selected_memory: selected_memory,
+        planner: planner_value,
+        protocol: protocol_value,
+        user_request: user_request,
+    }
+}
+
+fn frame_json(value: ContextFrame) -> str {
+    let payload = map.new()
+    discard map.set(payload, "system_instructions", json.str(value.system_instructions))
+    discard map.set(payload, "selected_memory", memory_list_json(value.selected_memory))
+    discard map.set(payload, "planner", planner_json(value.planner))
+    discard map.set(payload, "protocol", protocol_json(value.protocol))
+    discard map.set(payload, "user_request", json.str(value.user_request))
+    return json.object(payload)
+}
+
+fn compact(status: str, workspace_id: str, session_id: str, selected_count: i32, summary: str) -> CompactSummary {
+    return CompactSummary {
+        status: status,
+        workspace_id: workspace_id,
+        session_id: session_id,
+        selected_count: selected_count,
+        summary: summary,
+    }
+}
+
+fn compact_json(value: CompactSummary) -> str {
+    let payload = map.new()
+    discard map.set(payload, "status", json.str(value.status))
+    discard map.set(payload, "workspace_id", json.str(value.workspace_id))
+    discard map.set(payload, "session_id", json.str(value.session_id))
+    discard map.set(payload, "selected_count", json.str(str.from_i32(value.selected_count)))
+    discard map.set(payload, "summary", json.str(value.summary))
+    return json.object(payload)
+}
+
+fn doctor(mode: str, selected_count: i32) -> DoctorSummary {
+    return DoctorSummary {
+        mode: mode,
+        selected_count: selected_count,
+    }
+}
+
+fn doctor_json(value: DoctorSummary) -> str {
+    let payload = map.new()
+    discard map.set(payload, "mode", json.str(value.mode))
+    discard map.set(payload, "selected_count", json.str(str.from_i32(value.selected_count)))
+    return json.object(payload)
 }

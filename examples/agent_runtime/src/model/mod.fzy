@@ -1,5 +1,33 @@
 use core.security;
 
+struct ToolRecord {
+    id: str,
+    kind: str,
+    mode: str,
+    description: str,
+}
+
+struct SessionRecord {
+    session_id: str,
+    workspace_id: str,
+    user: str,
+    auth_mac: str,
+}
+
+struct PlanRecord {
+    request: str,
+    mode: str,
+    session: SessionRecord,
+    parallel_budget: i32,
+    auth_ok: i32,
+}
+
+struct DoctorRecord {
+    tool_count: i32,
+    audit_path: str,
+    parallel_budget: i32,
+}
+
 fn request_is_local_inspect(request: str) -> i32 {
     if str.contains(request, "repo") == 1 || str.contains(request, "path") == 1 || str.contains(request, "file") == 1 {
         return 1
@@ -14,20 +42,48 @@ fn request_is_mutation(request: str) -> i32 {
     return 0
 }
 
-fn tool_record_json(tool_id: str, kind: str, mode: str, description: str) -> str {
+fn tool_record(tool_id: str, kind: str, mode: str, description: str) -> ToolRecord {
+    return ToolRecord {
+        id: tool_id,
+        kind: kind,
+        mode: mode,
+        description: description,
+    }
+}
+
+fn tool_catalog_count() -> i32 {
+    return 3
+}
+
+fn tool_catalog_at(position: i32) -> ToolRecord {
+    if position == 0 {
+        return tool_record("bash", "process", "single", "Run one bounded shell command")
+    }
+    if position == 1 {
+        return tool_record("repo_inspect", "read", "single", "Inspect local files and cite exact paths")
+    }
+    if position == 2 {
+        return tool_record("parallel_plan", "orchestrator", "batch", "Break a task into bounded parallel work")
+    }
+    return tool_record("", "", "", "")
+}
+
+fn tool_json(value: ToolRecord) -> str {
     let payload = map.new()
-    discard map.set(payload, "id", json.str(tool_id))
-    discard map.set(payload, "kind", json.str(kind))
-    discard map.set(payload, "mode", json.str(mode))
-    discard map.set(payload, "description", json.str(description))
+    discard map.set(payload, "id", json.str(value.id))
+    discard map.set(payload, "kind", json.str(value.kind))
+    discard map.set(payload, "mode", json.str(value.mode))
+    discard map.set(payload, "description", json.str(value.description))
     return json.object(payload)
 }
 
 fn tool_catalog_json() -> str {
     let tools = list.new()
-    discard list.push(tools, tool_record_json("bash", "process", "single", "Run one bounded shell command"))
-    discard list.push(tools, tool_record_json("repo_inspect", "read", "single", "Inspect local files and cite exact paths"))
-    discard list.push(tools, tool_record_json("parallel_plan", "orchestrator", "batch", "Break a task into bounded parallel work"))
+    let mut idx = 0
+    while idx < tool_catalog_count() {
+        discard list.push(tools, tool_json(tool_catalog_at(idx)))
+        idx += 1
+    }
     return json.array(tools)
 }
 
@@ -45,14 +101,64 @@ fn session_signing_input(workspace_id: str, session_id: str) -> str {
     return str.concat(workspace_id, str.concat(":", session_id))
 }
 
-fn session_json(workspace_id: str, user: str) -> str {
+fn session(workspace_id: str, user: str) -> SessionRecord {
     let signer = security.default_signer()
     let session_id = security.opaque_token(18)
     let signed = security.sign(signer, "agent-runtime-secret", session_signing_input(workspace_id, session_id))
+    return SessionRecord {
+        session_id: session_id,
+        workspace_id: workspace_id,
+        user: user,
+        auth_mac: signed,
+    }
+}
+
+fn session_json(value: SessionRecord) -> str {
     let payload = map.new()
-    discard map.set(payload, "session_id", json.str(session_id))
-    discard map.set(payload, "workspace_id", json.str(workspace_id))
-    discard map.set(payload, "user", json.str(user))
-    discard map.set(payload, "auth_mac", json.str(signed))
+    discard map.set(payload, "session_id", json.str(value.session_id))
+    discard map.set(payload, "workspace_id", json.str(value.workspace_id))
+    discard map.set(payload, "user", json.str(value.user))
+    discard map.set(payload, "auth_mac", json.str(value.auth_mac))
+    return json.object(payload)
+}
+
+fn plan(request: str, mode: str, session: SessionRecord, parallel_budget: i32, auth_ok: i32) -> PlanRecord {
+    return PlanRecord {
+        request: request,
+        mode: mode,
+        session: session,
+        parallel_budget: parallel_budget,
+        auth_ok: auth_ok,
+    }
+}
+
+fn bool_json(value: i32) -> str {
+    return if value == 1 { "true" } else { "false" }
+}
+
+fn plan_json(value: PlanRecord) -> str {
+    let payload = map.new()
+    discard map.set(payload, "request", json.str(value.request))
+    discard map.set(payload, "mode", json.str(value.mode))
+    discard map.set(payload, "session", session_json(value.session))
+    discard map.set(payload, "tools", tool_catalog_json())
+    discard map.set(payload, "parallel_budget", str.from_i32(value.parallel_budget))
+    discard map.set(payload, "auth_ok", bool_json(value.auth_ok))
+    return json.object(payload)
+}
+
+fn doctor(tool_count: i32, audit_path: str, parallel_budget: i32) -> DoctorRecord {
+    return DoctorRecord {
+        tool_count: tool_count,
+        audit_path: audit_path,
+        parallel_budget: parallel_budget,
+    }
+}
+
+fn doctor_json(value: DoctorRecord) -> str {
+    let payload = map.new()
+    discard map.set(payload, "tool_count", json.str(str.from_i32(value.tool_count)))
+    discard map.set(payload, "audit_path", json.str(value.audit_path))
+    discard map.set(payload, "parallel_budget", json.str(str.from_i32(value.parallel_budget)))
     return json.object(payload)
 }

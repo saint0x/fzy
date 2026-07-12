@@ -31,100 +31,80 @@ fn parse_i32(text: str) -> i32 {
     return value * sign
 }
 
-fn bool_json(value: i32) -> str {
-    if value == 1 {
-        return "true"
-    }
-    return "false"
-}
-
-fn json_i32(value: i32) -> str {
-    return str.from_i32(value)
-}
-
-fn json_bool(value: i32) -> str {
-    return bool_json(value)
-}
-
-fn framework_report_json() -> str {
+fn framework_report_value() -> model.FrameworkReport {
     let inspect_raw = fzbounds.inspect_json()
-    let payload = map.new()
-    discard map.set(payload, "status", json.str("ok"))
-    discard map.set(payload, "inspect", inspect_raw)
-    discard map.set(payload, "inspect_raw", json.str(inspect_raw))
-    return json.object(payload)
+    let inspect = json.parse(inspect_raw)
+    let fzweb = json.parse(json.get_str(inspect, "fzweb"))
+    let runtime_payload = json.parse(json.get_str(inspect, "runtime"))
+    let runtime_budget = json.parse(json.get_str(runtime_payload, "budget"))
+    let auth_profile = json.parse(json.get_str(inspect, "auth_profile"))
+    return model.framework_report(
+        "ok",
+        inspect_raw,
+        model.framework_fzweb(
+            parse_i32(json.get_str(fzweb, "request_budget_bytes")),
+            parse_i32(json.get_str(fzweb, "header_capacity")),
+            parse_i32(json.get_str(fzweb, "body_capacity_bytes")),
+        ),
+        model.framework_runtime(
+            json.get_str(runtime_payload, "mode"),
+            parse_i32(json.get_str(runtime_payload, "max_memory_bytes")),
+            model.framework_budget(parse_i32(json.get_str(runtime_budget, "max_queue_entries"))),
+        ),
+        model.framework_auth_profile(parse_i32(json.get_str(auth_profile, "session_capacity"))),
+    )
 }
 
-fn alignment_json_from(local_json: str, framework_json: str) -> str {
-    let local = json.parse(local_json)
-    let framework = json.parse(framework_json)
-    let fzweb = json.parse(json.get_str(framework, "fzweb"))
-    let runtime_payload = json.parse(json.get_str(framework, "runtime"))
-    let runtime_budget = json.parse(json.get_str(runtime_payload, "budget"))
-    let auth_profile = json.parse(json.get_str(framework, "auth_profile"))
-
-    let request_ok = if parse_i32(json.get_str(local, "request_budget_bytes")) <= parse_i32(json.get_str(fzweb, "request_budget_bytes")) { 1 } else { 0 }
-    let header_ok = if parse_i32(json.get_str(local, "header_capacity")) <= parse_i32(json.get_str(fzweb, "header_capacity")) { 1 } else { 0 }
-    let body_ok = if parse_i32(json.get_str(local, "body_capacity_bytes")) <= parse_i32(json.get_str(fzweb, "body_capacity_bytes")) { 1 } else { 0 }
-    let queue_ok = if parse_i32(json.get_str(local, "worker_queue_capacity")) <= parse_i32(json.get_str(runtime_budget, "max_queue_entries")) { 1 } else { 0 }
-    let session_ok = if parse_i32(json.get_str(local, "session_capacity")) <= parse_i32(json.get_str(auth_profile, "session_capacity")) { 1 } else { 0 }
-    let memory_ok = if parse_i32(json.get_str(local, "warm_memory_bytes")) <= parse_i32(json.get_str(runtime_payload, "max_memory_bytes")) { 1 } else { 0 }
-    let observed_mode = json.get_str(runtime_payload, "mode")
+fn alignment_value(local: model.ServiceConfig, framework: model.FrameworkReport) -> model.AlignmentReport {
+    let request_ok = if local.request_budget_bytes <= framework.fzweb.request_budget_bytes { 1 } else { 0 }
+    let header_ok = if local.header_capacity <= framework.fzweb.header_capacity { 1 } else { 0 }
+    let body_ok = if local.body_capacity_bytes <= framework.fzweb.body_capacity_bytes { 1 } else { 0 }
+    let queue_ok = if local.worker_queue_capacity <= framework.runtime.budget.max_queue_entries { 1 } else { 0 }
+    let session_ok = if local.session_capacity <= framework.auth_profile.session_capacity { 1 } else { 0 }
+    let memory_ok = if local.warm_memory_bytes <= framework.runtime.max_memory_bytes { 1 } else { 0 }
+    let observed_mode = framework.runtime.mode
     let mode_ok = if observed_mode == "" {
-        if json.get_str(local, "runtime_mode") == "strict" { 1 } else { 0 }
+        if local.runtime_mode == "strict" { 1 } else { 0 }
     } else {
-        if json.get_str(local, "runtime_mode") == observed_mode { 1 } else { 0 }
+        if local.runtime_mode == observed_mode { 1 } else { 0 }
     }
+    return model.alignment(
+        if request_ok == 1 && header_ok == 1 && body_ok == 1 && queue_ok == 1 && session_ok == 1 && memory_ok == 1 && mode_ok == 1 { "ok" } else { "mismatch" },
+        request_ok,
+        header_ok,
+        body_ok,
+        queue_ok,
+        session_ok,
+        memory_ok,
+        mode_ok,
+    )
+}
 
-    let payload = map.new()
-    discard map.set(payload, "status", json.str(if request_ok == 1 && header_ok == 1 && body_ok == 1 && queue_ok == 1 && session_ok == 1 && memory_ok == 1 && mode_ok == 1 { "ok" } else { "mismatch" }))
-    discard map.set(payload, "request_budget_ok", json_bool(request_ok))
-    discard map.set(payload, "header_capacity_ok", json_bool(header_ok))
-    discard map.set(payload, "body_capacity_ok", json_bool(body_ok))
-    discard map.set(payload, "queue_capacity_ok", json_bool(queue_ok))
-    discard map.set(payload, "session_capacity_ok", json_bool(session_ok))
-    discard map.set(payload, "warm_memory_ok", json_bool(memory_ok))
-    discard map.set(payload, "runtime_mode_ok", json_bool(mode_ok))
-    return json.object(payload)
+fn doctor_value() -> model.DoctorSummary {
+    return model.doctor("bounds_service", model.config(), runtime.boot())
 }
 
 fn doctor_json() -> str {
-    let cfg = model.config()
-    let payload = map.new()
-    discard map.set(payload, "framework", json.str("bounds_service"))
-    discard map.set(payload, "local_contract", model.local_contract_json(cfg))
-    discard map.set(payload, "boot_score", json_i32(runtime.boot()))
-    return json.object(payload)
+    return model.doctor_json(doctor_value())
+}
+
+fn framework_value() -> model.FrameworkSummary {
+    let local = model.config()
+    let framework = framework_report_value()
+    return model.framework_summary("bounds_service", local, framework, alignment_value(local, framework))
 }
 
 fn framework_json() -> str {
-    let local = model.local_contract_json(model.config())
-    let framework = framework_report_json()
-    let framework_payload = json.parse(framework)
-    let payload = map.new()
-    discard map.set(payload, "framework", json.str("bounds_service"))
-    discard map.set(payload, "local_contract", local)
-    discard map.set(payload, "framework_report", framework)
-    if json.get_str(framework_payload, "status") == "ok" {
-        discard map.set(payload, "alignment", alignment_json_from(local, json.get_str(framework_payload, "inspect_raw")))
-    } else {
-        discard map.set(payload, "alignment", "{\"status\":\"framework_unavailable\"}")
-    }
-    return json.object(payload)
+    return model.framework_json(framework_value())
+}
+
+fn gate_value() -> model.GateSummary {
+    let local = model.config()
+    let framework = framework_report_value()
+    let alignment = alignment_value(local, framework)
+    return model.gate(alignment.status, local, alignment)
 }
 
 fn gate_json() -> str {
-    let local = model.local_contract_json(model.config())
-    let framework = framework_report_json()
-    let framework_payload = json.parse(framework)
-    let alignment = if json.get_str(framework_payload, "status") == "ok" {
-        alignment_json_from(local, json.get_str(framework_payload, "inspect_raw"))
-    } else {
-        "{\"status\":\"framework_unavailable\"}"
-    }
-    let payload = map.new()
-    discard map.set(payload, "status", json.str(json.get_str(json.parse(alignment), "status")))
-    discard map.set(payload, "local_contract", local)
-    discard map.set(payload, "alignment", alignment)
-    return json.object(payload)
+    return model.gate_json(gate_value())
 }

@@ -3,6 +3,16 @@ struct RouteDecision {
     route_id: i32,
     method_allowed: i32,
 }
+struct RouteDoc {
+    method: str,
+    path: str,
+    public_route: i32,
+}
+struct OpenApiInfo {
+    title: str,
+    version: str,
+    style: str,
+}
 fn route_root_id() -> i32 {
     return 1
 }
@@ -285,29 +295,44 @@ fn select(conn: HttpHandle) -> RouteDecision {
     }
     return decision(route_not_found_id(), 1)
 }
+fn route_doc(method: str, path: str, public_route: i32) -> RouteDoc {
+    return RouteDoc {
+        method: method,
+        path: path,
+        public_route: public_route,
+    }
+}
+fn openapi_info() -> OpenApiInfo {
+    return OpenApiInfo {
+        title: "fzweb",
+        version: "v1",
+        style: "production-core",
+    }
+}
 fn openapi_json() -> str {
     let routes = list.new()
-    discard list.push(routes, route_doc_json("GET", "/", "true"))
-    discard list.push(routes, route_doc_json("GET", "/healthz", "true"))
-    discard list.push(routes, route_doc_json("GET", "/readyz", "true"))
-    discard list.push(routes, route_doc_json("GET", "/metrics", "true"))
-    discard list.push(routes, route_doc_json("GET", "/inspect", "false"))
-    discard list.push(routes, route_doc_json("GET", "/search", "false"))
-    discard list.push(routes, route_doc_json("POST", "/echo", "false"))
-    discard list.push(routes, route_doc_json("GET", "/v1/echo/:name", "false"))
-    discard list.push(routes, route_doc_json("POST", "/bind", "false"))
-    discard list.push(routes, route_doc_json("GET", "/openapi.json", "true"))
-    discard list.push(routes, route_doc_json("GET", "/version", "true"))
-    discard list.push(routes, route_doc_json("GET", "/static/:name", "false"))
-    discard list.push(routes, route_doc_json("GET", "/v1/items", "false"))
-    discard list.push(routes, route_doc_json("GET", "/v1/items/:id", "false"))
-    discard list.push(routes, route_doc_json("PUT", "/v1/items/:id", "false"))
-    discard list.push(routes, route_doc_json("PATCH", "/v1/items/:id", "false"))
-    discard list.push(routes, route_doc_json("DELETE", "/v1/items/:id", "false"))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/", 1)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/healthz", 1)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/readyz", 1)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/metrics", 1)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/inspect", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/search", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("POST", "/echo", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/v1/echo/:name", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("POST", "/bind", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/openapi.json", 1)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/version", 1)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/static/:name", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/v1/items", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("GET", "/v1/items/:id", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("PUT", "/v1/items/:id", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("PATCH", "/v1/items/:id", 0)))
+    discard list.push(routes, route_doc_json_value(route_doc("DELETE", "/v1/items/:id", 0)))
+    let doc_info = openapi_info()
     let info = map.new()
-    discard map.set(info, "title", json.str("fzweb"))
-    discard map.set(info, "version", json.str("v1"))
-    discard map.set(info, "style", json.str("production-core"))
+    discard map.set(info, "title", json.str(doc_info.title))
+    discard map.set(info, "version", json.str(doc_info.version))
+    discard map.set(info, "style", json.str(doc_info.style))
     let root = map.new()
     discard map.set(root, "openapi", json.str("3.1.0"))
     discard map.set(root, "info", json.object(info))
@@ -316,9 +341,20 @@ fn openapi_json() -> str {
     return json.object(root)
 }
 fn route_doc_json(method: str, path: str, public_route: str) -> str {
+    return route_doc_json_value(route_doc(method, path, if public_route == "true" {
+        1
+    } else {
+        0
+    }))
+}
+fn route_doc_json_value(value: RouteDoc) -> str {
     let route = map.new()
-    discard map.set(route, "method", json.str(method))
-    discard map.set(route, "path", json.str(path))
-    discard map.set(route, "public", json.str(public_route))
+    discard map.set(route, "method", json.str(value.method))
+    discard map.set(route, "path", json.str(value.path))
+    discard map.set(route, "public", json.str(if value.public_route == 1 {
+        "true"
+    } else {
+        "false"
+    }))
     return json.object(route)
 }

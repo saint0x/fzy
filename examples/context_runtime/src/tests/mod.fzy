@@ -1,26 +1,42 @@
 test "det_frame_protocol" {
-    let frame = services.frame_json("workspace-main", "session-a", "inspect repo paths and cite exact files")
-    if str.contains(frame, "\"task_mode\":\"local_inspect\"") == 0 {
+    let frame = services.frame_value("workspace-main", "session-a", "inspect repo paths and cite exact files")
+    if frame.protocol.task_mode != "local_inspect" {
         checkpoint()
     }
-    if str.contains(frame, "\"must_cite_paths\":\"true\"") == 0 {
+    if frame.protocol.must_cite_paths != 1 {
+        checkpoint()
+    }
+    if model.memory_count(frame.selected_memory) != 2 {
         checkpoint()
     }
 }
 
 test "det_selected_memory" {
-    let selected = services.selected_memory_json("repo paths", "workspace-main", "session-a")
-    if str.contains(selected, "\"mem-1\"") == 0 || str.contains(selected, "\"mem-2\"") == 0 {
+    let selected = services.selected_memory("repo paths", "workspace-main", "session-a")
+    if model.memory_count(selected) != 2 {
+        checkpoint()
+    }
+    if model.memory_at(selected, 0).id != "mem-1" || model.memory_at(selected, 1).id != "mem-2" {
         checkpoint()
     }
 }
 
 test "det_compaction" {
-    let compacted = services.compact_json("workspace-main", "session-a", "inspect repo paths")
-    if str.contains(compacted, "\"status\":\"ok\"") == 0 {
+    let compacted = services.compact_value("workspace-main", "session-a", "inspect repo paths")
+    if compacted.status != "ok" {
         checkpoint()
     }
-    if str.contains(compacted, "\"workspace_id\":\"workspace-main\"") == 0 {
+    if compacted.workspace_id != "workspace-main" {
+        checkpoint()
+    }
+}
+
+test "det_json_boundary" {
+    let frame = services.frame_json("workspace-main", "session-a", "inspect repo paths and cite exact files")
+    if str.contains(frame, "\"task_mode\":\"local_inspect\"") == 0 {
+        checkpoint()
+    }
+    if str.contains(frame, "\"must_cite_paths\":\"true\"") == 0 {
         checkpoint()
     }
 }

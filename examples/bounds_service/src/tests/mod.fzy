@@ -1,16 +1,26 @@
 use services;
 
 test "det_local_contract" {
-    let doctor = services.doctor_json()
-    if str.contains(doctor, "\"framework\":\"bounds_service\"") == 0 {
+    let doctor = services.doctor_value()
+    if doctor.framework != "bounds_service" {
         checkpoint()
     }
-    if str.contains(doctor, "\"request_budget_bytes\":32768") == 0 {
+    if doctor.local_contract.request_budget_bytes != 32768 {
         checkpoint()
     }
 }
 
 test "det_gate_alignment" {
+    let gate = services.gate_value()
+    if gate.status != "ok" {
+        checkpoint()
+    }
+    if gate.alignment.runtime_mode_ok != 1 {
+        checkpoint()
+    }
+}
+
+test "det_json_boundary" {
     let gate = services.gate_json()
     if str.contains(gate, "\"status\":\"ok\"") == 0 {
         checkpoint()

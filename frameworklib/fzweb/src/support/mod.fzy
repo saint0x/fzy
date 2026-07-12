@@ -68,12 +68,40 @@ fn bool_env(key: str, fallback: i32) -> i32 {
     }
     return 0
 }
+fn parse_env_i32(text: str) -> i32 {
+    let trimmed = str.trim(text)
+    if trimmed == "" {
+        return 0
+    }
+    let mut idx = 0
+    let mut sign = 1
+    if str.slice(trimmed, 0, 1) == "-" {
+        sign = -1
+        idx = 1
+    }
+    let mut value = 0
+    while idx < str.len(trimmed) {
+        let ch = str.slice(trimmed, idx, idx + 1)
+        if ch == "0" { value = (value * 10) + 0 }
+        if ch == "1" { value = (value * 10) + 1 }
+        if ch == "2" { value = (value * 10) + 2 }
+        if ch == "3" { value = (value * 10) + 3 }
+        if ch == "4" { value = (value * 10) + 4 }
+        if ch == "5" { value = (value * 10) + 5 }
+        if ch == "6" { value = (value * 10) + 6 }
+        if ch == "7" { value = (value * 10) + 7 }
+        if ch == "8" { value = (value * 10) + 8 }
+        if ch == "9" { value = (value * 10) + 9 }
+        idx = idx + 1
+    }
+    return value * sign
+}
 fn i32_env(key: str, fallback: i32, min_value: i32, max_value: i32) -> i32 {
     let raw = str.trim(env.get(key))
     if raw == "" {
         return fallback
     }
-    let mut value = request.parse_i32(raw)
+    let mut value = parse_env_i32(raw)
     if value<min_value {
         value = min_value
     }
@@ -279,9 +307,6 @@ fn handle_echo_post(conn: HttpHandle, ctx: request.RequestContext) -> response.R
             body = str.concat(body, request.body_read(conn, 512))
         }
     }
-    if body == "" && request.content_type_is_json(conn) == 1 {
-        body = json.get_str(request.body_json(conn), "raw")
-    }
     if body == "" {
         return response.json_plan(200, response.ok_json("echo", ctx.request_id))
     }
@@ -299,11 +324,11 @@ fn handle_bind(conn: HttpHandle, ctx: request.RequestContext) -> response.Respon
     if payload.ok == 0 {
         return request_error_plan(payload.err)
     }
-    let user = request.json_required_str(payload.payload, "user")
+    let user = request.json_required_str(payload, "user")
     if user.ok == 0 {
         return request_error_plan(user.err)
     }
-    return response.json_plan(200, response.bind_json(user.value, request.json_bool_default(payload.payload, "active", 0), ctx.request_id),)
+    return response.json_plan(200, response.bind_json(user.value, request.json_bool_default(payload, "active", 0), ctx.request_id),)
 }
 fn handle_openapi(web: app.App) -> response.ResponsePlan {
     return response.json_plan(200, app.openapi_json(web))
@@ -345,7 +370,7 @@ fn handle_item_put(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerCon
     if payload.ok == 0 {
         return request_error_plan(payload.err)
     }
-    discard persistence.put_json(persistence.open(cfg.store_path), "item", item_id.value, payload.raw,)
+    discard persistence.put_record(persistence.open(cfg.store_path), "item", item_id.value, persistence.record(payload.raw),)
     return response.json_plan(200, response.item_json("updated", item_id.value, version.value, ctx.request_id))
 }
 fn handle_item_patch(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
@@ -361,7 +386,7 @@ fn handle_item_patch(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerC
     if payload.ok == 0 {
         return request_error_plan(payload.err)
     }
-    discard persistence.put_json(persistence.open(cfg.store_path), "item_patch", item_id.value, payload.raw,)
+    discard persistence.put_record(persistence.open(cfg.store_path), "item_patch", item_id.value, persistence.record(payload.raw),)
     return response.json_plan(200, response.item_json("patched", item_id.value, version.value, ctx.request_id))
 }
 fn handle_item_delete(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
@@ -384,7 +409,7 @@ fn handle_session_login(conn: HttpHandle, ctx: request.RequestContext, cfg: Serv
     if payload.ok == 0 {
         return request_error_plan(payload.err)
     }
-    let mut user = json.get_str(payload.payload, "user")
+    let mut user = request.json_optional_str(payload, "user")
     if user == "" {
         user = request.query(conn, "user")
     }
