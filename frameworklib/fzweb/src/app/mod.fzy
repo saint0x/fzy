@@ -122,21 +122,66 @@ fn route(route_id: i32, name: str, method: str, path: str, group: str, public_ro
         require_json: require_json,
     }
 }
-fn route_catalog_json(item: Route) -> str {
-    let payload = map.new()
-    discard map.set(payload, "route_id", json.str(str.from_i32(item.route_id)))
-    discard map.set(payload, "name", json.str(item.name))
-    discard map.set(payload, "method", json.str(item.method))
-    discard map.set(payload, "path", json.str(item.path))
-    discard map.set(payload, "group", json.str(item.group))
-    discard map.set(payload, "public_route", json.str(str.from_i32(item.public_route)))
-    discard map.set(payload, "skip_rate", json.str(str.from_i32(item.skip_rate)))
-    discard map.set(payload, "require_json", json.str(str.from_i32(item.require_json)))
-    return json.object(payload)
+
+fn route_frame_push(wire: str, value: str) -> str {
+    return str.concat(str.concat(str.concat(wire, str.from_i32(str.len(value))), "#"), value)
 }
-fn route_from_json(raw: str) -> Route {
-    let payload = json.parse(raw)
-    return route(request.parse_i32(json.get_str(payload, "route_id")), json.get_str(payload, "name"), json.get_str(payload, "method"), json.get_str(payload, "path"), json.get_str(payload, "group"), request.parse_i32(json.get_str(payload, "public_route")), request.parse_i32(json.get_str(payload, "skip_rate")), request.parse_i32(json.get_str(payload, "require_json")),)
+
+fn route_frame_sep(wire: str, start: i32) -> i32 {
+    let mut idx = start
+    while idx < str.len(wire) {
+        if str.slice(wire, idx, idx + 1) == "#" {
+            return idx
+        }
+        idx += 1
+    }
+    return -1
+}
+
+fn route_frame_value_at(wire: str, position: i32) -> str {
+    let mut current = 0
+    let mut idx = 0
+    while idx < str.len(wire) {
+        let sep = route_frame_sep(wire, idx)
+        if sep < 0 {
+            return ""
+        }
+        let size = request.parse_i32(str.slice(wire, idx, sep))
+        let start = sep + 1
+        let end = start + size
+        if current == position {
+            return str.slice(wire, start, end)
+        }
+        idx = end
+        current += 1
+    }
+    return ""
+}
+
+fn route_wire(item: Route) -> str {
+    let mut wire = ""
+    wire = route_frame_push(wire, str.from_i32(item.route_id))
+    wire = route_frame_push(wire, item.name)
+    wire = route_frame_push(wire, item.method)
+    wire = route_frame_push(wire, item.path)
+    wire = route_frame_push(wire, item.group)
+    wire = route_frame_push(wire, str.from_i32(item.public_route))
+    wire = route_frame_push(wire, str.from_i32(item.skip_rate))
+    wire = route_frame_push(wire, str.from_i32(item.require_json))
+    return wire
+}
+
+fn route_from_wire(raw: str) -> Route {
+    return route(
+        request.parse_i32(route_frame_value_at(raw, 0)),
+        route_frame_value_at(raw, 1),
+        route_frame_value_at(raw, 2),
+        route_frame_value_at(raw, 3),
+        route_frame_value_at(raw, 4),
+        request.parse_i32(route_frame_value_at(raw, 5)),
+        request.parse_i32(route_frame_value_at(raw, 6)),
+        request.parse_i32(route_frame_value_at(raw, 7)),
+    )
 }
 fn route_decision(item: Route, method_allowed: i32) -> RouteDecision {
     return RouteDecision {
@@ -163,7 +208,7 @@ fn not_found() -> RouteDecision {
     }
 }
 fn add_route(app: App, item: Route) -> App {
-    discard list.push(app.routes, route_catalog_json(item))
+    discard list.push(app.routes, route_wire(item))
     return app
 }
 fn use_middleware(app: App, name: str) -> App {
@@ -184,7 +229,7 @@ fn route_count(app: App) -> i32 {
     return list.len(app.routes)
 }
 fn route_at(app: App, index: i32) -> Route {
-    return route_from_json(list.get(app.routes, index))
+    return route_from_wire(list.get(app.routes, index))
 }
 fn select(app: App, conn: HttpHandle) -> RouteDecision {
     let mut idx = 0

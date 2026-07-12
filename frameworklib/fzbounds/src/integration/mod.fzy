@@ -1,42 +1,125 @@
+struct FzwebProfile {
+    framework: str,
+    mode: str,
+    request_budget_bytes: i32,
+    header_capacity: i32,
+    body_capacity_bytes: i32,
+    overflow_policy: str,
+}
+struct JobsProfile {
+    framework: str,
+    queue_capacity: i32,
+    worker_pool: i32,
+    overflow_policy: str,
+}
+struct AuthProfile {
+    framework: str,
+    session_capacity: i32,
+    lookup_session_1: str,
+}
+struct RealtimeProfile {
+    framework: str,
+    room_capacity: i32,
+    channel_capacity: i32,
+}
+struct ArenaProfile {
+    framework: str,
+    arena_capacity_bytes: i32,
+    boot_allocated_bytes: i32,
+}
 fn json_i32(value: i32) -> str {
     return str.from_i32(value)
 }
-fn fzweb_request_json() -> str {
+fn fzweb_request() -> FzwebProfile {
+    return FzwebProfile {
+        framework: "fzweb",
+        mode: "strict",
+        request_budget_bytes: 64 * 1024,
+        header_capacity: 64,
+        body_capacity_bytes: 64 * 1024,
+        overflow_policy: "reject",
+    }
+}
+fn fzweb_profile_json(value: FzwebProfile) -> str {
     let payload = map.new()
-    discard map.set(payload, "framework", json.str("fzweb"))
-    discard map.set(payload, "mode", json.str("strict"))
-    discard map.set(payload, "request_budget_bytes", json_i32(64 * 1024))
-    discard map.set(payload, "header_capacity", json_i32(64))
-    discard map.set(payload, "body_capacity_bytes", json_i32(64 * 1024))
-    discard map.set(payload, "overflow_policy", json.str("reject"))
+    discard map.set(payload, "framework", json.str(value.framework))
+    discard map.set(payload, "mode", json.str(value.mode))
+    discard map.set(payload, "request_budget_bytes", json_i32(value.request_budget_bytes))
+    discard map.set(payload, "header_capacity", json_i32(value.header_capacity))
+    discard map.set(payload, "body_capacity_bytes", json_i32(value.body_capacity_bytes))
+    discard map.set(payload, "overflow_policy", json.str(value.overflow_policy))
+    return json.object(payload)
+}
+fn fzweb_request_json() -> str {
+    return fzweb_profile_json(fzweb_request())
+}
+fn jobs_worker() -> JobsProfile {
+    return JobsProfile {
+        framework: "fzjobs",
+        queue_capacity: 4,
+        worker_pool: 64,
+        overflow_policy: "reject",
+    }
+}
+fn jobs_profile_json(value: JobsProfile) -> str {
+    let payload = map.new()
+    discard map.set(payload, "framework", json.str(value.framework))
+    discard map.set(payload, "queue_capacity", json_i32(value.queue_capacity))
+    discard map.set(payload, "worker_pool", json_i32(value.worker_pool))
+    discard map.set(payload, "overflow_policy", json.str(value.overflow_policy))
     return json.object(payload)
 }
 fn jobs_worker_json() -> str {
+    return jobs_profile_json(jobs_worker())
+}
+fn auth_store() -> AuthProfile {
+    return AuthProfile {
+        framework: "fzauth",
+        session_capacity: 100000,
+        lookup_session_1: "saint",
+    }
+}
+fn auth_profile_json(value: AuthProfile) -> str {
     let payload = map.new()
-    discard map.set(payload, "framework", json.str("fzjobs"))
-    discard map.set(payload, "queue_capacity", json_i32(4))
-    discard map.set(payload, "worker_pool", json_i32(64))
-    discard map.set(payload, "overflow_policy", json.str("reject"))
+    discard map.set(payload, "framework", json.str(value.framework))
+    discard map.set(payload, "session_capacity", json_i32(value.session_capacity))
+    discard map.set(payload, "lookup_session_1", json.str(value.lookup_session_1))
     return json.object(payload)
 }
 fn auth_store_json() -> str {
+    return auth_profile_json(auth_store())
+}
+fn realtime_room() -> RealtimeProfile {
+    return RealtimeProfile {
+        framework: "fzrealtime",
+        room_capacity: 5000,
+        channel_capacity: 2048,
+    }
+}
+fn realtime_profile_json(value: RealtimeProfile) -> str {
     let payload = map.new()
-    discard map.set(payload, "framework", json.str("fzauth"))
-    discard map.set(payload, "session_capacity", json_i32(100000))
-    discard map.set(payload, "lookup_session_1", json.str("saint"))
+    discard map.set(payload, "framework", json.str(value.framework))
+    discard map.set(payload, "room_capacity", json_i32(value.room_capacity))
+    discard map.set(payload, "channel_capacity", json_i32(value.channel_capacity))
     return json.object(payload)
 }
 fn realtime_room_json() -> str {
+    return realtime_profile_json(realtime_room())
+}
+fn arena_bootstrap() -> ArenaProfile {
+    return ArenaProfile {
+        framework: "fzbounds",
+        arena_capacity_bytes: 16 * 1024,
+        boot_allocated_bytes: 2048 + 4096,
+    }
+}
+fn arena_profile_json(value: ArenaProfile) -> str {
     let payload = map.new()
-    discard map.set(payload, "framework", json.str("fzrealtime"))
-    discard map.set(payload, "room_capacity", json_i32(5000))
-    discard map.set(payload, "channel_capacity", json_i32(2048))
+    discard map.set(payload, "framework", json.str(value.framework))
+    discard map.set(payload, "arena_capacity_bytes", json_i32(value.arena_capacity_bytes))
+    discard map.set(payload, "boot_allocated_bytes", json_i32(value.boot_allocated_bytes))
     return json.object(payload)
 }
 fn arena_bootstrap_json() -> str {
-    let payload = map.new()
-    discard map.set(payload, "framework", json.str("fzbounds"))
-    discard map.set(payload, "arena_capacity_bytes", json_i32(16 * 1024))
-    discard map.set(payload, "boot_allocated_bytes", json_i32(2048 + 4096))
-    return json.object(payload)
+    return arena_profile_json(arena_bootstrap())
 }

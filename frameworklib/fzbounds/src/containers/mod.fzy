@@ -5,11 +5,30 @@ fn peak_of(left: i32, right: i32) -> i32 {
     }
     return right
 }
+fn json_text_array(items: ListHandle, start: i32, len: i32) -> str {
+    let payload = list.new()
+    let mut idx = 0
+    while idx<len {
+        discard list.push(payload, json.str(list.get(items, start + idx)))
+        idx = idx + 1
+    }
+    return json.array(payload)
+}
 fn map_entry_json(key: str, value: str) -> str {
     let payload = map.new()
     discard map.set(payload, "key", json.str(key))
     discard map.set(payload, "value", json.str(value))
     return json.object(payload)
+}
+fn json_map_entries(entries: ListHandle, len: i32) -> str {
+    let payload = list.new()
+    let mut idx = 0
+    while idx<len {
+        let base = idx * 2
+        discard list.push(payload, map_entry_json(list.get(entries, base), list.get(entries, base + 1)))
+        idx = idx + 1
+    }
+    return json.array(payload)
 }
 fn list_make(capacity: i32) -> model.BoundedList {
     return model.bounded_list(capacity)
@@ -18,7 +37,7 @@ fn list_push_text(items: model.BoundedList, value: str) -> model.BoundedList {
     if items.len >= items.capacity {
         return model.bounded_list_full(items.capacity, items.len, items.peak_len, items.overflows + 1, items.items, "list capacity exceeded")
     }
-    discard list.push(items.items, json.str(value))
+    discard list.push(items.items, value)
     let next_len = items.len + 1
     return model.bounded_list_full(items.capacity, next_len, peak_of(items.peak_len, next_len), items.overflows, items.items, "")
 }
@@ -32,16 +51,17 @@ fn map_set_text(entries: model.BoundedMap, key: str, value: str) -> model.Bounde
     if entries.len >= entries.capacity {
         return model.bounded_map_full(entries.capacity, entries.len, entries.peak_len, entries.overflows + 1, entries.entries, "map capacity exceeded")
     }
-    discard list.push(entries.entries, map_entry_json(key, value))
+    discard list.push(entries.entries, key)
+    discard list.push(entries.entries, value)
     let next_len = entries.len + 1
     return model.bounded_map_full(entries.capacity, next_len, peak_of(entries.peak_len, next_len), entries.overflows, entries.entries, "")
 }
 fn map_get_text(entries: model.BoundedMap, key: str) -> str {
     let mut idx = 0
     while idx<entries.len {
-        let item = json.parse(list.get(entries.entries, idx))
-        if json.get_str(item, "key") == key {
-            return json.get_str(item, "value")
+        let base = idx * 2
+        if list.get(entries.entries, base) == key {
+            return list.get(entries.entries, base + 1)
         }
         idx = idx + 1
     }
@@ -54,7 +74,7 @@ fn queue_push_text(queue: model.BoundedQueue, value: str) -> model.BoundedQueue 
     if queue.len >= queue.capacity {
         return model.bounded_queue_full(queue.capacity, queue.len, queue.peak_len, queue.head, queue.overflows + 1, queue.items, "queue capacity exceeded")
     }
-    discard list.push(queue.items, json.str(value))
+    discard list.push(queue.items, value)
     let next_len = queue.len + 1
     return model.bounded_queue_full(queue.capacity, next_len, peak_of(queue.peak_len, next_len), queue.head, queue.overflows, queue.items, "")
 }
@@ -77,7 +97,7 @@ fn channel_send_text(channel: model.BoundedChannel, value: str) -> model.Bounded
     if channel.len >= channel.capacity {
         return model.bounded_channel_full(channel.capacity, channel.len, channel.peak_len, channel.head, channel.overflows + 1, channel.items, "channel capacity exceeded")
     }
-    discard list.push(channel.items, json.str(value))
+    discard list.push(channel.items, value)
     let next_len = channel.len + 1
     return model.bounded_channel_full(channel.capacity, next_len, peak_of(channel.peak_len, next_len), channel.head, channel.overflows, channel.items, "")
 }
@@ -99,16 +119,46 @@ fn buffer_write_text(buffer: model.BoundedBuffer, value: str) -> model.BoundedBu
     return model.bounded_buffer_full(buffer.capacity_bytes, next_used, peak_of(buffer.peak_bytes, next_used), buffer.overflows, next_data, "")
 }
 fn json_list(items: model.BoundedList) -> str {
-    return model.bounded_list_json(items)
+    let payload = map.new()
+    discard map.set(payload, "capacity", str.from_i32(items.capacity))
+    discard map.set(payload, "len", str.from_i32(items.len))
+    discard map.set(payload, "peak_len", str.from_i32(items.peak_len))
+    discard map.set(payload, "overflows", str.from_i32(items.overflows))
+    discard map.set(payload, "last_error", json.str(items.last_error))
+    discard map.set(payload, "items", json_text_array(items.items, 0, items.len))
+    return json.object(payload)
 }
 fn json_map(items: model.BoundedMap) -> str {
-    return model.bounded_map_json(items)
+    let payload = map.new()
+    discard map.set(payload, "capacity", str.from_i32(items.capacity))
+    discard map.set(payload, "len", str.from_i32(items.len))
+    discard map.set(payload, "peak_len", str.from_i32(items.peak_len))
+    discard map.set(payload, "overflows", str.from_i32(items.overflows))
+    discard map.set(payload, "last_error", json.str(items.last_error))
+    discard map.set(payload, "entries", json_map_entries(items.entries, items.len))
+    return json.object(payload)
 }
 fn json_queue(items: model.BoundedQueue) -> str {
-    return model.bounded_queue_json(items)
+    let payload = map.new()
+    discard map.set(payload, "capacity", str.from_i32(items.capacity))
+    discard map.set(payload, "len", str.from_i32(items.len))
+    discard map.set(payload, "peak_len", str.from_i32(items.peak_len))
+    discard map.set(payload, "head", str.from_i32(items.head))
+    discard map.set(payload, "overflows", str.from_i32(items.overflows))
+    discard map.set(payload, "last_error", json.str(items.last_error))
+    discard map.set(payload, "items", json_text_array(items.items, items.head, items.len))
+    return json.object(payload)
 }
 fn json_channel(items: model.BoundedChannel) -> str {
-    return model.bounded_channel_json(items)
+    let payload = map.new()
+    discard map.set(payload, "capacity", str.from_i32(items.capacity))
+    discard map.set(payload, "len", str.from_i32(items.len))
+    discard map.set(payload, "peak_len", str.from_i32(items.peak_len))
+    discard map.set(payload, "head", str.from_i32(items.head))
+    discard map.set(payload, "overflows", str.from_i32(items.overflows))
+    discard map.set(payload, "last_error", json.str(items.last_error))
+    discard map.set(payload, "items", json_text_array(items.items, items.head, items.len))
+    return json.object(payload)
 }
 fn json_buffer(items: model.BoundedBuffer) -> str {
     return model.bounded_buffer_json(items)
