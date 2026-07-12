@@ -8,4 +8,4 @@ mod finding;
 mod policy;
 
 pub(crate) use self::finding::collect_task_handle_findings;
-pub(crate) use self::policy::{TaskHandlePolicyRecord, collect_task_handle_policy_events};
+pub(crate) use self::policy::{collect_task_handle_policy_events, TaskHandlePolicyRecord};

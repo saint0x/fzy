@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde_json::Value;
 
 pub(crate) const SHARED_GPU_LAUNCH_ABI_VERSION: &str = "fozzylang.gpu_launch_abi.v1";

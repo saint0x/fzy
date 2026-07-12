@@ -47,6 +47,76 @@ pub(crate) struct LocalDependencyResolution {
     pub(crate) manifest_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct LockfilePayload {
+    #[serde(rename = "schemaVersion", default)]
+    schema_version: String,
+    #[serde(rename = "dependencyGraphHash", default)]
+    dependency_graph_hash: String,
+    #[serde(default)]
+    graph: LockfileGraph,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct LockfileGraph {
+    #[serde(default)]
+    package: LockfileRootPackage,
+    #[serde(default)]
+    deps: Vec<LockfileDependencyEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct LockfileRootPackage {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(rename = "manifestHash", default)]
+    manifest_hash: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct LockfileDependencyPackage {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct LockfileDependencyEntry {
+    #[serde(default)]
+    name: String,
+    #[serde(rename = "sourceType", default)]
+    source_type: String,
+    #[serde(
+        rename = "canonicalPath",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    canonical_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    package: Option<LockfileDependencyPackage>,
+    #[serde(
+        rename = "manifestHash",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    git: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rev: Option<String>,
+    #[serde(rename = "sourceHash", default)]
+    source_hash: String,
+}
+
 pub(super) fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
     resolve_source_path_with_target(input, false)
 }
@@ -414,11 +484,11 @@ pub(super) fn write_lockfile(
     let graph = build_dependency_graph(dir, manifest, &root_manifest_hash)?;
     let graph_bytes = serde_json::to_vec(&graph)?;
     let graph_hash = sha256_hex(&graph_bytes);
-    let payload = serde_json::json!({
-        "schemaVersion": "fozzylang.lock.v0",
-        "dependencyGraphHash": graph_hash,
-        "graph": graph,
-    });
+    let payload = LockfilePayload {
+        schema_version: "fozzylang.lock.v0".to_string(),
+        dependency_graph_hash: graph_hash.clone(),
+        graph,
+    };
     let lock_path = dir.join("fozzy.lock");
     let should_write = match mode {
         LockfileMode::ForceRewrite => true,
@@ -428,20 +498,11 @@ pub(super) fn write_lockfile(
             } else {
                 let existing_text = std::fs::read_to_string(&lock_path)
                     .with_context(|| format!("failed reading lockfile: {}", lock_path.display()))?;
-                let existing_json: serde_json::Value = serde_json::from_str(&existing_text)
+                let existing_lock: LockfilePayload = serde_json::from_str(&existing_text)
                     .with_context(|| format!("failed parsing lockfile: {}", lock_path.display()))?;
-                let existing_hash = existing_json
-                    .get("dependencyGraphHash")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default();
-                let existing_graph = existing_json.get("graph").cloned().unwrap_or_default();
-                let existing_schema = existing_json
-                    .get("schemaVersion")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default();
-                if existing_schema == "fozzylang.lock.v0"
-                    && existing_hash == graph_hash
-                    && existing_graph == graph
+                if existing_lock.schema_version == "fozzylang.lock.v0"
+                    && existing_lock.dependency_graph_hash == graph_hash
+                    && existing_lock.graph == payload.graph
                 {
                     false
                 } else {
@@ -458,11 +519,11 @@ pub(super) fn write_lockfile(
     Ok(graph_hash)
 }
 
-pub(super) fn build_dependency_graph(
+fn build_dependency_graph(
     dir: &Path,
     manifest: &manifest::Manifest,
     root_manifest_hash: &str,
-) -> Result<serde_json::Value> {
+) -> Result<LockfileGraph> {
     let mut dep_entries = Vec::new();
     for (name, dependency) in &manifest.deps {
         match dependency {
@@ -480,21 +541,22 @@ pub(super) fn build_dependency_graph(
                     DependencyResolutionKind::Framework => "framework",
                     DependencyResolutionKind::Path => "path",
                 };
-                let mut entry = serde_json::json!({
-                    "name": name,
-                    "sourceType": source_type,
-                    "canonicalPath": canonical.display().to_string(),
-                    "package": {
-                        "name": dep_state.package_name,
-                        "version": dep_state.package_version,
-                    },
-                    "manifestHash": dep_state.manifest_hash,
-                    "sourceHash": dep_state.source_hash,
+                dep_entries.push(LockfileDependencyEntry {
+                    name: name.clone(),
+                    source_type: source_type.to_string(),
+                    canonical_path: Some(canonical.display().to_string()),
+                    package: Some(LockfileDependencyPackage {
+                        name: dep_state.package_name,
+                        version: dep_state.package_version,
+                    }),
+                    manifest_hash: Some(dep_state.manifest_hash),
+                    source_hash: dep_state.source_hash,
+                    path: resolution.manifest_path,
+                    version: None,
+                    source: None,
+                    git: None,
+                    rev: None,
                 });
-                if let Some(path) = resolution.manifest_path {
-                    entry["path"] = serde_json::Value::String(path);
-                }
-                dep_entries.push(entry);
             }
             manifest::Dependency::Version { version, source } => {
                 let source_locator = source
@@ -502,34 +564,46 @@ pub(super) fn build_dependency_graph(
                     .unwrap_or_else(|| "registry+https://crates.io".to_string());
                 let source_hash =
                     sha256_hex(format!("version:{name}:{version}:{source_locator}").as_bytes());
-                dep_entries.push(serde_json::json!({
-                    "name": name,
-                    "sourceType": "version",
-                    "version": version,
-                    "source": source_locator,
-                    "sourceHash": source_hash,
-                }));
+                dep_entries.push(LockfileDependencyEntry {
+                    name: name.clone(),
+                    source_type: "version".to_string(),
+                    canonical_path: None,
+                    package: None,
+                    manifest_hash: None,
+                    source_hash,
+                    path: None,
+                    version: Some(version.clone()),
+                    source: Some(source_locator),
+                    git: None,
+                    rev: None,
+                });
             }
             manifest::Dependency::Git { git, rev } => {
                 let source_hash = sha256_hex(format!("git:{name}:{git}:{rev}").as_bytes());
-                dep_entries.push(serde_json::json!({
-                    "name": name,
-                    "sourceType": "git",
-                    "git": git,
-                    "rev": rev,
-                    "sourceHash": source_hash,
-                }));
+                dep_entries.push(LockfileDependencyEntry {
+                    name: name.clone(),
+                    source_type: "git".to_string(),
+                    canonical_path: None,
+                    package: None,
+                    manifest_hash: None,
+                    source_hash,
+                    path: None,
+                    version: None,
+                    source: None,
+                    git: Some(git.clone()),
+                    rev: Some(rev.clone()),
+                });
             }
         }
     }
-    Ok(serde_json::json!({
-        "package": {
-            "name": manifest.package.name,
-            "version": manifest.package.version,
-            "manifestHash": root_manifest_hash,
+    Ok(LockfileGraph {
+        package: LockfileRootPackage {
+            name: manifest.package.name.clone(),
+            version: manifest.package.version.clone(),
+            manifest_hash: root_manifest_hash.to_string(),
         },
-        "deps": dep_entries,
-    }))
+        deps: dep_entries,
+    })
 }
 
 pub(super) fn normalize_rel_path(path: &str) -> String {

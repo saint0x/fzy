@@ -36,20 +36,86 @@ fn record(id: str, user: str, issued_ms: i32, expires_ms: i32) -> SessionRecord 
 fn store(cfg: SessionConfig) -> persistence.Store {
     return persistence.open(cfg.store_path)
 }
-fn encode(rec: SessionRecord) -> str {
-    let payload = map.new()
-    discard map.set(payload, "id", json.str(rec.id))
-    discard map.set(payload, "user", json.str(rec.user))
-    discard map.set(payload, "issued_ms", json.str(str.from_i32(rec.issued_ms)))
-    discard map.set(payload, "expires_ms", json.str(str.from_i32(rec.expires_ms)))
-    return json.object(payload)
+
+fn frame_push(wire: str, value: str) -> str {
+    return str.concat(str.concat(str.concat(wire, str.from_i32(str.len(value))), "#"), value)
 }
+
+fn frame_sep(wire: str, start: i32) -> i32 {
+    let mut idx = start
+    while idx < str.len(wire) {
+        if str.slice(wire, idx, idx + 1) == "#" {
+            return idx
+        }
+        idx += 1
+    }
+    return -1
+}
+
+fn frame_value_at(wire: str, position: i32) -> str {
+    let mut current = 0
+    let mut idx = 0
+    while idx < str.len(wire) {
+        let sep = frame_sep(wire, idx)
+        if sep < 0 {
+            return ""
+        }
+        let size = request.parse_i32(str.slice(wire, idx, sep))
+        let start = sep + 1
+        let end = start + size
+        if size < 0 || end > str.len(wire) {
+            return ""
+        }
+        if current == position {
+            return str.slice(wire, start, end)
+        }
+        idx = end
+        current += 1
+    }
+    return ""
+}
+
+fn encode(rec: SessionRecord) -> str {
+    let mut wire = ""
+    wire = frame_push(wire, rec.id)
+    wire = frame_push(wire, rec.user)
+    wire = frame_push(wire, str.from_i32(rec.issued_ms))
+    wire = frame_push(wire, str.from_i32(rec.expires_ms))
+    return str.concat("v1|", wire)
+}
+
+fn decode_legacy_json(raw: str) -> SessionRecord {
+    let payload = json.parse(raw)
+    return record(
+        json.get_str(payload, "id"),
+        json.get_str(payload, "user"),
+        request.parse_i32(json.get_str(payload, "issued_ms")),
+        request.parse_i32(json.get_str(payload, "expires_ms")),
+    )
+}
+
 fn decode(raw: str) -> SessionRecord {
     if raw == "" {
         return record("", "", 0, 0)
     }
-    let payload = json.parse(raw)
-    return record(json.get_str(payload, "id"), json.get_str(payload, "user"), request.parse_i32(json.get_str(payload, "issued_ms")), request.parse_i32(json.get_str(payload, "expires_ms")),)
+    if str.len(raw) >= 3 && str.slice(raw, 0, 3) == "v1|" {
+        let framed = str.slice(raw, 3, str.len(raw))
+        return record(
+            frame_value_at(framed, 0),
+            frame_value_at(framed, 1),
+            request.parse_i32(frame_value_at(framed, 2)),
+            request.parse_i32(frame_value_at(framed, 3)),
+        )
+    }
+    if str.slice(raw, 0, 1) == "{" {
+        return decode_legacy_json(raw)
+    }
+    return record(
+        frame_value_at(raw, 0),
+        frame_value_at(raw, 1),
+        request.parse_i32(frame_value_at(raw, 2)),
+        request.parse_i32(frame_value_at(raw, 3)),
+    )
 }
 fn issue_id() -> str {
     return security.opaque_token(24)
@@ -57,7 +123,7 @@ fn issue_id() -> str {
 fn create(cfg: SessionConfig, user: str) -> SessionRecord {
     let issued = time.monotonic_ms()
     let rec = record(issue_id(), user, issued, issued + (cfg.ttl_seconds * 1000))
-    discard persistence.put_json(store(cfg), "session", rec.id, encode(rec))
+    discard persistence.put(store(cfg), "session", rec.id, encode(rec))
     return rec
 }
 fn load(cfg: SessionConfig, session_id: str) -> SessionRecord {

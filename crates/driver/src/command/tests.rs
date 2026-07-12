@@ -5189,6 +5189,97 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn native_run_host_backends_keeps_repeated_wide_returned_aggregates_live() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-wide-aggregate-host-live-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.term;\n\nstruct Row {\n    a: i32,\n    b: i32,\n    c: i32,\n    d: i32,\n    e: i32,\n    f: i32,\n    g: i32,\n    h: i32,\n    i: i32,\n    j: i32,\n    k: i32,\n    l: i32,\n}\n\nfn make_row(x: i32) -> Row {\n    return Row {\n        a: x,\n        b: x + 1,\n        c: x + 2,\n        d: x + 3,\n        e: x + 4,\n        f: x + 5,\n        g: x + 6,\n        h: x + 7,\n        i: x + 8,\n        j: x + 9,\n        k: x + 10,\n        l: x + 11,\n    }\n}\n\nfn main() -> i32 {\n    let mut idx = 0\n    while idx < 5000 {\n        let row = make_row(5)\n        if row.i != 13 || row.l != 16 {\n            discard term.transcript_write(term.transcript_style(8), \"idx\", str.from_i32(idx))\n            discard term.transcript_write(term.transcript_style(8), \"row_i\", str.from_i32(row.i))\n            discard term.transcript_write(term.transcript_style(8), \"row_l\", str.from_i32(row.l))\n            return 13\n        }\n        idx = idx + 1\n    }\n    discard term.transcript_write(term.transcript_style(8), \"done\", str.from_i32(idx))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        for backend in ["llvm", "cranelift"] {
+            let output = run(
+                Command::Run {
+                    path: source.clone(),
+                    args: Vec::new(),
+                    deterministic: false,
+                    strict_verify: false,
+                    safe_profile: false,
+                    seed: None,
+                    record: None,
+                    host_backends: true,
+                    backend: Some(backend.to_string()),
+                    max_seconds: Some(20),
+                    exit_on_healthcheck: None,
+                    smoke_http: None,
+                },
+                Format::Json,
+            )
+            .unwrap_or_else(|error| {
+                panic!("host-backed wide aggregate run should succeed for {backend}: {error}")
+            });
+            assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+            assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+            assert!(output.contains("done"), "output was: {output}");
+            assert!(output.contains("5000"), "output was: {output}");
+        }
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_run_host_backends_keeps_repeated_string_heavy_returned_aggregates_live() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!(
+            "fozzylang-string-heavy-aggregate-host-live-{suffix}.fzy"
+        ));
+        std::fs::write(
+            &source,
+            "use core.term;\n\nstruct Manifest {\n    summary_json_path: str,\n    summary_csv_path: str,\n    budgets_jsonl_path: str,\n    samples_jsonl_path: str,\n    samples_csv_path: str,\n    failures_jsonl_path: str,\n    failures_csv_path: str,\n    report_md_path: str,\n    budget_count: i32,\n    suite_size: i32,\n    sample_rows: i32,\n    failure_rows: i32,\n}\n\nfn build_manifest(prefix: str, count: i32) -> Manifest {\n    return Manifest {\n        summary_json_path: str.concat(prefix, \"/summary.json\"),\n        summary_csv_path: str.concat(prefix, \"/summary.csv\"),\n        budgets_jsonl_path: str.concat(prefix, \"/budgets.jsonl\"),\n        samples_jsonl_path: str.concat(prefix, \"/samples.jsonl\"),\n        samples_csv_path: str.concat(prefix, \"/samples.csv\"),\n        failures_jsonl_path: str.concat(prefix, \"/failures.jsonl\"),\n        failures_csv_path: str.concat(prefix, \"/failures.csv\"),\n        report_md_path: str.concat(prefix, \"/RESULTS.md\"),\n        budget_count: count,\n        suite_size: count + 1,\n        sample_rows: count + 2,\n        failure_rows: count + 3,\n    }\n}\n\nfn main() -> i32 {\n    let mut idx = 0\n    while idx < 5000 {\n        let prefix = str.concat(\"artifacts/run-\", str.from_i32(idx))\n        let manifest = build_manifest(prefix, 5)\n        if manifest.budget_count != 5 || manifest.suite_size != 6 || manifest.sample_rows != 7 || manifest.failure_rows != 8 {\n            discard term.transcript_write(term.transcript_style(8), \"idx\", str.from_i32(idx))\n            discard term.transcript_write(term.transcript_style(8), \"budget_count\", str.from_i32(manifest.budget_count))\n            discard term.transcript_write(term.transcript_style(8), \"suite_size\", str.from_i32(manifest.suite_size))\n            discard term.transcript_write(term.transcript_style(8), \"sample_rows\", str.from_i32(manifest.sample_rows))\n            discard term.transcript_write(term.transcript_style(8), \"failure_rows\", str.from_i32(manifest.failure_rows))\n            return 19\n        }\n        if manifest.summary_json_path == \"\" || manifest.report_md_path == \"\" {\n            discard term.transcript_write(term.transcript_style(8), \"idx\", str.from_i32(idx))\n            discard term.transcript_write(term.transcript_style(8), \"summary_json_path\", manifest.summary_json_path)\n            discard term.transcript_write(term.transcript_style(8), \"report_md_path\", manifest.report_md_path)\n            return 23\n        }\n        idx = idx + 1\n    }\n    discard term.transcript_write(term.transcript_style(8), \"done\", str.from_i32(idx))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        for backend in ["llvm", "cranelift"] {
+            let output = run(
+                Command::Run {
+                    path: source.clone(),
+                    args: Vec::new(),
+                    deterministic: false,
+                    strict_verify: false,
+                    safe_profile: false,
+                    seed: None,
+                    record: None,
+                    host_backends: true,
+                    backend: Some(backend.to_string()),
+                    max_seconds: Some(30),
+                    exit_on_healthcheck: None,
+                    smoke_http: None,
+                },
+                Format::Json,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "host-backed string-heavy aggregate run should succeed for {backend}: {error}"
+                )
+            });
+            assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+            assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+            assert!(output.contains("done"), "output was: {output}");
+            assert!(output.contains("5000"), "output was: {output}");
+        }
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn native_run_host_backends_keeps_repeated_collection_handle_allocations_live() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

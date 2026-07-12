@@ -628,6 +628,47 @@ fn refresh_lockfile_unblocks_drifted_project_build() {
 }
 
 #[test]
+fn refresh_lockfile_keeps_remote_dependency_hashes_and_field_order_stable() {
+    let project_name = format!(
+        "fozzylang-lock-remote-stable-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[deps]\nserde={version=\"1.0.0\",source=\"registry+https://registry.example.test\"}\nparser={git=\"https://github.com/example/parser.git\",rev=\"abc123\"}\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let first_hash = refresh_lockfile(&root).expect("first lock refresh should succeed");
+    let first_lock =
+        std::fs::read_to_string(root.join("fozzy.lock")).expect("lockfile should be readable");
+    let second_hash = refresh_lockfile(&root).expect("second lock refresh should succeed");
+    let second_lock =
+        std::fs::read_to_string(root.join("fozzy.lock")).expect("lockfile should be readable");
+
+    assert_eq!(first_hash, second_hash);
+    assert_eq!(first_lock, second_lock);
+    assert!(first_lock.contains(
+        "\"sourceType\": \"version\",\n        \"version\": \"1.0.0\",\n        \"source\": \"registry+https://registry.example.test\",\n        \"sourceHash\":"
+    ));
+    assert!(first_lock.contains(
+        "\"sourceType\": \"git\",\n        \"git\": \"https://github.com/example/parser.git\",\n        \"rev\": \"abc123\",\n        \"sourceHash\":"
+    ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_library_from_main_source_does_not_export_main_symbol() {
     let source = std::env::temp_dir().join(format!(
         "fozzylang-lib-main-symbol-{}.fzy",

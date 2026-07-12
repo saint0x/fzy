@@ -20,12 +20,14 @@ This workflow assumes the current production posture:
 - deterministic validation and replay as release evidence
 - native and host-backed execution both matter for confidence
 - snapshot-isolated builds are the canonical multi-agent parallel build model for one shared codebase
+- internal semantics stay typed, with JSON limited to real boundaries and emitted artifacts as defined in `NOJSON.md`
 
 ## 1. Author
 
 - Implement changes in source + tests.
 - Keep APIs and command outputs deterministic.
 - For tooling changes, include LSP + formatter/doc smoke coverage.
+- For architecture changes, satisfy `NOJSON.md`: typed internals first, JSON only at real boundaries.
 
 ## 2. Check
 
@@ -127,6 +129,7 @@ This gate includes:
 - strict `fz fmt` and `fz doc gen` smokes
 - pedantic hotspot closure
 - unsafe-budget enforcement
+- repo-facing architecture contract review, including the typed-internals / JSON-boundary policy in `NOJSON.md`
 
 ## 5. Release
 
