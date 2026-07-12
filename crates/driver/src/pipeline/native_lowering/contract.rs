@@ -204,7 +204,7 @@ pub(crate) fn strict_rpc_contract_diagnostics(
 
     let rpc_methods = rpc_functions
         .iter()
-        .map(|function| serde_json::json!({ "name": function.name }))
+        .map(|function| function.name.clone())
         .collect::<Vec<_>>();
     let policy_evidence = collect_rpc_policy_evidence(module, &rpc_methods);
     let mut diagnostics = Vec::new();

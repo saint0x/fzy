@@ -278,7 +278,7 @@ and even then, keep a typed API over the wire format.
 
 The biggest remaining cleanup fronts are:
 
-- Rust-side `serde_json::Value` and JSON-tree inspection in remaining compiler/audit paths
+- remaining compiler policy/report builders that still compute semantics through JSON trees
 - examples and support code that still teach JSON-first internal modeling
 
 ## Current Codebase Implications
@@ -286,7 +286,7 @@ The biggest remaining cleanup fronts are:
 For this repository specifically, the intended direction is:
 
 - `crates/parser`, `crates/ast`, `crates/hir`, `crates/fir`, `crates/kernel_ir`, `crates/verifier`, and `crates/runtime` stay fully typed internally
-- `crates/driver` may emit JSON for CLI, LSP, reports, manifests, and external tools, but remaining audit/report internals should keep moving onto typed report models before final serialization
+- `crates/driver` may emit JSON for CLI, LSP, reports, manifests, and external tools, but the last policy/report builders should keep moving onto typed report models before final serialization
 - `crates/fzscenario` may continue to own JSON artifacts and scenario/report emission, because that is a genuine interchange surface
 - `core`, `examples`, and framework code should keep JSON shaping in API/transport layers and avoid teaching JSON-as-domain-model as the default authoring style
 

@@ -54,24 +54,26 @@ pub(super) fn write_safety_artifacts(
         &serde_json::to_vec_pretty(&rpc_json)?,
     )?;
 
-    let ffi_json = build_ffi_report_json(fir);
+    let ffi_report = build_ffi_report(fir);
+    let ffi_json = serde_json::to_value(&ffi_report)?;
     write_artifact_if_changed(
         &out_dir.join("ffi-report.json"),
         &serde_json::to_vec_pretty(&ffi_json)?,
     )?;
     write_artifact_if_changed(
         &out_dir.join("ffi-report.md"),
-        render_ffi_report_markdown(&ffi_json).as_bytes(),
+        render_ffi_report_markdown(&ffi_report).as_bytes(),
     )?;
 
-    let runtime_contracts_json = build_native_runtime_contracts_json();
+    let runtime_contracts = build_native_runtime_contracts_report();
+    let runtime_contracts_json = serde_json::to_value(&runtime_contracts)?;
     write_artifact_if_changed(
         &out_dir.join("native-runtime-contracts.json"),
         &serde_json::to_vec_pretty(&runtime_contracts_json)?,
     )?;
     write_artifact_if_changed(
         &out_dir.join("native-runtime-contracts.md"),
-        render_native_runtime_contracts_markdown(&runtime_contracts_json).as_bytes(),
+        render_native_runtime_contracts_markdown(&runtime_contracts).as_bytes(),
     )?;
 
     let handle_contracts_json = build_handle_contracts_json();

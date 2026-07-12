@@ -40,10 +40,12 @@ fn compile_file_cranelift_rejects_async_c_exports_with_guidance() {
     let artifact = compile_file_with_backend(&path, BuildProfile::Dev, Some("cranelift"))
         .expect("build should return diagnostics");
     assert_eq!(artifact.status, "error");
-    assert!(artifact
-        .diagnostic_details
-        .iter()
-        .any(|d| d.message.contains("does not support async C export")));
+    assert!(
+        artifact
+            .diagnostic_details
+            .iter()
+            .any(|d| d.message.contains("does not support async C export"))
+    );
 
     let _ = std::fs::remove_file(path);
 }
@@ -466,8 +468,8 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
 
 #[test]
 fn native_runtime_contract_markdown_surface_matches_expected_metadata() {
-    let value = super::build_native_runtime_contracts_json();
-    let markdown = super::render_native_runtime_contracts_markdown(&value);
+    let report = super::build_native_runtime_contracts_report();
+    let markdown = super::render_native_runtime_contracts_markdown(&report);
     assert!(markdown.contains("# Native Runtime Contracts"));
     for snippet in [
         "| `http.stream_close` | `fz_native_http_stream_close` | 1 | `consume_arg0` | `status` | `http` | `consumes_linear_handle` | `runtime_status_with_last_error` | `emit_runtime_event` | `nonblocking` |",
@@ -505,9 +507,11 @@ fn embedded_core_security_module_merges_qualified_helpers() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert!(function_names
-        .iter()
-        .any(|name| name == "security.default_signer"));
+    assert!(
+        function_names
+            .iter()
+            .any(|name| name == "security.default_signer")
+    );
     assert!(function_names.iter().any(|name| name == "security.sign"));
     assert!(function_names.iter().any(|name| name == "security.verify"));
 
@@ -593,12 +597,17 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_str_contains("));
     assert!(shim.contains("int32_t fz_native_str_visible_len_ansi(int32_t value_id)"));
     assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
-    assert!(shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)"));
+    assert!(
+        shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)")
+    );
     assert!(shim.contains(
         "int32_t fz_native_http_post_json_capture(int32_t endpoint_id, int32_t body_id)"
     ));
-    assert!(shim
-        .contains("int32_t fz_native_http_post_json_stream(int32_t endpoint_id, int32_t body_id)"));
+    assert!(
+        shim.contains(
+            "int32_t fz_native_http_post_json_stream(int32_t endpoint_id, int32_t body_id)"
+        )
+    );
     assert!(shim.contains(
         "int32_t fz_native_http_request_stream(int32_t method_id, int32_t endpoint_id, int32_t body_id)"
     ));
@@ -614,8 +623,11 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_crypto_random_base64(int32_t len_bytes)"));
     assert!(shim.contains("int32_t fz_native_crypto_sha256(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_crypto_hmac_sha256(int32_t key_id, int32_t data_id)"));
-    assert!(shim
-        .contains("int32_t fz_native_crypto_constant_time_eq(int32_t left_id, int32_t right_id)"));
+    assert!(
+        shim.contains(
+            "int32_t fz_native_crypto_constant_time_eq(int32_t left_id, int32_t right_id)"
+        )
+    );
     assert!(shim.contains("int32_t fz_native_crypto_base64_encode(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_crypto_base64_decode(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_crypto_base64_url_encode(int32_t input_id)"));
@@ -741,7 +753,9 @@ fn native_runtime_shim_emits_async_export_handle_wrappers() {
         &[],
     );
     assert!(shim.contains("extern int32_t flush(int32_t code);"));
-    assert!(shim.contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out)"));
+    assert!(
+        shim.contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out)")
+    );
     assert!(shim.contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out)"));
     assert!(
         shim.contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out)")

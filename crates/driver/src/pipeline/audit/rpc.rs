@@ -1,5 +1,148 @@
 use super::*;
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcCompatibilityVersions {
+    #[serde(rename = "languageVersion")]
+    language_version: String,
+    #[serde(rename = "traceSchemaVersion")]
+    trace_schema_version: String,
+    #[serde(rename = "manifestSchemaVersion")]
+    manifest_schema_version: String,
+    #[serde(rename = "runtimeAbiVersion")]
+    runtime_abi_version: String,
+    #[serde(rename = "nativeImportTableVersion")]
+    native_import_table_version: String,
+    #[serde(rename = "diagnosticCatalogVersion")]
+    diagnostic_catalog_version: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcParamSafety {
+    name: String,
+    #[serde(rename = "type")]
+    ty: String,
+    ownership: &'static str,
+    #[serde(rename = "payloadSupported")]
+    payload_supported: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcMethodSafety {
+    name: String,
+    #[serde(rename = "canonicalName")]
+    canonical_name: String,
+    #[serde(rename = "methodNameStable")]
+    method_name_stable: bool,
+    params: Vec<RpcParamSafety>,
+    #[serde(rename = "returnType")]
+    return_type: String,
+    #[serde(rename = "requestOwnershipExplicit")]
+    request_ownership_explicit: bool,
+    #[serde(rename = "responseOwnership")]
+    response_ownership: &'static str,
+    #[serde(rename = "responseOwnershipExplicit")]
+    response_ownership_explicit: bool,
+    #[serde(rename = "payloadTypesSupported")]
+    payload_types_supported: bool,
+    #[serde(rename = "errorNormalization")]
+    error_normalization: &'static str,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcDeadlinePolicyRecord {
+    method: String,
+    policy: &'static str,
+    calls: usize,
+    #[serde(rename = "protectedCalls")]
+    protected_calls: usize,
+    #[serde(rename = "strictReady")]
+    strict_ready: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcCancelPolicyRecord {
+    method: String,
+    policy: &'static str,
+    calls: usize,
+    #[serde(rename = "cancelObservedCalls")]
+    cancel_observed_calls: usize,
+    #[serde(rename = "recvObservedCalls")]
+    recv_observed_calls: usize,
+    #[serde(rename = "cleanupObservedCalls")]
+    cleanup_observed_calls: usize,
+    #[serde(rename = "cleanupPolicy")]
+    cleanup_policy: &'static str,
+    #[serde(rename = "handlerCleanupStatus")]
+    handler_cleanup_status: &'static str,
+    #[serde(rename = "strictReady")]
+    strict_ready: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcPayloadContractRecord {
+    method: String,
+    #[serde(rename = "requestOwnershipExplicit")]
+    request_ownership_explicit: bool,
+    #[serde(rename = "responseOwnershipExplicit")]
+    response_ownership_explicit: bool,
+    #[serde(rename = "payloadTypesSupported")]
+    payload_types_supported: bool,
+    #[serde(rename = "methodNameStable")]
+    method_name_stable: bool,
+    #[serde(rename = "errorNormalization")]
+    error_normalization: &'static str,
+    #[serde(rename = "strictReady")]
+    strict_ready: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcStrictRequirements {
+    #[serde(rename = "deadlinePerCall")]
+    deadline_per_call: bool,
+    #[serde(rename = "handlerCancelCleanup")]
+    handler_cancel_cleanup: &'static str,
+    #[serde(rename = "frameTraceability")]
+    frame_traceability: bool,
+    #[serde(rename = "requestOwnershipExplicit")]
+    request_ownership_explicit: bool,
+    #[serde(rename = "responseOwnershipExplicit")]
+    response_ownership_explicit: bool,
+    #[serde(rename = "payloadTypesSupported")]
+    payload_types_supported: bool,
+    #[serde(rename = "methodNameStable")]
+    method_name_stable: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcSafetyReport {
+    #[serde(rename = "schemaVersion")]
+    schema_version: &'static str,
+    versions: RpcCompatibilityVersions,
+    rpc_methods: Vec<RpcMethodSafety>,
+    #[serde(rename = "strictRequirements")]
+    strict_requirements: RpcStrictRequirements,
+    deadline_policies: Vec<RpcDeadlinePolicyRecord>,
+    cancel_policies: Vec<RpcCancelPolicyRecord>,
+    payload_contracts: Vec<RpcPayloadContractRecord>,
+    resource_cleanup: Vec<RpcResourceCleanupRecord>,
+    rpc_frames: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RpcResourceCleanupRecord {}
+
+fn rpc_compatibility_versions() -> RpcCompatibilityVersions {
+    let compatibility = fzscenario::compatibility_info();
+    RpcCompatibilityVersions {
+        language_version: compatibility.language_version,
+        trace_schema_version: compatibility.trace_schema_version,
+        manifest_schema_version: compatibility.manifest_schema_version,
+        runtime_abi_version: compatibility.runtime_abi_version,
+        native_import_table_version: compatibility.native_import_table_version,
+        diagnostic_catalog_version: compatibility.diagnostic_catalog_version,
+    }
+}
+
 pub(crate) fn build_rpc_safety_json(
     module: &ast::Module,
     fir: &fir::FirModule,
@@ -18,122 +161,128 @@ pub(crate) fn build_rpc_safety_json(
             let params = function
                 .params
                 .iter()
-                .map(|param| {
-                    serde_json::json!({
-                        "name": param.name,
-                        "type": param.ty.to_string(),
-                        "ownership": param.ty.rpc_boundary_ownership(),
-                        "payloadSupported": param.ty.is_rpc_payload_supported(),
-                    })
+                .map(|param| RpcParamSafety {
+                    name: param.name.clone(),
+                    ty: param.ty.to_string(),
+                    ownership: param.ty.rpc_boundary_ownership(),
+                    payload_supported: param.ty.is_rpc_payload_supported(),
                 })
                 .collect::<Vec<_>>();
             let request_explicit = params.iter().all(|param| {
-                param["ownership"]
-                    .as_str()
-                    .is_some_and(|ownership| ownership == "value" || ownership == "owned")
-                    && param["payloadSupported"].as_bool() == Some(true)
+                matches!(param.ownership, "value" | "owned") && param.payload_supported
             });
             let response_ownership = function.return_type.rpc_boundary_ownership();
             let response_payload_supported = function.return_type.is_rpc_payload_supported();
-            serde_json::json!({
-                "name": function.name,
-                "canonicalName": function.link_name.clone().unwrap_or_else(|| function.name.clone()),
-                "methodNameStable": function.link_name.as_deref().is_none_or(|link_name| link_name == function.name),
-                "params": params,
-                "returnType": function.return_type.to_string(),
-                "requestOwnershipExplicit": request_explicit,
-                "responseOwnership": response_ownership,
-                "responseOwnershipExplicit": matches!(response_ownership, "value" | "owned" | "status") && response_payload_supported,
-                "payloadTypesSupported": request_explicit && response_payload_supported,
-                "errorNormalization": rpc_error_normalization_kind(&function.return_type),
-            })
+            RpcMethodSafety {
+                name: function.name.clone(),
+                canonical_name: function
+                    .link_name
+                    .clone()
+                    .unwrap_or_else(|| function.name.clone()),
+                method_name_stable: function
+                    .link_name
+                    .as_deref()
+                    .is_none_or(|link_name| link_name == function.name),
+                params,
+                return_type: function.return_type.to_string(),
+                request_ownership_explicit: request_explicit,
+                response_ownership,
+                response_ownership_explicit: matches!(
+                    response_ownership,
+                    "value" | "owned" | "status"
+                ) && response_payload_supported,
+                payload_types_supported: request_explicit && response_payload_supported,
+                error_normalization: rpc_error_normalization_kind(&function.return_type),
+            }
         })
         .collect::<Vec<_>>();
-    let policy_evidence = collect_rpc_policy_evidence(module, &rpc_methods);
+    let policy_evidence = collect_rpc_policy_evidence_from_names(
+        module,
+        rpc_methods.iter().map(|method| method.name.as_str()),
+    );
     let deadline_policies = rpc_methods
         .iter()
         .map(|method| {
-            let name = method["name"].as_str().unwrap_or_default();
             let evidence = policy_evidence
-                .get(name)
+                .get(method.name.as_str())
                 .cloned()
                 .unwrap_or_else(RpcPolicyEvidence::default);
-            serde_json::json!({
-                "method": name,
-                "policy": evidence.deadline_policy(),
-                "calls": evidence.calls,
-                "protectedCalls": evidence.deadline_protected_calls,
-                "strictReady": evidence.calls > 0 && evidence.deadline_protected_calls == evidence.calls,
-            })
+            RpcDeadlinePolicyRecord {
+                method: method.name.clone(),
+                policy: evidence.deadline_policy(),
+                calls: evidence.calls,
+                protected_calls: evidence.deadline_protected_calls,
+                strict_ready: evidence.calls > 0
+                    && evidence.deadline_protected_calls == evidence.calls,
+            }
         })
         .collect::<Vec<_>>();
     let cancel_policies = rpc_methods
         .iter()
         .map(|method| {
-            let name = method["name"].as_str().unwrap_or_default();
             let evidence = policy_evidence
-                .get(name)
+                .get(method.name.as_str())
                 .cloned()
                 .unwrap_or_else(RpcPolicyEvidence::default);
-            serde_json::json!({
-                "method": name,
-                "policy": evidence.cancel_policy(),
-                "calls": evidence.calls,
-                "cancelObservedCalls": evidence.cancel_observed_calls,
-                "recvObservedCalls": evidence.recv_observed_calls,
-                "cleanupObservedCalls": evidence.cleanup_observed_calls(),
-                "cleanupPolicy": evidence.cleanup_policy(),
-                "handlerCleanupStatus": evidence.cleanup_policy(),
-                "strictReady": evidence.calls > 0 && evidence.cleanup_observed_calls() == evidence.calls,
-            })
+            RpcCancelPolicyRecord {
+                method: method.name.clone(),
+                policy: evidence.cancel_policy(),
+                calls: evidence.calls,
+                cancel_observed_calls: evidence.cancel_observed_calls,
+                recv_observed_calls: evidence.recv_observed_calls,
+                cleanup_observed_calls: evidence.cleanup_observed_calls(),
+                cleanup_policy: evidence.cleanup_policy(),
+                handler_cleanup_status: evidence.cleanup_policy(),
+                strict_ready: evidence.calls > 0
+                    && evidence.cleanup_observed_calls() == evidence.calls,
+            }
         })
         .collect::<Vec<_>>();
 
     let payload_contracts = rpc_methods
         .iter()
-        .map(|method| {
-            serde_json::json!({
-                "method": method["name"].as_str().unwrap_or_default(),
-                "requestOwnershipExplicit": method["requestOwnershipExplicit"],
-                "responseOwnershipExplicit": method["responseOwnershipExplicit"],
-                "payloadTypesSupported": method["payloadTypesSupported"],
-                "methodNameStable": method["methodNameStable"],
-                "errorNormalization": method["errorNormalization"],
-                "strictReady": method["requestOwnershipExplicit"].as_bool() == Some(true)
-                    && method["responseOwnershipExplicit"].as_bool() == Some(true)
-                    && method["payloadTypesSupported"].as_bool() == Some(true)
-                    && method["methodNameStable"].as_bool() == Some(true),
-            })
+        .map(|method| RpcPayloadContractRecord {
+            method: method.name.clone(),
+            request_ownership_explicit: method.request_ownership_explicit,
+            response_ownership_explicit: method.response_ownership_explicit,
+            payload_types_supported: method.payload_types_supported,
+            method_name_stable: method.method_name_stable,
+            error_normalization: method.error_normalization,
+            strict_ready: method.request_ownership_explicit
+                && method.response_ownership_explicit
+                && method.payload_types_supported
+                && method.method_name_stable,
         })
         .collect::<Vec<_>>();
 
-    serde_json::json!({
-        "schemaVersion": "fozzylang.rpc_safety.v1",
-        "versions": compatibility_versions_json(),
-        "rpc_methods": rpc_methods,
-        "strictRequirements": {
-            "deadlinePerCall": true,
-            "handlerCancelCleanup": "required",
-            "frameTraceability": true,
-            "requestOwnershipExplicit": true,
-            "responseOwnershipExplicit": true,
-            "payloadTypesSupported": true,
-            "methodNameStable": true,
+    serde_json::to_value(RpcSafetyReport {
+        schema_version: "fozzylang.rpc_safety.v1",
+        versions: rpc_compatibility_versions(),
+        rpc_methods,
+        strict_requirements: RpcStrictRequirements {
+            deadline_per_call: true,
+            handler_cancel_cleanup: "required",
+            frame_traceability: true,
+            request_ownership_explicit: true,
+            response_ownership_explicit: true,
+            payload_types_supported: true,
+            method_name_stable: true,
         },
-        "deadline_policies": deadline_policies,
-        "cancel_policies": cancel_policies,
-        "payload_contracts": payload_contracts,
-        "resource_cleanup": [],
-        "rpc_frames": [
+        deadline_policies,
+        cancel_policies,
+        payload_contracts,
+        resource_cleanup: Vec::new(),
+        rpc_frames: vec![
             "rpc_send",
             "rpc_recv",
             "rpc_deadline",
             "rpc_cancel",
             "rpc_resource_open",
             "rpc_resource_close",
-            "rpc_resource_leak_rejected"
+            "rpc_resource_leak_rejected",
         ],
     })
+    .expect("rpc safety report should serialize")
 }
 
 #[derive(Debug, Clone, Default)]
@@ -215,11 +364,17 @@ pub(crate) struct PendingRpcCall {
 
 pub(crate) fn collect_rpc_policy_evidence(
     module: &ast::Module,
-    rpc_methods: &[serde_json::Value],
+    rpc_method_names: &[String],
 ) -> HashMap<String, RpcPolicyEvidence> {
-    let rpc_method_names = rpc_methods
-        .iter()
-        .filter_map(|method| method["name"].as_str())
+    collect_rpc_policy_evidence_from_names(module, rpc_method_names.iter().map(String::as_str))
+}
+
+fn collect_rpc_policy_evidence_from_names<'a>(
+    module: &ast::Module,
+    rpc_method_names: impl IntoIterator<Item = &'a str>,
+) -> HashMap<String, RpcPolicyEvidence> {
+    let rpc_method_names = rpc_method_names
+        .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
     let call_sequence = collect_pipeline_call_sequence(module);
     let mut evidence = rpc_method_names
