@@ -20,14 +20,14 @@ This workflow assumes the current production posture:
 - deterministic validation and replay as release evidence
 - native and host-backed execution both matter for confidence
 - snapshot-isolated builds are the canonical multi-agent parallel build model for one shared codebase
-- internal semantics stay typed, with JSON limited to real boundaries and emitted artifacts as defined in `NOJSON.md`
+- internal semantics stay typed, with JSON limited to real boundaries and emitted artifacts only where they are true external contracts
 
 ## 1. Author
 
 - Implement changes in source + tests.
 - Keep APIs and command outputs deterministic.
 - For tooling changes, include LSP + formatter/doc smoke coverage.
-- For architecture changes, satisfy `NOJSON.md`: typed internals first, JSON only at real boundaries.
+- For architecture changes, keep internals typed first and JSON only at real boundaries.
 
 ## 2. Check
 
@@ -129,14 +129,6 @@ This gate includes:
 - strict `fz fmt` and `fz doc gen` smokes
 - pedantic hotspot closure
 - unsafe-budget enforcement
-- `NOJSON.md` policy integrity gate for the typed-internals / JSON-boundary contract
-- release-branch policy enforcement for checked-in `fozzy.lock`, vendored dependency snapshots, and C ABI/header artifacts (`scripts/release_branch_policy_gate.py`)
-
-Mainline enforcement:
-
-- `.github/workflows/ci.yml` runs the full ship gate on Ubuntu for `pull_request` and branch `push`
-- the same workflow uploads `artifacts/**` with `if: always()` so deterministic traces, reports, and generated evidence survive CI failures
-- macOS also runs `scripts/ci_mainline_smoke_gate.sh` for backend-sensitive smoke coverage
 
 ## 5. Release
 

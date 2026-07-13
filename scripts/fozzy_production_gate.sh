@@ -37,9 +37,6 @@ python3 ./scripts/direct_memory_architecture_gate.py >/dev/null
 echo "[gate] runtime core execution path gate"
 python3 ./scripts/runtime_core_execution_path_gate.py >/dev/null
 
-echo "[gate] nojson policy gate"
-python3 ./scripts/nojson_architecture_gate.py >/dev/null
-
 echo "[gate] core package check/build"
 cargo run -q -p fz -- check core --json >/dev/null
 cargo run -q -p fz -- build core --backend llvm --release --json >/dev/null

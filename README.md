@@ -4,7 +4,7 @@ General-purpose systems language and production toolchain with a memory-safe-by-
 
 fzy ships one production CLI, `fz`, for both compiler workflows and deterministic validation. Correctness, determinism, replay, incident artifacts, and production evidence are part of the normal workflow rather than an afterthought. For a quick visual tour of the language, open the shipped [FZL showcase](./fzl-showcase.html) in your browser with `open fzl-showcase.html`. For the short argument for why you might pick it, see [WHYFZY.md](./WHYFZY.md).
 
-Repository architecture policy is typed internally and JSON at real boundaries only. `NOJSON.md` defines the production contract for that rule, and the release gates enforce its policy-document integrity.
+Repository architecture policy is typed internally and JSON at real boundaries only.
 
 ## Start Here
 
@@ -13,7 +13,6 @@ Repository architecture policy is typed internally and JSON at real boundaries o
 - Why fzy: `WHYFZY.md`
 - Syntax and command examples: `CODE.md`
 - Production workflow: `docs/production-workflow-v1.md`
-- Typed-internals / JSON-boundary policy: `NOJSON.md`
 - GPU programming and validation: `docs/gpu-v1.md`
 - Safety and trust model: `docs/system-safety-trust-model-v1.md`
 - Unsafe authoring: `docs/unsafe-contract-authoring-v1.md`
@@ -168,7 +167,6 @@ See also:
 - `docs/system-safety-trust-model-v1.md`
 - `docs/production-memory-model-v1.md`
 - `docs/production-workflow-v1.md`
-- `NOJSON.md`
 
 ## Build And Test
 
