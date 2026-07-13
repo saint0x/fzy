@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+      - staging
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ship-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Run production ship gate
+        shell: bash
+        run: |
+          mkdir -p artifacts/ci
+          set -o pipefail
+          ./scripts/ship_release_gate.sh 2>&1 | tee artifacts/ci/ship_release_gate.log
+
+      - name: Upload CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts-ubuntu
+          path: artifacts/**
+          if-no-files-found: ignore
+
+  macos-smoke:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Run macOS backend smoke gate
+        shell: bash
+        run: |
+          mkdir -p artifacts/ci
+          set -o pipefail
+          ./scripts/ci_mainline_smoke_gate.sh 2>&1 | tee artifacts/ci/ci_mainline_smoke_gate.log
+
+      - name: Upload CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts-macos
+          path: artifacts/**
+          if-no-files-found: ignore

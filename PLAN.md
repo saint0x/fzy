@@ -71,11 +71,11 @@
 - [✅] Add reverse trace conversion path (`.fozzy` -> native trace schema) or formally narrow public compatibility claim.
 
 ### CI + Operational Maturity
-- [ ] Add first-party CI workflows under `.github/workflows` for PR and mainline enforcement.
-- [ ] Require deterministic reproducibility artifacts on CI failures (trace + timeline + report auto-upload).
+- [✅] Add first-party CI workflows under `.github/workflows` for PR and mainline enforcement.
+- [✅] Require deterministic reproducibility artifacts on CI failures (trace + timeline + report auto-upload).
 - [ ] Add release-branch policy checks for lock/vendor drift and ABI-manifest drift.
 - [ ] Add target matrix gating for bidirectional C interop (macOS/Linux, x86_64/aarch64) as required release condition.
-- [ ] Add flake-tracking budget for deterministic tests and gate on regression.
+- [✅] Add flake-tracking budget for deterministic tests and gate on regression.
 
 ### Tooling + DX Solidification (High Value, Not Overkill)
 - [✅] Stabilize LSP production ergonomics: eliminate dead-code/warning drift, tighten protocol behavior, and keep diagnostics/hover/rename deterministic.

@@ -140,19 +140,19 @@ echo "[gate] record deterministic trace"
 echo "[gate] trace verify/replay/ci"
 "${FZ_CMD[@]}" trace verify "$TRACE_PATH" --strict --json >/dev/null
 "${FZ_CMD[@]}" replay "$TRACE_PATH" --json >/dev/null
-"${FZ_CMD[@]}" ci "$TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" ci "$TRACE_PATH" --strict --json >/dev/null
 
 echo "[gate] memory trace record/verify/replay/ci"
 "${FZ_CMD[@]}" run tests/memory_graph_diff_top.pass.fozzy.json --det --seed "$SEED" --record "$MEM_TRACE_PATH" --record-collision overwrite --json >/dev/null
 "${FZ_CMD[@]}" trace verify "$MEM_TRACE_PATH" --strict --json >/dev/null
 "${FZ_CMD[@]}" replay "$MEM_TRACE_PATH" --json >/dev/null
-"${FZ_CMD[@]}" ci "$MEM_TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" ci "$MEM_TRACE_PATH" --strict --json >/dev/null
 
 echo "[gate] trait/generic trace record/verify/replay/ci"
 "${FZ_CMD[@]}" run tests/trait_generic.pass.fozzy.json --det --seed "$SEED" --record "$TRAIT_TRACE_PATH" --record-collision overwrite --json >/dev/null
 "${FZ_CMD[@]}" trace verify "$TRAIT_TRACE_PATH" --strict --json >/dev/null
 "${FZ_CMD[@]}" replay "$TRAIT_TRACE_PATH" --json >/dev/null
-"${FZ_CMD[@]}" ci "$TRAIT_TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" ci "$TRAIT_TRACE_PATH" --strict --json >/dev/null
 
 echo "[gate] host-backed run"
 "${FZ_CMD[@]}" run tests/runtime.bind_json_env.pass.fozzy.json --host-backends --json >/dev/null

@@ -16,7 +16,18 @@ jobs:
         with:
           toolchain: 1.92.0
       - name: Production ship gate
-        run: ./scripts/ship_release_gate.sh
+        shell: bash
+        run: |
+          mkdir -p artifacts/ci
+          set -o pipefail
+          ./scripts/ship_release_gate.sh 2>&1 | tee artifacts/ci/release_ship_gate.log
+      - name: Upload verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verify-artifacts
+          path: artifacts/**
+          if-no-files-found: ignore
 
   build:
     needs: verify

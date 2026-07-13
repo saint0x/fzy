@@ -51,7 +51,7 @@ Record and validate a real trace:
 fz run tests/example.fozzy.json --det --record artifacts/workflow.trace.fozzy --json
 fz trace verify artifacts/workflow.trace.fozzy --strict --json
 fz replay artifacts/workflow.trace.fozzy --json
-fz ci artifacts/workflow.trace.fozzy --json
+fz ci artifacts/workflow.trace.fozzy --strict --json
 ```
 
 Run host-backed confidence pass:
@@ -101,7 +101,7 @@ fz test --det --strict-verify tests/trait_generic.pass.fozzy.json --json
 fz run tests/trait_generic.pass.fozzy.json --det --record artifacts/trait-generic.trace.fozzy --json
 fz trace verify artifacts/trait-generic.trace.fozzy --strict --json
 fz replay artifacts/trait-generic.trace.fozzy --json
-fz ci artifacts/trait-generic.trace.fozzy --json
+fz ci artifacts/trait-generic.trace.fozzy --strict --json
 fz run tests/trait_generic.pass.fozzy.json --host-backends --json
 ```
 
@@ -130,6 +130,12 @@ This gate includes:
 - pedantic hotspot closure
 - unsafe-budget enforcement
 - `NOJSON.md` policy integrity gate for the typed-internals / JSON-boundary contract
+
+Mainline enforcement:
+
+- `.github/workflows/ci.yml` runs the full ship gate on Ubuntu for `pull_request` and branch `push`
+- the same workflow uploads `artifacts/**` with `if: always()` so deterministic traces, reports, and generated evidence survive CI failures
+- macOS also runs `scripts/ci_mainline_smoke_gate.sh` for backend-sensitive smoke coverage
 
 ## 5. Release
 
