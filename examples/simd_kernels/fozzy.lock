@@ -1,12 +1,12 @@
 {
-  "dependencyGraphHash": "9bd62b63cc5e4d9b778ee00a19ce766bdcfe8b846c767b6a942f8a515cf8ee7e",
+  "schemaVersion": "fozzylang.lock.v0",
+  "dependencyGraphHash": "7b7ba8161032f032565200c6100289502074f8cb6ade47f969ba420a32e7292f",
   "graph": {
-    "deps": [],
     "package": {
-      "manifestHash": "e78a9933b37467164f15037a1f691ed2e9666bc1ac9649715e26a0a7df6992a0",
       "name": "simd_kernels",
-      "version": "0.1.0"
-    }
-  },
-  "schemaVersion": "fozzylang.lock.v0"
+      "version": "0.1.0",
+      "manifestHash": "e78a9933b37467164f15037a1f691ed2e9666bc1ac9649715e26a0a7df6992a0"
+    },
+    "deps": []
+  }
 }

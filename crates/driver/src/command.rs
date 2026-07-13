@@ -19,8 +19,8 @@ use crate::pipeline::{
     check_file, compile_file_incremental_with_backend, compile_file_with_backend,
     compile_library_incremental_with_backend, compile_library_with_backend,
     embedded_core_stdlib_module_source, emit_ir, gpu_backend_report_json,
-    lower_fir_cached_with_metadata, parse_program, parse_program_with_metadata, refresh_lockfile,
-    verify_file, BuildArtifact, BuildProfile, LibraryArtifact, Output,
+    lower_fir_cached_with_metadata, parse_program, parse_program_with_metadata, verify_file,
+    verify_lockfile, BuildArtifact, BuildProfile, LibraryArtifact, Output,
 };
 
 mod interop;
@@ -242,6 +242,7 @@ pub enum Command {
     },
     Vendor {
         path: PathBuf,
+        check: bool,
     },
     AbiCheck {
         current: PathBuf,

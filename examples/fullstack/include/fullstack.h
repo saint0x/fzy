@@ -21,7 +21,14 @@ int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);
 int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg);
 
 typedef struct model_types_UserRow {
+    int32_t id;
+    int32_t shard;
 } model_types_UserRow;
+
+typedef enum model_types_DeploymentMode {
+    model_types_DeploymentMode_Primary = 0,
+    model_types_DeploymentMode_Replica = 1,
+} model_types_DeploymentMode;
 
 /* no exported extern "C" functions found */
 

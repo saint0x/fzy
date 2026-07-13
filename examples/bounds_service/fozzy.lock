@@ -1,6 +1,6 @@
 {
   "schemaVersion": "fozzylang.lock.v0",
-  "dependencyGraphHash": "f7efc74c155c828d523618ee98888ffb3490800f66d1b9975d149c9210cc5a44",
+  "dependencyGraphHash": "5fd824f0f22cf252678753a9eb9c262fc341c012ea8ccff551f2516b8dc2a411",
   "graph": {
     "package": {
       "name": "bounds_service",
@@ -11,7 +11,7 @@
       {
         "name": "fzbounds",
         "sourceType": "framework",
-        "canonicalPath": "/Users/deepsaint/Desktop/fozzylang/frameworklib/fzbounds",
+        "canonicalPath": "../../frameworklib/fzbounds",
         "package": {
           "name": "fzbounds",
           "version": "0.1.0"

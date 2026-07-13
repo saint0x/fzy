@@ -6,14 +6,14 @@
         "name": "fzbounds",
         "version": "0.1.0"
       },
-      "source": "/Users/deepsaint/Desktop/fozzylang/frameworklib/fzbounds",
+      "source": "../../frameworklib/fzbounds",
       "sourceHash": "7deaff64dd1573f78014213165d4e0b69648d9ae1b1f6a49e34313959cb27e05",
       "sourceType": "framework",
-      "target": "/Users/deepsaint/Desktop/fozzylang/examples/bounds_service/vendor/fzbounds",
+      "target": "vendor/fzbounds",
       "vendorHash": "7deaff64dd1573f78014213165d4e0b69648d9ae1b1f6a49e34313959cb27e05"
     }
   ],
-  "lockHash": "f7efc74c155c828d523618ee98888ffb3490800f66d1b9975d149c9210cc5a44",
-  "lockfile": "/Users/deepsaint/Desktop/fozzylang/examples/bounds_service/fozzy.lock",
+  "lockHash": "5fd824f0f22cf252678753a9eb9c262fc341c012ea8ccff551f2516b8dc2a411",
+  "lockfile": "fozzy.lock",
   "schemaVersion": "fozzylang.vendor.v0"
 }

@@ -32,6 +32,7 @@ static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub(super) enum LockfileMode {
     ValidateOrCreate,
     ForceRewrite,
+    VerifyFrozen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,6 +475,11 @@ pub fn refresh_lockfile(dir: &Path) -> Result<String> {
     Ok(graph_hash)
 }
 
+pub fn verify_lockfile(dir: &Path) -> Result<String> {
+    let (_, _, graph_hash) = load_manifest(dir, LockfileMode::VerifyFrozen)?;
+    Ok(graph_hash)
+}
+
 pub(super) fn write_lockfile(
     dir: &Path,
     manifest: &manifest::Manifest,
@@ -490,24 +496,48 @@ pub(super) fn write_lockfile(
         graph,
     };
     let lock_path = dir.join("fozzy.lock");
+    let existing_text = if lock_path.exists() {
+        Some(
+            std::fs::read_to_string(&lock_path)
+                .with_context(|| format!("failed reading lockfile: {}", lock_path.display()))?,
+        )
+    } else {
+        None
+    };
     let should_write = match mode {
         LockfileMode::ForceRewrite => true,
         LockfileMode::ValidateOrCreate => {
-            if !lock_path.exists() {
-                true
-            } else {
-                let existing_text = std::fs::read_to_string(&lock_path)
-                    .with_context(|| format!("failed reading lockfile: {}", lock_path.display()))?;
-                let existing_lock: LockfilePayload = serde_json::from_str(&existing_text)
+            if let Some(existing_text) = &existing_text {
+                let existing_lock: LockfilePayload = serde_json::from_str(existing_text)
                     .with_context(|| format!("failed parsing lockfile: {}", lock_path.display()))?;
-                if existing_lock.schema_version == "fozzylang.lock.v0"
+                !(existing_lock.schema_version == "fozzylang.lock.v0"
                     && existing_lock.dependency_graph_hash == graph_hash
-                    && existing_lock.graph == payload.graph
-                {
-                    false
-                } else {
-                    true
-                }
+                    && existing_lock.graph == payload.graph)
+            } else {
+                true
+            }
+        }
+        LockfileMode::VerifyFrozen => {
+            let existing_text = existing_text.ok_or_else(|| {
+                anyhow!(
+                    "lockfile missing: {} (run `fz vendor {}` to create/update it)",
+                    lock_path.display(),
+                    dir.display()
+                )
+            })?;
+            let existing_lock: LockfilePayload = serde_json::from_str(&existing_text)
+                .with_context(|| format!("failed parsing lockfile: {}", lock_path.display()))?;
+            if existing_lock.schema_version == "fozzylang.lock.v0"
+                && existing_lock.dependency_graph_hash == graph_hash
+                && existing_lock.graph == payload.graph
+            {
+                false
+            } else {
+                bail!(
+                    "lockfile drift detected for {} (run `fz vendor {}` to refresh the checked-in lock state)",
+                    lock_path.display(),
+                    dir.display()
+                );
             }
         }
     };
@@ -544,7 +574,7 @@ fn build_dependency_graph(
                 dep_entries.push(LockfileDependencyEntry {
                     name: name.clone(),
                     source_type: source_type.to_string(),
-                    canonical_path: Some(canonical.display().to_string()),
+                    canonical_path: Some(stable_relative_path(dir, &canonical)?),
                     package: Some(LockfileDependencyPackage {
                         name: dep_state.package_name,
                         version: dep_state.package_version,
@@ -606,8 +636,40 @@ fn build_dependency_graph(
     })
 }
 
-pub(super) fn normalize_rel_path(path: &str) -> String {
+pub(crate) fn normalize_rel_path(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+pub(crate) fn stable_relative_path(from_dir: &Path, to_path: &Path) -> Result<String> {
+    let from = from_dir.canonicalize().with_context(|| {
+        format!(
+            "failed canonicalizing base directory: {}",
+            from_dir.display()
+        )
+    })?;
+    let to = to_path
+        .canonicalize()
+        .with_context(|| format!("failed canonicalizing target path: {}", to_path.display()))?;
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+    let common_len = from_components
+        .iter()
+        .zip(&to_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut parts = Vec::new();
+    for component in &from_components[common_len..] {
+        if !matches!(component, std::path::Component::CurDir) {
+            parts.push("..".to_string());
+        }
+    }
+    for component in &to_components[common_len..] {
+        parts.push(component.as_os_str().to_string_lossy().into_owned());
+    }
+    if parts.is_empty() {
+        return Ok(".".to_string());
+    }
+    Ok(parts.join("/"))
 }
 
 pub(super) fn hash_stamped_files(root: &Path, files: &[ModuleStamp]) -> Result<String> {

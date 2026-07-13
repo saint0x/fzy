@@ -1,12 +1,12 @@
 {
-  "dependencyGraphHash": "cd23fa86d02464f9b9a199ad4b4e13782eec6f6ab923ebf7409601c3e2f0766d",
+  "schemaVersion": "fozzylang.lock.v0",
+  "dependencyGraphHash": "9a470434230d1733fa14843213f7224c64434eee17e5e033d27c4a45bf986af7",
   "graph": {
-    "deps": [],
     "package": {
-      "manifestHash": "143f415a40ac8fb573012d3c7d4767d246d3f2da5ab8eb52683027e453ae0d5d",
       "name": "core_error_contract",
-      "version": "0.1.0"
-    }
-  },
-  "schemaVersion": "fozzylang.lock.v0"
+      "version": "0.1.0",
+      "manifestHash": "143f415a40ac8fb573012d3c7d4767d246d3f2da5ab8eb52683027e453ae0d5d"
+    },
+    "deps": []
+  }
 }

@@ -3,7 +3,7 @@
   "callbackAbi": "signature-typed-v1",
   "compilerIdentityHash": "2f94649a8a371971b258cab36540b6e23fb8dcfa574a9ad138f357b1aaa1c1d7",
   "contractSchema": "fozzylang.ffi_contracts.v1",
-  "dataLayoutHash": "4ef19cf377b4271c24656e2451536d23b76c8d7e35289fdb42706f8eff5d7afa",
+  "dataLayoutHash": "94e08d589491bfda1ccc87408550af7acc54e84a39e64f3e8103b09d5619f175",
   "exports": [],
   "hostApi": {
     "callbacks": {
@@ -143,21 +143,50 @@
   "panicBoundary": "error",
   "reprCLayouts": [
     {
-      "align": 1,
+      "align": 4,
       "cName": "model_types_UserRow",
+      "fields": [
+        {
+          "align": 4,
+          "c": "int32_t",
+          "fzy": "i32",
+          "name": "id",
+          "offset": 0,
+          "size": 4
+        },
+        {
+          "align": 4,
+          "c": "int32_t",
+          "fzy": "i32",
+          "name": "version",
+          "offset": 4,
+          "size": 4
+        }
+      ],
       "kind": "struct",
       "name": "model.types.UserRow",
-      "size": 0
+      "size": 8
     },
     {
       "align": 4,
       "cName": "model_types_HttpState",
       "kind": "enum",
       "name": "model.types.HttpState",
-      "size": 4
+      "size": 4,
+      "storage": "int32_t",
+      "variants": [
+        {
+          "name": "Listening",
+          "value": 0
+        },
+        {
+          "name": "Draining",
+          "value": 1
+        }
+      ]
     }
   ],
   "schemaVersion": "fozzylang.ffi_abi.v1",
   "symbolVersioning": "strict-name-signature-v1",
-  "targetTriple": "aarch64-apple-darwin"
+  "targetTriple": "aarch64-unknown-macos"
 }

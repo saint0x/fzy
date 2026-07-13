@@ -1,6 +1,6 @@
 {
   "dependencies": [],
-  "lockHash": "56607a9667b1d3a03ff3190fea8e0e461555198569ba143d5a27cd1850aa270b",
-  "lockfile": "examples/fullstack/fozzy.lock",
+  "lockHash": "550a9e060b3dba16418f585bc9f31b5ccf69eb80e54a2a297e69607cde45b06d",
+  "lockfile": "fozzy.lock",
   "schemaVersion": "fozzylang.vendor.v0"
 }

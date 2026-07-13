@@ -1,12 +1,12 @@
 {
-  "dependencyGraphHash": "56607a9667b1d3a03ff3190fea8e0e461555198569ba143d5a27cd1850aa270b",
+  "schemaVersion": "fozzylang.lock.v0",
+  "dependencyGraphHash": "550a9e060b3dba16418f585bc9f31b5ccf69eb80e54a2a297e69607cde45b06d",
   "graph": {
-    "deps": [],
     "package": {
-      "manifestHash": "84921c4188b75546157e5b982053567160d043f48069e594c6161b607ad14849",
       "name": "fullstack",
-      "version": "0.1.0"
-    }
-  },
-  "schemaVersion": "fozzylang.lock.v0"
+      "version": "0.1.0",
+      "manifestHash": "84921c4188b75546157e5b982053567160d043f48069e594c6161b607ad14849"
+    },
+    "deps": []
+  }
 }

@@ -1,12 +1,12 @@
 {
-  "dependencyGraphHash": "8f05f69613e38869feb573070aba46ffcb1c02a45811b7ed9a099b6c9bbf866f",
+  "schemaVersion": "fozzylang.lock.v0",
+  "dependencyGraphHash": "45a1f60010388c7d45ffd490a3c1307d902684f8370649fa0a5c3ee28cee3392",
   "graph": {
-    "deps": [],
     "package": {
-      "manifestHash": "c36eb7f84b5842da2bd40224cde923dc5c44a2eca9c418df3fa13ee813059675",
       "name": "gpu_cpu_aggregate",
-      "version": "0.1.0"
-    }
-  },
-  "schemaVersion": "fozzylang.lock.v0"
+      "version": "0.1.0",
+      "manifestHash": "c36eb7f84b5842da2bd40224cde923dc5c44a2eca9c418df3fa13ee813059675"
+    },
+    "deps": []
+  }
 }

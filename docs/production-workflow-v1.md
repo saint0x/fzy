@@ -130,6 +130,7 @@ This gate includes:
 - pedantic hotspot closure
 - unsafe-budget enforcement
 - `NOJSON.md` policy integrity gate for the typed-internals / JSON-boundary contract
+- release-branch policy enforcement for checked-in `fozzy.lock`, vendored dependency snapshots, and C ABI/header artifacts (`scripts/release_branch_policy_gate.py`)
 
 Mainline enforcement:
 

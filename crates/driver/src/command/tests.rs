@@ -1170,8 +1170,14 @@ mod tests {
         )
         .expect("stale lock should be written");
 
-        let output = run(Command::Vendor { path: root.clone() }, Format::Json)
-            .expect("vendor command should succeed");
+        let output = run(
+            Command::Vendor {
+                path: root.clone(),
+                check: false,
+            },
+            Format::Json,
+        )
+        .expect("vendor command should succeed");
         assert!(output.contains("\"ok\":true"));
         assert!(output.contains("\"lockHash\""));
         let vendor_manifest = root.join("vendor/fozzy-vendor.json");
@@ -1204,8 +1210,14 @@ mod tests {
         )
         .expect("main source should be written");
 
-        let output = run(Command::Vendor { path: root.clone() }, Format::Json)
-            .expect("vendor command should succeed");
+        let output = run(
+            Command::Vendor {
+                path: root.clone(),
+                check: false,
+            },
+            Format::Json,
+        )
+        .expect("vendor command should succeed");
         assert!(output.contains("\"ok\":true"));
         let vendor_manifest = root.join("vendor/fozzy-vendor.json");
         let vendor_manifest_text =
@@ -1235,14 +1247,84 @@ mod tests {
         )
         .expect("main source should be written");
 
-        let output = run(Command::Vendor { path: root.clone() }, Format::Json)
-            .expect("vendor command should succeed");
+        let output = run(
+            Command::Vendor {
+                path: root.clone(),
+                check: false,
+            },
+            Format::Json,
+        )
+        .expect("vendor command should succeed");
         assert!(output.contains("\"ok\":true"));
         let vendor_manifest = root.join("vendor/fozzy-vendor.json");
         let vendor_manifest_text =
             std::fs::read_to_string(&vendor_manifest).expect("vendor manifest should be readable");
         assert!(vendor_manifest_text.contains("\"sourceType\": \"framework\""));
         assert!(root.join("vendor/fzbounds/src/lib.fzy").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vendor_check_detects_vendor_manifest_drift_without_rewriting() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-vendor-check-{suffix}"));
+        let dep_dir = root.join("deps/util");
+        std::fs::create_dir_all(root.join("src")).expect("project src should be created");
+        std::fs::create_dir_all(dep_dir.join("src")).expect("dep src should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"vendor_check\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"vendor_check\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(
+            dep_dir.join("fozzy.toml"),
+            "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"util\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("dep manifest should be written");
+        std::fs::write(
+            dep_dir.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("dep source should be written");
+
+        run(
+            Command::Vendor {
+                path: root.clone(),
+                check: false,
+            },
+            Format::Json,
+        )
+        .expect("vendor command should succeed");
+        let manifest_path = root.join("vendor/fozzy-vendor.json");
+        let original_manifest =
+            std::fs::read_to_string(&manifest_path).expect("vendor manifest should be readable");
+        std::fs::write(
+            &manifest_path,
+            original_manifest.replace("\"lockHash\":", "\"lockHash\": \"stale\", \"_ignored\":"),
+        )
+        .expect("vendor manifest should be mutated");
+
+        let err = run(
+            Command::Vendor {
+                path: root.clone(),
+                check: true,
+            },
+            Format::Json,
+        )
+        .expect_err("vendor check should fail on drift");
+        assert!(err.to_string().contains("vendor manifest drift detected"));
+        let current_manifest = std::fs::read_to_string(&manifest_path)
+            .expect("vendor manifest should remain readable");
+        assert_ne!(current_manifest, original_manifest);
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -1,6 +1,10 @@
 use super::*;
-use crate::pipeline::{resolve_local_dependency, DependencyResolutionKind};
-pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
+use crate::pipeline::{
+    normalize_rel_path, refresh_lockfile, resolve_local_dependency, stable_relative_path,
+    verify_lockfile, DependencyResolutionKind,
+};
+
+pub(crate) fn vendor_command(path: &Path, check: bool, format: Format) -> Result<String> {
     if !path.is_dir() {
         bail!("vendor requires a project directory: {}", path.display());
     }
@@ -14,7 +18,11 @@ pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
     manifest
         .validate()
         .map_err(|error| anyhow!("invalid fozzy.toml: {error}"))?;
-    let lock_hash = refresh_lockfile(path)?;
+    let lock_hash = if check {
+        verify_lockfile(path)?
+    } else {
+        refresh_lockfile(path)?
+    };
     let lock_path = path.join("fozzy.lock");
     let lock_text = std::fs::read_to_string(&lock_path)
         .with_context(|| format!("failed reading lockfile: {}", lock_path.display()))?;
@@ -33,8 +41,12 @@ pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
         }
     }
     let vendor_dir = path.join("vendor");
-    std::fs::create_dir_all(&vendor_dir)
-        .with_context(|| format!("failed creating vendor dir: {}", vendor_dir.display()))?;
+    let vendor_manifest = vendor_dir.join("fozzy-vendor.json");
+    let vendor_manifest_exists = vendor_manifest.exists();
+    if !check {
+        std::fs::create_dir_all(&vendor_dir)
+            .with_context(|| format!("failed creating vendor dir: {}", vendor_dir.display()))?;
+    }
     let mut copied = Vec::new();
     for (name, dependency) in &manifest.deps {
         let lock_dep = lock_dep_by_name
@@ -45,22 +57,38 @@ pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
                 let resolution = resolve_local_dependency(path, name, dependency)?;
                 let source_dir = resolution.root;
                 let target_dir = vendor_dir.join(name);
-                if target_dir.exists() {
-                    std::fs::remove_dir_all(&target_dir).with_context(|| {
-                        format!(
-                            "failed cleaning existing vendor target: {}",
-                            target_dir.display()
-                        )
-                    })?;
-                }
-                copy_dir_recursive(&source_dir, &target_dir)?;
                 let source_hash = lock_dep
                     .get("sourceHash")
                     .and_then(|value| value.as_str())
                     .unwrap_or_default()
                     .to_string();
-                let vendor_hash = hash_directory_tree(&target_dir)?;
-                if !source_hash.is_empty() && source_hash != vendor_hash {
+                let vendor_hash = if check {
+                    if !vendor_manifest_exists {
+                        String::new()
+                    } else {
+                        if !target_dir.exists() {
+                            bail!(
+                                "vendored dependency directory missing for `{}`: {}",
+                                name,
+                                target_dir.display()
+                            );
+                        }
+                        hash_directory_tree(&target_dir)?
+                    }
+                } else {
+                    if target_dir.exists() {
+                        std::fs::remove_dir_all(&target_dir).with_context(|| {
+                            format!(
+                                "failed cleaning existing vendor target: {}",
+                                target_dir.display()
+                            )
+                        })?;
+                    }
+                    copy_dir_recursive(&source_dir, &target_dir)?;
+                    hash_directory_tree(&target_dir)?
+                };
+                if !source_hash.is_empty() && !vendor_hash.is_empty() && source_hash != vendor_hash
+                {
                     bail!(
                         "vendor copy hash mismatch for `{}`: lock sourceHash={} vendorHash={}",
                         name,
@@ -72,15 +100,35 @@ pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
                     DependencyResolutionKind::Framework => "framework",
                     DependencyResolutionKind::Path => "path",
                 };
-                copied.push(serde_json::json!({
-                    "name": name,
-                    "sourceType": source_type,
-                    "source": source_dir.display().to_string(),
-                    "target": target_dir.display().to_string(),
-                    "sourceHash": source_hash,
-                    "vendorHash": vendor_hash,
-                    "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
-                }));
+                let mut record = serde_json::Map::new();
+                record.insert("name".to_string(), serde_json::json!(name));
+                record.insert("sourceType".to_string(), serde_json::json!(source_type));
+                record.insert(
+                    "source".to_string(),
+                    serde_json::json!(stable_relative_path(path, &source_dir)?),
+                );
+                record.insert(
+                    "target".to_string(),
+                    serde_json::json!(normalize_rel_path(
+                        &target_dir
+                            .strip_prefix(path)
+                            .unwrap_or(&target_dir)
+                            .display()
+                            .to_string()
+                    )),
+                );
+                record.insert("sourceHash".to_string(), serde_json::json!(source_hash));
+                if !vendor_hash.is_empty() {
+                    record.insert("vendorHash".to_string(), serde_json::json!(vendor_hash));
+                }
+                record.insert(
+                    "package".to_string(),
+                    lock_dep
+                        .get("package")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({})),
+                );
+                copied.push(serde_json::Value::Object(record));
             }
             manifest::Dependency::Version { version, source } => {
                 copied.push(serde_json::json!({
@@ -106,37 +154,75 @@ pub(crate) fn vendor_command(path: &Path, format: Format) -> Result<String> {
             }
         }
     }
-    let vendor_manifest = vendor_dir.join("fozzy-vendor.json");
     let vendor_payload = serde_json::json!({
         "schemaVersion": "fozzylang.vendor.v0",
         "lockHash": lock_hash,
-        "lockfile": lock_path.display().to_string(),
+        "lockfile": "fozzy.lock",
         "dependencies": copied,
     });
-    std::fs::write(
-        &vendor_manifest,
-        serde_json::to_vec_pretty(&vendor_payload)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed writing vendor manifest: {}",
-            vendor_manifest.display()
+    let vendor_state = if check {
+        if !vendor_manifest_exists {
+            "absent".to_string()
+        } else {
+            let existing_text = std::fs::read_to_string(&vendor_manifest).with_context(|| {
+                format!(
+                    "failed reading vendor manifest: {}",
+                    vendor_manifest.display()
+                )
+            })?;
+            let existing_payload: serde_json::Value = serde_json::from_str(&existing_text)
+                .with_context(|| {
+                    format!(
+                        "failed parsing vendor manifest: {}",
+                        vendor_manifest.display()
+                    )
+                })?;
+            if existing_payload != vendor_payload {
+                bail!(
+                    "vendor manifest drift detected for {} (run `fz vendor {}` to refresh the checked-in vendor snapshot)",
+                    vendor_manifest.display(),
+                    path.display()
+                );
+            }
+            "ok".to_string()
+        }
+    } else {
+        std::fs::write(
+            &vendor_manifest,
+            serde_json::to_vec_pretty(&vendor_payload)?,
         )
-    })?;
+        .with_context(|| {
+            format!(
+                "failed writing vendor manifest: {}",
+                vendor_manifest.display()
+            )
+        })?;
+        "written".to_string()
+    };
     match format {
         Format::Text => Ok(render_text_fields(&[
             ("status", "ok".to_string()),
-            ("mode", "vendor".to_string()),
+            (
+                "mode",
+                if check {
+                    "vendor-check".to_string()
+                } else {
+                    "vendor".to_string()
+                },
+            ),
             ("dependencies", copied.len().to_string()),
             ("dir", vendor_dir.display().to_string()),
             ("lock_hash", lock_hash.clone()),
+            ("vendor_state", vendor_state.clone()),
         ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
+            "mode": if check { "vendor-check" } else { "vendor" },
             "vendorDir": vendor_dir.display().to_string(),
             "lockHash": lock_hash,
             "lockfile": lock_path.display().to_string(),
             "vendorManifest": vendor_manifest.display().to_string(),
+            "vendorState": vendor_state,
             "dependencies": copied,
         })
         .to_string()),

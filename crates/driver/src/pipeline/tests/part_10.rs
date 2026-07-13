@@ -471,7 +471,7 @@ fn compile_project_resolves_framework_dependency_shorthand() {
     let lock_text =
         std::fs::read_to_string(root.join("fozzy.lock")).expect("lockfile should be readable");
     assert!(lock_text.contains("\"sourceType\": \"framework\""));
-    assert!(lock_text.contains("\"canonicalPath\":"));
+    assert!(lock_text.contains("\"canonicalPath\": \"../../frameworklib/fzbounds\""));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -664,6 +664,58 @@ fn refresh_lockfile_keeps_remote_dependency_hashes_and_field_order_stable() {
     assert!(first_lock.contains(
         "\"sourceType\": \"git\",\n        \"git\": \"https://github.com/example/parser.git\",\n        \"rev\": \"abc123\",\n        \"sourceHash\":"
     ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn verify_lockfile_rejects_drift_without_rewriting() {
+    let project_name = format!(
+        "fozzylang-lock-verify-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    let dep_dir = root.join("deps/util");
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::create_dir_all(dep_dir.join("src")).expect("dep src dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+    std::fs::write(
+        dep_dir.join("fozzy.toml"),
+        "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"util\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("dep manifest should be written");
+    std::fs::write(
+        dep_dir.join("src/main.fzy"),
+        "fn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("dep source should be written");
+
+    refresh_lockfile(&root).expect("initial lock refresh should succeed");
+    let before =
+        std::fs::read_to_string(root.join("fozzy.lock")).expect("lockfile should be readable");
+    std::fs::write(
+        dep_dir.join("src/main.fzy"),
+        "fn main() -> i32 {\n    return 9\n}\n",
+    )
+    .expect("dep source should mutate");
+
+    let err = verify_lockfile(&root).expect_err("verify lockfile should fail on drift");
+    assert!(err.to_string().contains("lockfile drift detected"));
+    let after = std::fs::read_to_string(root.join("fozzy.lock"))
+        .expect("lockfile should still be readable");
+    assert_eq!(before, after);
 
     let _ = std::fs::remove_dir_all(root);
 }

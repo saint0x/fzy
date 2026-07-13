@@ -213,7 +213,7 @@ pub(super) fn doctor_project_command(path: &Path, strict: bool, format: Format) 
     };
 
     if manifest.is_some() {
-        let lock_status = match refresh_lockfile(&project_root) {
+        let lock_status = match verify_lockfile(&project_root) {
             Ok(lock_hash) => DoctorCheck {
                 name: "lockfile".to_string(),
                 status: "ok".to_string(),
@@ -373,7 +373,7 @@ pub(super) fn doctor_project_command(path: &Path, strict: bool, format: Format) 
                 "unsafeEnforcement": "profile-driven",
                 "memorySafetyMode": "production",
                 "backend": "compiler",
-                "lockfileState": "present-or-created",
+                "lockfileState": "frozen-validated",
             },
             "checks": checks,
         })

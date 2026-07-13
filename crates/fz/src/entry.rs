@@ -306,6 +306,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
         },
         Some("vendor") => Ok(Command::Vendor {
             path: arg_path_or_cwd(args, 1)?,
+            check: has_flag(args, "--check"),
         }),
         Some("abi-check") => Ok(Command::AbiCheck {
             current: arg_path(args, 1)?,
@@ -541,7 +542,7 @@ commands:\n\
   audit unsafe [path] [--workspace]\n\
   audit ffi [path]\n\
   audit memory [path]\n\
-  vendor [project]\n\
+  vendor [project] [--check]\n\
   abi-check <current.abi.json> --baseline <baseline.abi.json>\n\
   debug-check [path]\n\
   pgo merge [path] [--out file]\n\
@@ -1148,6 +1149,23 @@ mod tests {
                 assert!(!strict);
             }
             _ => panic!("expected doctor project command"),
+        }
+    }
+
+    #[test]
+    fn parse_vendor_check_command() {
+        let args = vec![
+            "vendor".to_string(),
+            "examples/minimal_runtime".to_string(),
+            "--check".to_string(),
+        ];
+        let command = parse_command(&args).expect("vendor --check should parse");
+        match command {
+            Command::Vendor { path, check } => {
+                assert_eq!(path, PathBuf::from("examples/minimal_runtime"));
+                assert!(check);
+            }
+            _ => panic!("expected vendor command"),
         }
     }
 

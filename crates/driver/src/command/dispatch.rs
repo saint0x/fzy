@@ -695,7 +695,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::AuditUnsafe { path, workspace } => audit_unsafe_command(&path, workspace, format),
         Command::AuditFfi { path } => audit_ffi_command(&path, format),
         Command::AuditMemory { path } => audit_memory_command(&path, format),
-        Command::Vendor { path } => vendor_command(&path, format),
+        Command::Vendor { path, check } => vendor_command(&path, check, format),
         Command::AbiCheck { current, baseline } => abi_check_command(&current, &baseline, format),
         Command::DebugCheck { path } => debug_check_command(&path, format),
         Command::PgoMerge { path, output } => pgo_merge_command(&path, output.as_deref(), format),

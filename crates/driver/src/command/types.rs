@@ -207,6 +207,7 @@ pub enum Command {
     },
     Vendor {
         path: PathBuf,
+        check: bool,
     },
     AbiCheck {
         current: PathBuf,

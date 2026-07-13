@@ -37,6 +37,9 @@ python3 ./scripts/runtime_core_execution_path_gate.py >/dev/null
 echo "[ship] nojson architecture gate"
 python3 ./scripts/nojson_architecture_gate.py >/dev/null
 
+echo "[ship] release branch policy gate"
+python3 ./scripts/release_branch_policy_gate.py >/dev/null
+
 echo "[ship] core package check/build"
 cargo run -q -p fz -- check core --json >/dev/null
 cargo run -q -p fz -- build core --backend llvm --release --json >/dev/null

@@ -21,9 +21,13 @@ int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);
 int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg);
 
 typedef struct model_types_UserRow {
+    int32_t id;
+    int32_t version;
 } model_types_UserRow;
 
 typedef enum model_types_HttpState {
+    model_types_HttpState_Listening = 0,
+    model_types_HttpState_Draining = 1,
 } model_types_HttpState;
 
 /* no exported extern "C" functions found */

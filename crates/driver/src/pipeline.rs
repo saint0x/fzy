@@ -96,9 +96,11 @@ use self::native_runtime_tables::{
 use self::reports::*;
 pub(crate) use self::snapshot::prepare_build_snapshot;
 use self::snapshot::*;
-pub use self::source_graph::refresh_lockfile;
 use self::source_graph::*;
-pub(crate) use self::source_graph::{resolve_local_dependency, DependencyResolutionKind};
+pub(crate) use self::source_graph::{
+    normalize_rel_path, resolve_local_dependency, stable_relative_path, DependencyResolutionKind,
+};
+pub use self::source_graph::{refresh_lockfile, verify_lockfile};
 use self::task::*;
 
 #[derive(Clone, Copy)]
