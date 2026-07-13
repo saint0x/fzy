@@ -55,5 +55,4 @@ fz usage
 For maintainers:
 
 - build a release archive locally with `scripts/build_release_archive.sh`
-- publish tagged release artifacts through `.github/workflows/release.yml`
 - Homebrew formula template lives at `packaging/homebrew/fz.rb`
