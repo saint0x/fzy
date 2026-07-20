@@ -6613,6 +6613,57 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn native_test_runner_evaluates_binary_conditionals() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-native-binary-conditionals-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.thread;\n\
+test \"binary_conditionals_pass\" {\n\
+    let x = 1\n\
+    if x != 1 {\n\
+        checkpoint()\n\
+    }\n\
+    if 1 == 2 || 3 < 2 {\n\
+        checkpoint()\n\
+    }\n\
+}\n\
+fn main() -> i32 {\n\
+    return 0\n\
+}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: true,
+                safe_profile: false,
+                seed: Some(1),
+                record: None,
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: false,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        let output_json: serde_json::Value =
+            serde_json::from_str(&output).expect("output should be valid json");
+        assert_eq!(output_json["passedTests"].as_u64(), Some(1));
+        assert_eq!(output_json["failedTests"].as_u64(), Some(0));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn replay_command_routes_native_trace_through_goal_bridge() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

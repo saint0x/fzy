@@ -1220,13 +1220,6 @@ pub(crate) fn eval_bool_expr(
     }
 }
 
-#[derive(Debug)]
-enum TestExecError {
-    Failed(String),
-    TimedOut(String),
-    Unsupported(String),
-}
-
 enum TestExecFlow {
     Continue,
     Break,
@@ -1237,8 +1230,7 @@ enum TestExecFlow {
 struct TestExecState {
     max_steps: usize,
     steps: usize,
-    next_handle: i32,
-    handles: BTreeMap<i32, Value>,
+    runtime: NativeTestRuntime,
     events: Vec<TestRunEvent>,
 }
 
@@ -1247,8 +1239,7 @@ impl TestExecState {
         Self {
             max_steps,
             steps: 0,
-            next_handle: 1,
-            handles: BTreeMap::new(),
+            runtime: NativeTestRuntime::new(),
             events: Vec::new(),
         }
     }
@@ -1510,56 +1501,6 @@ fn exec_runtime_intrinsic(
     state: &mut TestExecState,
 ) -> Result<Value, TestExecError> {
     match callee_name {
-        "assert.eq_i32" => {
-            if args.len() != 2 {
-                return Err(TestExecError::Unsupported(
-                    "`assert.eq_i32` expects exactly two arguments".to_string(),
-                ));
-            }
-            let left = exec_test_expr(&args[0], env, functions, state)?;
-            let right = exec_test_expr(&args[1], env, functions, state)?;
-            let lhs = value_as_i32(&left).ok_or_else(|| {
-                TestExecError::Unsupported(
-                    "`assert.eq_i32` left argument is not an integer".to_string(),
-                )
-            })?;
-            let rhs = value_as_i32(&right).ok_or_else(|| {
-                TestExecError::Unsupported(
-                    "`assert.eq_i32` right argument is not an integer".to_string(),
-                )
-            })?;
-            state.record("assertion", format!("assert.eq_i32({lhs}, {rhs})"));
-            if lhs != rhs {
-                return Err(TestExecError::Failed(format!(
-                    "assert.eq_i32 failed: left={lhs} right={rhs}"
-                )));
-            }
-            Ok(Value::I32(0))
-        }
-        "checkpoint" | "yield" | "pulse" | "recv" | "cancel" => {
-            if !args.is_empty() {
-                return Err(TestExecError::Unsupported(format!(
-                    "`{callee_name}` does not accept arguments in the native test runner"
-                )));
-            }
-            state.record("runtime", callee_name.to_string());
-            Ok(Value::I32(0))
-        }
-        "timeout" | "deadline" => {
-            if args.len() != 1 {
-                return Err(TestExecError::Unsupported(format!(
-                    "`{callee_name}` expects exactly one argument"
-                )));
-            }
-            let value = exec_test_expr(&args[0], env, functions, state)?;
-            let ms = value_as_i32(&value).ok_or_else(|| {
-                TestExecError::Unsupported(format!(
-                    "`{callee_name}` requires an integer millisecond value"
-                ))
-            })?;
-            state.record("runtime", format!("{callee_name}({ms})"));
-            Ok(Value::I32(0))
-        }
         "spawn" | "thread.spawn" => {
             if args.len() != 1 {
                 return Err(TestExecError::Unsupported(format!(
@@ -1572,11 +1513,9 @@ fn exec_runtime_intrinsic(
                     "`{callee_name}` requires a zero-arg function reference"
                 )));
             };
-            let handle = state.next_handle;
-            state.next_handle += 1;
-            state.record("spawn", format!("{function_name} -> handle:{handle}"));
             let result = exec_invoke_function(&function_name, &[], env, functions, state)?;
-            state.handles.insert(handle, result);
+            let handle = state.runtime.alloc_task(result);
+            state.record("spawn", format!("{function_name} -> handle:{handle}"));
             Ok(Value::I32(handle))
         }
         "join" | "task_result" => {
@@ -1592,9 +1531,7 @@ fn exec_runtime_intrinsic(
                 ))
             })?;
             state.record("join", format!("handle:{handle}"));
-            state.handles.get(&handle).cloned().ok_or_else(|| {
-                TestExecError::Failed(format!("join requested unknown task handle `{handle}`"))
-            })
+            state.runtime.task_result(handle)
         }
         "detach" | "cancel_task" => {
             if args.len() != 1 {
@@ -1611,9 +1548,23 @@ fn exec_runtime_intrinsic(
             state.record("runtime", format!("{callee_name}(handle:{handle})"));
             Ok(Value::I32(0))
         }
-        other => Err(TestExecError::Unsupported(format!(
-            "runtime intrinsic `{other}` is not supported by the native test runner"
-        ))),
+        _ => {
+            let values = args
+                .iter()
+                .map(|arg| exec_test_expr(arg, env, functions, state))
+                .collect::<Result<Vec<_>, _>>()?;
+            let event_detail = match callee_name {
+                "timeout" | "deadline" => values
+                    .first()
+                    .and_then(value_as_i32)
+                    .map(|ms| format!("{callee_name}({ms})"))
+                    .unwrap_or_else(|| callee_name.to_string()),
+                _ => callee_name.to_string(),
+            };
+            let result = state.runtime.invoke(callee_name, values)?;
+            state.record("runtime", event_detail);
+            Ok(result)
+        }
     }
 }
 
@@ -1656,6 +1607,36 @@ fn exec_test_expr(
             let _ = exec_test_expr(inner, env, functions, state)?;
             Ok(Value::I32(0))
         }
+        Expr::Binary { op, left, right } => match op {
+            BinaryOp::And => {
+                let left = exec_test_expr(left, env, functions, state)?;
+                if !truthy(&left) {
+                    Ok(Value::Bool(false))
+                } else {
+                    let right = exec_test_expr(right, env, functions, state)?;
+                    Ok(Value::Bool(truthy(&right)))
+                }
+            }
+            BinaryOp::Or => {
+                let left = exec_test_expr(left, env, functions, state)?;
+                if truthy(&left) {
+                    Ok(Value::Bool(true))
+                } else {
+                    let right = exec_test_expr(right, env, functions, state)?;
+                    Ok(Value::Bool(truthy(&right)))
+                }
+            }
+            _ => {
+                let left = exec_test_expr(left, env, functions, state)?;
+                let right = exec_test_expr(right, env, functions, state)?;
+                eval_binary(*op, left, right).ok_or_else(|| {
+                    TestExecError::Unsupported(
+                        "binary expression could not be evaluated by the native test runner"
+                            .to_string(),
+                    )
+                })
+            }
+        },
         Expr::UnsafeBlock { body, .. } => {
             let mut local = env.clone();
             let _ = exec_test_block(body, &mut local, functions, state)?;
@@ -1701,7 +1682,6 @@ fn exec_test_expr(
         }
         Expr::FieldAccess { .. }
         | Expr::Unary { .. }
-        | Expr::Binary { .. }
         | Expr::Match { .. }
         | Expr::While { .. }
         | Expr::For { .. }
