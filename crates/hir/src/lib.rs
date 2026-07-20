@@ -508,6 +508,8 @@ mod generics_intrinsics;
 mod linearity_execution;
 #[path = "hir/lower_and_capabilities.rs"]
 mod lower_and_capabilities;
+#[path = "hir/native_test_runtime.rs"]
+mod native_test_runtime;
 #[path = "hir/ownership.rs"]
 mod ownership;
 #[path = "hir/provenance_and_contracts.rs"]
@@ -519,6 +521,7 @@ pub(crate) use self::eval_and_patterns::*;
 pub(crate) use self::generics_intrinsics::*;
 pub(crate) use self::linearity_execution::*;
 pub(crate) use self::lower_and_capabilities::*;
+pub(crate) use self::native_test_runtime::*;
 pub(crate) use self::ownership::*;
 pub(crate) use self::provenance_and_contracts::*;
 
