@@ -28,6 +28,7 @@ typedef struct {
   int32_t kernel_name_id;
   uint64_t last_used_epoch;
   void* pipeline;
+  void* module;
 } fz_gpu_pipeline_state;
 
 typedef struct {
@@ -127,6 +128,142 @@ static id<MTLCommandQueue> fz_gpu_queue_for_device(int32_t handle) {
   }
   return (id<MTLCommandQueue>)state->command_queue;
 }
+#elif defined(__linux__)
+typedef int fz_hip_error_t;
+typedef int fz_hiprtc_result_t;
+typedef void* fz_hip_module_t;
+typedef void* fz_hip_function_t;
+typedef void* fz_hip_stream_t;
+typedef void* fz_hiprtc_program_t;
+
+#define FZ_HIP_SUCCESS 0
+#define FZ_HIPRTC_SUCCESS 0
+#define FZ_HIP_MEMCPY_HOST_TO_DEVICE 1
+#define FZ_HIP_MEMCPY_DEVICE_TO_HOST 2
+
+typedef struct {
+  void* hip;
+  void* hiprtc;
+  fz_hip_error_t (*hipGetDeviceCount)(int*);
+  fz_hip_error_t (*hipSetDevice)(int);
+  fz_hip_error_t (*hipDeviceGetName)(char*, int, int);
+  fz_hip_error_t (*hipMemGetInfo)(size_t*, size_t*);
+  fz_hip_error_t (*hipMalloc)(void**, size_t);
+  fz_hip_error_t (*hipFree)(void*);
+  fz_hip_error_t (*hipMemcpy)(void*, const void*, size_t, int);
+  fz_hip_error_t (*hipStreamCreate)(fz_hip_stream_t*);
+  fz_hip_error_t (*hipStreamSynchronize)(fz_hip_stream_t);
+  fz_hip_error_t (*hipStreamDestroy)(fz_hip_stream_t);
+  fz_hip_error_t (*hipModuleLoadData)(fz_hip_module_t*, const void*);
+  fz_hip_error_t (*hipModuleUnload)(fz_hip_module_t);
+  fz_hip_error_t (*hipModuleGetFunction)(fz_hip_function_t*, fz_hip_module_t, const char*);
+  fz_hip_error_t (*hipModuleLaunchKernel)(fz_hip_function_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, fz_hip_stream_t, void**, void**);
+  const char* (*hipGetErrorString)(fz_hip_error_t);
+  fz_hiprtc_result_t (*hiprtcCreateProgram)(fz_hiprtc_program_t*, const char*, const char*, int, const char* const*, const char* const*);
+  fz_hiprtc_result_t (*hiprtcCompileProgram)(fz_hiprtc_program_t, int, const char* const*);
+  fz_hiprtc_result_t (*hiprtcGetCodeSize)(fz_hiprtc_program_t, size_t*);
+  fz_hiprtc_result_t (*hiprtcGetCode)(fz_hiprtc_program_t, char*);
+  fz_hiprtc_result_t (*hiprtcGetProgramLogSize)(fz_hiprtc_program_t, size_t*);
+  fz_hiprtc_result_t (*hiprtcGetProgramLog)(fz_hiprtc_program_t, char*);
+  fz_hiprtc_result_t (*hiprtcDestroyProgram)(fz_hiprtc_program_t*);
+  const char* (*hiprtcGetErrorString)(fz_hiprtc_result_t);
+} fz_hip_api_state;
+
+static fz_hip_api_state fz_hip;
+static char fz_gpu_runtime_error[512];
+
+static void* fz_gpu_dlopen_first(const char* a, const char* b, const char* c) {
+  void* handle = dlopen(a, RTLD_LAZY | RTLD_LOCAL);
+  if (handle != NULL) {
+    return handle;
+  }
+  handle = dlopen(b, RTLD_LAZY | RTLD_LOCAL);
+  if (handle != NULL) {
+    return handle;
+  }
+  return dlopen(c, RTLD_LAZY | RTLD_LOCAL);
+}
+
+static int fz_gpu_load_symbol(void* lib, const char* name, void** out) {
+  *out = dlsym(lib, name);
+  return *out == NULL ? -1 : 0;
+}
+
+static const char* fz_gpu_hip_error_string(fz_hip_error_t error) {
+  if (fz_hip.hipGetErrorString != NULL) {
+    const char* text = fz_hip.hipGetErrorString(error);
+    if (text != NULL) {
+      return text;
+    }
+  }
+  return "unknown HIP runtime error";
+}
+
+static void fz_gpu_runtime_init(void) {
+  memset(&fz_hip, 0, sizeof(fz_hip));
+  fz_gpu_runtime_error[0] = '\0';
+  fz_hip.hip = fz_gpu_dlopen_first("libamdhip64.so", "libamdhip64.so.7", "/opt/rocm/lib/libamdhip64.so");
+  fz_hip.hiprtc = fz_gpu_dlopen_first("libhiprtc.so", "libhiprtc.so.7", "/opt/rocm/lib/libhiprtc.so");
+  if (fz_hip.hip == NULL || fz_hip.hiprtc == NULL) {
+    snprintf(fz_gpu_runtime_error, sizeof(fz_gpu_runtime_error), "ROCm runtime load failed: libamdhip64/libhiprtc unavailable");
+    fz_gpu_device_count_cached = 0;
+    return;
+  }
+#define FZ_LOAD_HIP(name) do { if (fz_gpu_load_symbol(fz_hip.hip, #name, (void**)&fz_hip.name) != 0) { snprintf(fz_gpu_runtime_error, sizeof(fz_gpu_runtime_error), "ROCm runtime load failed: missing %s", #name); fz_gpu_device_count_cached = 0; return; } } while (0)
+#define FZ_LOAD_HIPRTC(name) do { if (fz_gpu_load_symbol(fz_hip.hiprtc, #name, (void**)&fz_hip.name) != 0) { snprintf(fz_gpu_runtime_error, sizeof(fz_gpu_runtime_error), "ROCm runtime load failed: missing %s", #name); fz_gpu_device_count_cached = 0; return; } } while (0)
+  FZ_LOAD_HIP(hipGetDeviceCount);
+  FZ_LOAD_HIP(hipSetDevice);
+  FZ_LOAD_HIP(hipDeviceGetName);
+  FZ_LOAD_HIP(hipMemGetInfo);
+  FZ_LOAD_HIP(hipMalloc);
+  FZ_LOAD_HIP(hipFree);
+  FZ_LOAD_HIP(hipMemcpy);
+  FZ_LOAD_HIP(hipStreamCreate);
+  FZ_LOAD_HIP(hipStreamSynchronize);
+  FZ_LOAD_HIP(hipStreamDestroy);
+  FZ_LOAD_HIP(hipModuleLoadData);
+  FZ_LOAD_HIP(hipModuleUnload);
+  FZ_LOAD_HIP(hipModuleGetFunction);
+  FZ_LOAD_HIP(hipModuleLaunchKernel);
+  FZ_LOAD_HIP(hipGetErrorString);
+  FZ_LOAD_HIPRTC(hiprtcCreateProgram);
+  FZ_LOAD_HIPRTC(hiprtcCompileProgram);
+  FZ_LOAD_HIPRTC(hiprtcGetCodeSize);
+  FZ_LOAD_HIPRTC(hiprtcGetCode);
+  FZ_LOAD_HIPRTC(hiprtcGetProgramLogSize);
+  FZ_LOAD_HIPRTC(hiprtcGetProgramLog);
+  FZ_LOAD_HIPRTC(hiprtcDestroyProgram);
+  FZ_LOAD_HIPRTC(hiprtcGetErrorString);
+#undef FZ_LOAD_HIP
+#undef FZ_LOAD_HIPRTC
+  int count = 0;
+  fz_hip_error_t status = fz_hip.hipGetDeviceCount(&count);
+  if (status != FZ_HIP_SUCCESS || count <= 0) {
+    snprintf(fz_gpu_runtime_error, sizeof(fz_gpu_runtime_error), "ROCm device discovery failed: %s", fz_gpu_hip_error_string(status));
+    fz_gpu_device_count_cached = 0;
+    return;
+  }
+  if (count > FZ_MAX_GPU_DEVICES) {
+    count = FZ_MAX_GPU_DEVICES;
+  }
+  for (int index = 0; index < count; index++) {
+    fz_gpu_devices[index].in_use = 1;
+    fz_gpu_devices[index].device = (void*)(intptr_t)index;
+  }
+  fz_gpu_device_count_cached = count;
+}
+
+static int fz_gpu_hip_device_index_for_handle(int32_t handle, int* out_device) {
+  if (handle <= 0 || handle > FZ_MAX_GPU_DEVICES) {
+    return -1;
+  }
+  fz_gpu_device_state* state = &fz_gpu_devices[handle - 1];
+  if (!state->in_use) {
+    return -1;
+  }
+  *out_device = (int)(intptr_t)state->device;
+  return 0;
+}
 #else
 static void fz_gpu_runtime_init(void) {
   fz_gpu_device_count_cached = 0;
@@ -172,6 +309,10 @@ static int32_t fz_gpu_pipeline_evict_lru_slot(void) {
   id<MTLComputePipelineState> pipeline = (id<MTLComputePipelineState>)fz_gpu_pipelines[slot - 1].pipeline;
   if (pipeline != nil) {
     [pipeline release];
+  }
+#elif defined(__linux__)
+  if (fz_gpu_pipelines[slot - 1].module != NULL && fz_hip.hipModuleUnload != NULL) {
+    fz_hip.hipModuleUnload((fz_hip_module_t)fz_gpu_pipelines[slot - 1].module);
   }
 #endif
   memset(&fz_gpu_pipelines[slot - 1], 0, sizeof(fz_gpu_pipelines[slot - 1]));

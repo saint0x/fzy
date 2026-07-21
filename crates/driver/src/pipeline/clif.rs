@@ -1,4 +1,4 @@
-use super::gpu_kernel_metal::MetalKernelLaunchDescriptor;
+use super::gpu_kernel_source::GpuKernelLaunchDescriptor;
 use super::*;
 use anyhow::{anyhow, bail, Result};
 use std::collections::{BTreeMap, HashMap};
@@ -35,7 +35,7 @@ pub(super) struct ClifLoweringCtx<'a> {
     pub(super) struct_defs: &'a HashMap<String, ast::Struct>,
     pub(super) enum_defs: &'a HashMap<String, ast::Enum>,
     pub(super) mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
-    pub(super) gpu_kernel_launch_descriptors: &'a HashMap<String, MetalKernelLaunchDescriptor>,
+    pub(super) gpu_kernel_launch_descriptors: &'a HashMap<String, GpuKernelLaunchDescriptor>,
     pub(super) current_return_ty: Option<ClifType>,
     pub(super) current_return_array: Option<ClifArrayAbi>,
     pub(super) current_return_ptr: Option<LocalBinding>,
@@ -174,7 +174,7 @@ pub(super) fn clif_emit_function_cfg(
     variant_tags: &HashMap<String, i32>,
     mutable_globals: &HashMap<String, cranelift_module::DataId>,
     local_types: &BTreeMap<String, ast::Type>,
-    gpu_kernel_launch_descriptors: &HashMap<String, MetalKernelLaunchDescriptor>,
+    gpu_kernel_launch_descriptors: &HashMap<String, GpuKernelLaunchDescriptor>,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
     current_return_ty: Option<ClifType>,

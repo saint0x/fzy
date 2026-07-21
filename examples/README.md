@@ -18,8 +18,8 @@ House style across the suite:
 - `fullstack`: broader product wiring surface.
 - `simd_kernels`: fixed-array SIMD block processing for signed mixes, tail-safe merges, channel swizzles, and RGBA-style unsigned clamps.
 - `gpu_metal_image`: production-shaped GPU compute app with a live Metal brightness kernel, deterministic trace capture, and shared kernel-package artifacts.
-- `gpu_cpu_aggregate`: live Metal integer kernel plus CPU SIMD aggregation/reporting over the downloaded result, returning a real aggregate struct summary.
-- `gpu_ascii_ripple`: custom Fzy-authored Metal ripple kernel with CPU SIMD aggregation and a TTY-aware ASCII renderer that loops live in terminal until interrupted, while still falling back to deterministic frame dumps for logs/CI.
+- `gpu_cpu_aggregate`: live Metal/ROCm integer kernel plus CPU SIMD aggregation/reporting over the downloaded result, returning a real aggregate struct summary.
+- `gpu_ascii_ripple`: custom Fzy-authored GPU ripple kernel with CPU SIMD aggregation and a TTY-aware ASCII renderer that loops live in terminal until interrupted, while still falling back to deterministic frame dumps for logs/CI.
 - `agent_runtime`: distilled from `/Users/deepsaint/Desktop/fzyagent` and focused on signed sessions, tool catalogs, audit trails, and parallel task planning.
 - `context_runtime`: distilled from `/Users/deepsaint/Desktop/superctx` and focused on scoped memory scoring, protocol assembly, context framing, and deterministic compaction.
 - `bounds_service`: production-shaped bounded service example that consumes `frameworklib/fzbounds` as a direct package dependency through compiler-backed library imports, package-aware direct-file validation, and dependency lock/vendor flow.

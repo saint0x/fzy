@@ -2,28 +2,31 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{anyhow, bail, Result};
 
+use super::gpu_backend::GpuBackendKind;
 use super::gpu_kernel_layout::{shared_gpu_kernel_contract, SharedGpuKernelContract};
 
 #[derive(Debug, Clone)]
-pub(crate) struct MetalKernelLaunchDescriptor {
+pub(crate) struct GpuKernelLaunchDescriptor {
     pub(crate) kernel_name: String,
     pub(crate) source: String,
     pub(crate) param_layout: String,
     pub(crate) shared_contract: SharedGpuKernelContract,
 }
 
-pub(crate) fn metal_kernel_launch_descriptors(
+pub(crate) fn gpu_kernel_launch_descriptors(
     fir: &fir::FirModule,
-) -> Result<HashMap<String, MetalKernelLaunchDescriptor>> {
+    backend: GpuBackendKind,
+) -> Result<HashMap<String, GpuKernelLaunchDescriptor>> {
     let typed = synthesize_typed_module(fir);
     let module = kernel_ir::lower(&typed)
         .map_err(|diagnostics| anyhow!(render_kernel_ir_diagnostics(&diagnostics)))?;
-    metal_kernel_launch_descriptors_from_kernel_module(&module)
+    gpu_kernel_launch_descriptors_from_kernel_module(&module, backend)
 }
 
-pub(crate) fn metal_kernel_launch_descriptors_from_kernel_module(
+pub(crate) fn gpu_kernel_launch_descriptors_from_kernel_module(
     module: &kernel_ir::KernelModule,
-) -> Result<HashMap<String, MetalKernelLaunchDescriptor>> {
+    backend: GpuBackendKind,
+) -> Result<HashMap<String, GpuKernelLaunchDescriptor>> {
     if module.kernels.is_empty() {
         return Ok(HashMap::new());
     }
@@ -37,10 +40,10 @@ pub(crate) fn metal_kernel_launch_descriptors_from_kernel_module(
         let kernel = function_map
             .get(kernel_name)
             .ok_or_else(|| anyhow!("kernel package missing entry `{kernel_name}`"))?;
-        let source = render_metal_module(&module, &function_map, kernel)?;
+        let source = render_gpu_module(&module, &function_map, kernel, backend)?;
         descriptors.insert(kernel_name.clone(), {
             let shared_contract = shared_gpu_kernel_contract(kernel)?;
-            MetalKernelLaunchDescriptor {
+            GpuKernelLaunchDescriptor {
                 kernel_name: render_function_name(kernel_name),
                 source,
                 param_layout: shared_contract.param_layout.clone(),
@@ -51,12 +54,19 @@ pub(crate) fn metal_kernel_launch_descriptors_from_kernel_module(
     Ok(descriptors)
 }
 
-pub(crate) fn metal_kernel_descriptor_strings(fir: &fir::FirModule) -> Result<Vec<String>> {
+pub(crate) fn gpu_kernel_descriptor_strings(fir: &fir::FirModule) -> Result<Vec<String>> {
     let mut values = Vec::new();
-    for descriptor in metal_kernel_launch_descriptors(fir)?.into_values() {
-        values.push(descriptor.kernel_name);
-        values.push(descriptor.source);
-        values.push(descriptor.param_layout);
+    let typed = synthesize_typed_module(fir);
+    let module = kernel_ir::lower(&typed)
+        .map_err(|diagnostics| anyhow!(render_kernel_ir_diagnostics(&diagnostics)))?;
+    for backend in [GpuBackendKind::Metal, GpuBackendKind::Rocm, GpuBackendKind::Cuda] {
+        for descriptor in gpu_kernel_launch_descriptors_from_kernel_module(&module, backend)?
+            .into_values()
+        {
+            values.push(descriptor.kernel_name);
+            values.push(descriptor.source);
+            values.push(descriptor.param_layout);
+        }
     }
     values.sort();
     values.dedup();
@@ -116,15 +126,33 @@ fn render_kernel_ir_diagnostics(diagnostics: &[diagnostics::Diagnostic]) -> Stri
         .join("; ")
 }
 
-fn render_metal_module(
+fn render_gpu_module(
     module: &kernel_ir::KernelModule,
     function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
     kernel: &kernel_ir::KernelFunction,
+    backend: GpuBackendKind,
 ) -> Result<String> {
     let mut out = String::new();
-    out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+    match backend {
+        GpuBackendKind::Metal => out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n"),
+        GpuBackendKind::Rocm | GpuBackendKind::Cuda => {
+            out.push_str(
+                "#include <stdint.h>\n#define uint unsigned int\ntypedef struct { unsigned int x; unsigned int y; unsigned int z; } fz_dim3;\n\n",
+            );
+        }
+        GpuBackendKind::Spirv | GpuBackendKind::Nvptx => {
+            bail!(
+                "gpu backend `{}` has a declared package contract but no executable kernel source renderer",
+                backend.as_str()
+            );
+        }
+    }
     for (name, value) in &module.const_i32_globals {
-        out.push_str("constant int ");
+        if backend == GpuBackendKind::Metal {
+            out.push_str("constant int ");
+        } else {
+            out.push_str("static const int ");
+        }
         out.push_str(name);
         out.push_str(" = ");
         out.push_str(&value.to_string());
@@ -134,7 +162,15 @@ fn render_metal_module(
         out.push('\n');
     }
     for function in &module.functions {
-        out.push_str(&render_function_signature(function, false, function_map)?);
+        if backend != GpuBackendKind::Metal && function.name == kernel.name {
+            continue;
+        }
+        out.push_str(&render_function_signature(
+            function,
+            false,
+            backend,
+            function_map,
+        )?);
         out.push_str(";\n");
     }
     out.push('\n');
@@ -143,15 +179,23 @@ fn render_metal_module(
         out.push_str(&render_function_signature(
             function,
             is_kernel,
+            backend,
             function_map,
         )?);
         out.push_str(" {\n");
+        if is_kernel && backend != GpuBackendKind::Metal {
+            out.push_str("    fz_dim3 fz_gid = {blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y, blockIdx.z * blockDim.z + threadIdx.z};\n");
+            out.push_str("    fz_dim3 fz_tid = {threadIdx.x, threadIdx.y, threadIdx.z};\n");
+            out.push_str("    fz_dim3 fz_tg_id = {blockIdx.x, blockIdx.y, blockIdx.z};\n");
+            out.push_str("    fz_dim3 fz_tg_size = {blockDim.x, blockDim.y, blockDim.z};\n");
+            out.push_str("    fz_dim3 fz_grid_size = {gridDim.x * blockDim.x, gridDim.y * blockDim.y, gridDim.z * blockDim.z};\n");
+        }
         let mut scope = function
             .params
             .iter()
             .map(|param| (param.name.clone(), param.ty.clone()))
             .collect::<HashMap<_, _>>();
-        render_stmts(&function.body, 1, &mut scope, function_map, &mut out)?;
+        render_stmts(&function.body, 1, backend, &mut scope, function_map, &mut out)?;
         out.push_str("}\n\n");
     }
     Ok(out)
@@ -160,14 +204,21 @@ fn render_metal_module(
 fn render_function_signature(
     function: &kernel_ir::KernelFunction,
     is_kernel: bool,
+    backend: GpuBackendKind,
     function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
 ) -> Result<String> {
     let mut out = String::new();
-    if is_kernel {
-        out.push_str("kernel void ");
-    } else {
-        out.push_str(render_scalar_type(&function.return_type)?);
-        out.push(' ');
+    match (backend, is_kernel) {
+        (GpuBackendKind::Metal, true) => out.push_str("kernel void "),
+        (GpuBackendKind::Rocm | GpuBackendKind::Cuda, true) => out.push_str("extern \"C\" __global__ void "),
+        (_, false) => {
+            if backend != GpuBackendKind::Metal {
+                out.push_str("__device__ ");
+            }
+            out.push_str(render_scalar_type(&function.return_type, backend)?);
+            out.push(' ');
+        }
+        (GpuBackendKind::Spirv | GpuBackendKind::Nvptx, true) => unreachable!("non-executable GPU backend should not render kernel source"),
     }
     out.push_str(&render_function_name(&function.name));
     out.push('(');
@@ -178,12 +229,15 @@ fn render_function_signature(
             param,
             function,
             is_kernel,
+            backend,
             &mut buffer_index,
             &mut parts,
             function_map,
         )?;
     }
-    parts.extend(render_context_params(is_kernel));
+    if !is_kernel || backend == GpuBackendKind::Metal {
+        parts.extend(render_context_params(is_kernel, backend));
+    }
     out.push_str(&parts.join(", "));
     out.push(')');
     Ok(out)
@@ -197,13 +251,14 @@ fn render_param_parts(
     param: &ast::Param,
     function: &kernel_ir::KernelFunction,
     is_kernel: bool,
+    backend: GpuBackendKind,
     buffer_index: &mut usize,
     out: &mut Vec<String>,
     _function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
 ) -> Result<()> {
     match &param.ty {
         ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
-            let element_ty = render_scalar_type(&args[0])?;
+            let element_ty = render_scalar_type(&args[0], backend)?;
             let qualifier = if function
                 .slice_access
                 .get(&param.name)
@@ -211,38 +266,64 @@ fn render_param_parts(
                 .unwrap_or(kernel_ir::KernelSliceAccessMode::Observe)
                 .is_read_only_like()
             {
-                "const device"
+                if backend == GpuBackendKind::Metal {
+                    "const device"
+                } else {
+                    "const"
+                }
             } else {
-                "device"
+                if backend == GpuBackendKind::Metal {
+                    "device"
+                } else {
+                    ""
+                }
             };
             if is_kernel {
-                out.push(format!(
-                    "{qualifier} {element_ty}* {}_data [[buffer({})]]",
-                    param.name, *buffer_index
-                ));
-                *buffer_index += 1;
-                out.push(format!(
-                    "constant uint& {}_len [[buffer({})]]",
-                    param.name, *buffer_index
-                ));
-                *buffer_index += 1;
+                if backend == GpuBackendKind::Metal {
+                    out.push(format!(
+                        "{qualifier} {element_ty}* {}_data [[buffer({})]]",
+                        param.name, *buffer_index
+                    ));
+                    *buffer_index += 1;
+                    out.push(format!(
+                        "constant uint& {}_len [[buffer({})]]",
+                        param.name, *buffer_index
+                    ));
+                    *buffer_index += 1;
+                } else {
+                    out.push(format!("{qualifier} {element_ty}* {}_data", param.name));
+                    out.push(format!("uint {}_len", param.name));
+                }
             } else {
-                out.push(format!("{qualifier} {element_ty}* {}_data", param.name));
+                let prefix = if qualifier.is_empty() {
+                    String::new()
+                } else {
+                    format!("{qualifier} ")
+                };
+                out.push(format!("{prefix}{element_ty}* {}_data", param.name));
                 out.push(format!("uint {}_len", param.name));
             }
         }
         ast::Type::Ptr { to, .. } => {
-            let rendered = render_scalar_type(to)?;
-            out.push(format!("thread {rendered}* {}", param.name));
+            let rendered = render_scalar_type(to, backend)?;
+            if backend == GpuBackendKind::Metal {
+                out.push(format!("thread {rendered}* {}", param.name));
+            } else {
+                out.push(format!("{rendered}* {}", param.name));
+            }
         }
         _ => {
-            let rendered = render_scalar_type(&param.ty)?;
+            let rendered = render_scalar_type(&param.ty, backend)?;
             if is_kernel {
-                out.push(format!(
-                    "constant {rendered}& {} [[buffer({})]]",
-                    param.name, *buffer_index
-                ));
-                *buffer_index += 1;
+                if backend == GpuBackendKind::Metal {
+                    out.push(format!(
+                        "constant {rendered}& {} [[buffer({})]]",
+                        param.name, *buffer_index
+                    ));
+                    *buffer_index += 1;
+                } else {
+                    out.push(format!("{rendered} {}", param.name));
+                }
             } else {
                 out.push(format!("{rendered} {}", param.name));
             }
@@ -251,29 +332,39 @@ fn render_param_parts(
     Ok(())
 }
 
-fn render_context_params(is_kernel: bool) -> Vec<String> {
-    let attrs = [
-        ("uint3 fz_gid", "[[thread_position_in_grid]]"),
-        ("uint3 fz_tid", "[[thread_position_in_threadgroup]]"),
-        ("uint3 fz_tg_id", "[[threadgroup_position_in_grid]]"),
-        ("uint3 fz_tg_size", "[[threads_per_threadgroup]]"),
-        ("uint3 fz_grid_size", "[[threads_per_grid]]"),
-    ];
-    attrs
-        .into_iter()
-        .map(|(decl, attr)| {
-            if is_kernel {
-                format!("{decl} {attr}")
-            } else {
-                decl.to_string()
-            }
-        })
-        .collect()
+fn render_context_params(is_kernel: bool, backend: GpuBackendKind) -> Vec<String> {
+    if backend == GpuBackendKind::Metal {
+        let attrs = [
+            ("uint3 fz_gid", "[[thread_position_in_grid]]"),
+            ("uint3 fz_tid", "[[thread_position_in_threadgroup]]"),
+            ("uint3 fz_tg_id", "[[threadgroup_position_in_grid]]"),
+            ("uint3 fz_tg_size", "[[threads_per_threadgroup]]"),
+            ("uint3 fz_grid_size", "[[threads_per_grid]]"),
+        ];
+        return attrs
+            .into_iter()
+            .map(|(decl, attr)| {
+                if is_kernel {
+                    format!("{decl} {attr}")
+                } else {
+                    decl.to_string()
+                }
+            })
+            .collect();
+    }
+    vec![
+        "fz_dim3 fz_gid".to_string(),
+        "fz_dim3 fz_tid".to_string(),
+        "fz_dim3 fz_tg_id".to_string(),
+        "fz_dim3 fz_tg_size".to_string(),
+        "fz_dim3 fz_grid_size".to_string(),
+    ]
 }
 
 fn render_stmts(
     stmts: &[kernel_ir::KernelStmt],
     indent: usize,
+    backend: GpuBackendKind,
     scope: &mut HashMap<String, ast::Type>,
     function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
     out: &mut String,
@@ -286,38 +377,38 @@ fn render_stmts(
                 if let Some(ty) = ty {
                     scope.insert(name.clone(), ty.clone());
                     if let ast::Type::Array { elem, len } = ty {
-                        out.push_str(render_scalar_type(elem)?);
+                        out.push_str(render_scalar_type(elem, backend)?);
                         out.push(' ');
                         out.push_str(name);
                         out.push('[');
                         out.push_str(&len.to_string());
                         out.push_str("] = ");
-                        out.push_str(&render_expr(value, scope, function_map)?);
+                        out.push_str(&render_expr(value, backend, scope, function_map)?);
                         out.push_str(";\n");
                         continue;
                     }
-                    out.push_str(render_scalar_type(ty)?);
+                    out.push_str(render_scalar_type(ty, backend)?);
                 } else {
                     out.push_str("auto");
                 }
                 out.push(' ');
                 out.push_str(name);
                 out.push_str(" = ");
-                out.push_str(&render_expr(value, scope, function_map)?);
+                out.push_str(&render_expr(value, backend, scope, function_map)?);
                 out.push_str(";\n");
             }
             kernel_ir::KernelStmt::Assign { target, value } => {
                 out.push_str(&pad);
                 out.push_str(target);
                 out.push_str(" = ");
-                out.push_str(&render_expr(value, scope, function_map)?);
+                out.push_str(&render_expr(value, backend, scope, function_map)?);
                 out.push_str(";\n");
             }
             kernel_ir::KernelStmt::Store { base, index, value } => {
                 out.push_str(&pad);
-                out.push_str(&render_slice_access(base, index, scope, function_map)?);
+                out.push_str(&render_slice_access(base, index, backend, scope, function_map)?);
                 out.push_str(" = ");
-                out.push_str(&render_expr(value, scope, function_map)?);
+                out.push_str(&render_expr(value, backend, scope, function_map)?);
                 out.push_str(";\n");
             }
             kernel_ir::KernelStmt::If {
@@ -327,14 +418,14 @@ fn render_stmts(
             } => {
                 out.push_str(&pad);
                 out.push_str("if (");
-                out.push_str(&render_expr(condition, scope, function_map)?);
+                out.push_str(&render_expr(condition, backend, scope, function_map)?);
                 out.push_str(") {\n");
-                render_stmts(then_body, indent + 1, &mut scope.clone(), function_map, out)?;
+                render_stmts(then_body, indent + 1, backend, &mut scope.clone(), function_map, out)?;
                 out.push_str(&pad);
                 out.push('}');
                 if !else_body.is_empty() {
                     out.push_str(" else {\n");
-                    render_stmts(else_body, indent + 1, &mut scope.clone(), function_map, out)?;
+                    render_stmts(else_body, indent + 1, backend, &mut scope.clone(), function_map, out)?;
                     out.push_str(&pad);
                     out.push('}');
                 }
@@ -343,22 +434,22 @@ fn render_stmts(
             kernel_ir::KernelStmt::While { condition, body } => {
                 out.push_str(&pad);
                 out.push_str("while (");
-                out.push_str(&render_expr(condition, scope, function_map)?);
+                out.push_str(&render_expr(condition, backend, scope, function_map)?);
                 out.push_str(") {\n");
-                render_stmts(body, indent + 1, &mut scope.clone(), function_map, out)?;
+                render_stmts(body, indent + 1, backend, &mut scope.clone(), function_map, out)?;
                 out.push_str(&pad);
                 out.push_str("}\n");
             }
             kernel_ir::KernelStmt::Loop { body } => {
                 out.push_str(&pad);
                 out.push_str("while (true) {\n");
-                render_stmts(body, indent + 1, &mut scope.clone(), function_map, out)?;
+                render_stmts(body, indent + 1, backend, &mut scope.clone(), function_map, out)?;
                 out.push_str(&pad);
                 out.push_str("}\n");
             }
             kernel_ir::KernelStmt::Break(value) => {
                 if value.is_some() {
-                    bail!("Metal GPU kernel lowering does not yet support valued `break`");
+                bail!("GPU kernel lowering does not yet support valued `break`");
                 }
                 out.push_str(&pad);
                 out.push_str("break;\n");
@@ -372,7 +463,7 @@ fn render_stmts(
                 match value {
                     Some(value) => {
                         out.push_str("return ");
-                        out.push_str(&render_expr(value, scope, function_map)?);
+                        out.push_str(&render_expr(value, backend, scope, function_map)?);
                         out.push_str(";\n");
                     }
                     None => out.push_str("return;\n"),
@@ -380,7 +471,7 @@ fn render_stmts(
             }
             kernel_ir::KernelStmt::Expr(expr) => {
                 out.push_str(&pad);
-                out.push_str(&render_expr(expr, scope, function_map)?);
+                out.push_str(&render_expr(expr, backend, scope, function_map)?);
                 out.push_str(";\n");
             }
         }
@@ -390,6 +481,7 @@ fn render_stmts(
 
 fn render_expr(
     expr: &kernel_ir::KernelExpr,
+    backend: GpuBackendKind,
     scope: &HashMap<String, ast::Type>,
     function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
 ) -> Result<String> {
@@ -409,7 +501,7 @@ fn render_expr(
             "{{{}}}",
             items
                 .iter()
-                .map(|item| render_expr(item, scope, function_map))
+                .map(|item| render_expr(item, backend, scope, function_map))
                 .collect::<Result<Vec<_>>>()?
                 .join(", ")
         ),
@@ -417,22 +509,22 @@ fn render_expr(
             format!(
                 "({}{})",
                 render_unary_op(*op),
-                render_expr(expr, scope, function_map)?
+                render_expr(expr, backend, scope, function_map)?
             )
         }
         kernel_ir::KernelExpr::Binary { op, left, right } => format!(
             "({} {} {})",
-            render_expr(left, scope, function_map)?,
+            render_expr(left, backend, scope, function_map)?,
             render_binary_op(*op),
-            render_expr(right, scope, function_map)?
+            render_expr(right, backend, scope, function_map)?
         ),
         kernel_ir::KernelExpr::Call { callee, args } => {
             let target = function_map
                 .get(callee)
-                .ok_or_else(|| anyhow!("Metal GPU kernel lowering could not resolve `{callee}`"))?;
+                .ok_or_else(|| anyhow!("GPU kernel lowering could not resolve `{callee}`"))?;
             let mut rendered = Vec::new();
             for (arg, param) in args.iter().zip(target.params.iter()) {
-                rendered.extend(render_call_arg(arg, &param.ty, scope, function_map)?);
+                rendered.extend(render_call_arg(arg, &param.ty, backend, scope, function_map)?);
             }
             rendered.extend([
                 "fz_gid".to_string(),
@@ -444,13 +536,13 @@ fn render_expr(
             format!("{}({})", render_function_name(callee), rendered.join(", "))
         }
         kernel_ir::KernelExpr::Intrinsic { op, args } => {
-            render_intrinsic(*op, args, scope, function_map)?
+            render_intrinsic(*op, args, backend, scope, function_map)?
         }
         kernel_ir::KernelExpr::Load { base, index } => {
-            render_slice_access(base, index, scope, function_map)?
+            render_slice_access(base, index, backend, scope, function_map)?
         }
         kernel_ir::KernelExpr::Group(inner) => {
-            format!("({})", render_expr(inner, scope, function_map)?)
+            format!("({})", render_expr(inner, backend, scope, function_map)?)
         }
     })
 }
@@ -458,6 +550,7 @@ fn render_expr(
 fn render_call_arg(
     expr: &kernel_ir::KernelExpr,
     param_ty: &ast::Type,
+    backend: GpuBackendKind,
     scope: &HashMap<String, ast::Type>,
     function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
 ) -> Result<Vec<String>> {
@@ -465,15 +558,16 @@ fn render_call_arg(
         let name = slice_ident(expr)?;
         Ok(vec![format!("{name}_data"), format!("{name}_len")])
     } else if matches!(param_ty, ast::Type::Ptr { .. }) {
-        Ok(vec![render_expr(expr, scope, function_map)?])
+        Ok(vec![render_expr(expr, backend, scope, function_map)?])
     } else {
-        Ok(vec![render_expr(expr, scope, function_map)?])
+        Ok(vec![render_expr(expr, backend, scope, function_map)?])
     }
 }
 
 fn render_intrinsic(
     op: kernel_ir::KernelIntrinsic,
     args: &[kernel_ir::KernelExpr],
+    backend: GpuBackendKind,
     scope: &HashMap<String, ast::Type>,
     function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
 ) -> Result<String> {
@@ -506,17 +600,17 @@ fn render_intrinsic(
         kernel_ir::KernelIntrinsic::LoadF32
         | kernel_ir::KernelIntrinsic::LoadI32
         | kernel_ir::KernelIntrinsic::LoadU32 => {
-            render_slice_access(&args[0], &args[1], scope, function_map)?
+            render_slice_access(&args[0], &args[1], backend, scope, function_map)?
         }
         kernel_ir::KernelIntrinsic::StoreF32
         | kernel_ir::KernelIntrinsic::StoreI32
         | kernel_ir::KernelIntrinsic::StoreU32 => format!(
             "({} = {})",
-            render_slice_access(&args[0], &args[1], scope, function_map)?,
-            render_expr(&args[2], scope, function_map)?
+            render_slice_access(&args[0], &args[1], backend, scope, function_map)?,
+            render_expr(&args[2], backend, scope, function_map)?
         ),
         kernel_ir::KernelIntrinsic::SimdF32x4Splat => {
-            format!("float4({})", render_expr(&args[0], scope, function_map)?)
+            format!("float4({})", render_expr(&args[0], backend, scope, function_map)?)
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Load => {
             let kernel_ir::KernelExpr::ArrayLiteral(items) = &args[0] else {
@@ -529,40 +623,40 @@ fn render_intrinsic(
                 "float4({})",
                 items
                     .iter()
-                    .map(|item| render_expr(item, scope, function_map))
+                    .map(|item| render_expr(item, backend, scope, function_map))
                     .collect::<Result<Vec<_>>>()?
                     .join(", ")
             )
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Store => {
-            let value = render_expr(&args[0], scope, function_map)?;
+            let value = render_expr(&args[0], backend, scope, function_map)?;
             format!("{{{value}[0], {value}[1], {value}[2], {value}[3]}}")
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Add => format!(
             "({} + {})",
-            render_expr(&args[0], scope, function_map)?,
-            render_expr(&args[1], scope, function_map)?
+            render_expr(&args[0], backend, scope, function_map)?,
+            render_expr(&args[1], backend, scope, function_map)?
         ),
         kernel_ir::KernelIntrinsic::SimdF32x4Mul => format!(
             "({} * {})",
-            render_expr(&args[0], scope, function_map)?,
-            render_expr(&args[1], scope, function_map)?
+            render_expr(&args[0], backend, scope, function_map)?,
+            render_expr(&args[1], backend, scope, function_map)?
         ),
         kernel_ir::KernelIntrinsic::SimdF32x4ReduceAdd => {
-            let value = render_expr(&args[0], scope, function_map)?;
+            let value = render_expr(&args[0], backend, scope, function_map)?;
             format!("(({value}[0] + {value}[1]) + ({value}[2] + {value}[3]))")
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Lane0 => {
-            format!("({}[0])", render_expr(&args[0], scope, function_map)?)
+            format!("({}[0])", render_expr(&args[0], backend, scope, function_map)?)
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Lane1 => {
-            format!("({}[1])", render_expr(&args[0], scope, function_map)?)
+            format!("({}[1])", render_expr(&args[0], backend, scope, function_map)?)
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Lane2 => {
-            format!("({}[2])", render_expr(&args[0], scope, function_map)?)
+            format!("({}[2])", render_expr(&args[0], backend, scope, function_map)?)
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Lane3 => {
-            format!("({}[3])", render_expr(&args[0], scope, function_map)?)
+            format!("({}[3])", render_expr(&args[0], backend, scope, function_map)?)
         }
     })
 }
@@ -570,11 +664,12 @@ fn render_intrinsic(
 fn render_slice_access(
     base: &kernel_ir::KernelExpr,
     index: &kernel_ir::KernelExpr,
+    backend: GpuBackendKind,
     scope: &HashMap<String, ast::Type>,
     function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
 ) -> Result<String> {
     let name = ident_name(base)?;
-    let rendered_index = render_expr(index, scope, function_map)?;
+    let rendered_index = render_expr(index, backend, scope, function_map)?;
     let Some(base_ty) = scope.get(&name) else {
         bail!("Metal GPU kernel lowering could not resolve indexed base `{name}`");
     };
@@ -602,11 +697,15 @@ fn is_gpu_slice_type(ty: &ast::Type) -> bool {
     matches!(ty, ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1)
 }
 
-fn render_scalar_type(ty: &ast::Type) -> Result<&'static str> {
+fn render_scalar_type(ty: &ast::Type, backend: GpuBackendKind) -> Result<&'static str> {
     match ty {
         ast::Type::Void => Ok("void"),
         ast::Type::Bool => Ok("bool"),
         ast::Type::Float { bits: 32 } => Ok("float"),
+        ast::Type::SimdVector(ast::SimdVectorType {
+            element: ast::SimdElement::F32,
+            lanes: 4,
+        }) if backend == GpuBackendKind::Metal => Ok("float4"),
         ast::Type::SimdVector(ast::SimdVectorType {
             element: ast::SimdElement::F32,
             lanes: 4,
@@ -619,7 +718,7 @@ fn render_scalar_type(ty: &ast::Type) -> Result<&'static str> {
             signed: false,
             bits: 32,
         } => Ok("uint"),
-        other => bail!("Metal GPU kernel lowering does not yet support type `{other}`"),
+        other => bail!("GPU kernel lowering does not yet support type `{other}`"),
     }
 }
 

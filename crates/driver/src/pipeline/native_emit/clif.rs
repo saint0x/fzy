@@ -28,7 +28,10 @@ pub(super) fn emit_native_libraries_cranelift(
         .collect::<Vec<_>>();
     let plan =
         build_native_canonical_plan_with_task_symbols(lowered_fir, true, &spawn_task_symbols);
-    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(lowered_fir)?;
+    let gpu_backend = resolve_gpu_backend(fir_module_uses_gpu(lowered_fir), None)?
+        .map(|adapter| adapter.kind)
+        .unwrap_or(super::super::gpu_backend::GpuBackendKind::Metal);
+    let gpu_kernel_launch_descriptors = gpu_kernel_launch_descriptors(lowered_fir, gpu_backend)?;
     let task_symbol_set = spawn_task_symbols.iter().cloned().collect::<HashSet<_>>();
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
@@ -270,7 +273,10 @@ pub(super) fn emit_incremental_module_object_cranelift(
     local_mutable_globals: &HashSet<String>,
 ) -> Result<()> {
     let plan = build_native_canonical_plan(fir, !matches!(profile, BuildProfile::Release));
-    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir)?;
+    let gpu_backend = resolve_gpu_backend(fir_module_uses_gpu(fir), None)?
+        .map(|adapter| adapter.kind)
+        .unwrap_or(super::super::gpu_backend::GpuBackendKind::Metal);
+    let gpu_kernel_launch_descriptors = gpu_kernel_launch_descriptors(fir, gpu_backend)?;
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -509,7 +515,10 @@ pub(super) fn emit_native_artifact_cranelift(
     let mut module = ObjectModule::new(object_builder);
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let plan = build_native_canonical_plan(lowered_fir, enforce_contract_checks);
-    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(lowered_fir)?;
+    let gpu_backend = resolve_gpu_backend(fir_module_uses_gpu(lowered_fir), None)?
+        .map(|adapter| adapter.kind)
+        .unwrap_or(super::super::gpu_backend::GpuBackendKind::Metal);
+    let gpu_kernel_launch_descriptors = gpu_kernel_launch_descriptors(lowered_fir, gpu_backend)?;
 
     let (mut function_ids, mut function_signatures) = declare_clif_functions(
         &mut module,

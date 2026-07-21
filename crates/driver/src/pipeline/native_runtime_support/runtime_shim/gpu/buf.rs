@@ -11,7 +11,13 @@ int32_t fz_native_gpu_device_count(void) {
 int32_t fz_native_gpu_default_device(void) {
   pthread_once(&fz_gpu_init_once, fz_gpu_runtime_init);
   if (fz_gpu_device_count_cached <= 0) {
-    fz_set_last_error(ENODEV, 3, "gpu.default_device failed: no Metal device available");
+    const char* backend_error =
+#if defined(__linux__)
+        fz_gpu_runtime_error[0] == '\0' ? "gpu.default_device failed: no ROCm device available" : fz_gpu_runtime_error;
+#else
+        "gpu.default_device failed: no Metal device available";
+#endif
+    fz_set_last_error(ENODEV, 3, backend_error);
     return 0;
   }
   fz_set_last_error(0, 0, "");
@@ -32,9 +38,24 @@ int32_t fz_native_gpu_device_name(int32_t device_handle) {
     fz_set_last_error(0, 0, "");
     return fz_intern_slice(utf8 == NULL ? "" : utf8, utf8 == NULL ? 0 : strlen(utf8));
   }
+#elif defined(__linux__)
+  int device = 0;
+  if (fz_gpu_hip_device_index_for_handle(device_handle, &device) != 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.device_name failed: invalid device handle");
+    return 0;
+  }
+  char name[256];
+  memset(name, 0, sizeof(name));
+  fz_hip_error_t status = fz_hip.hipDeviceGetName(name, (int)sizeof(name), device);
+  if (status != FZ_HIP_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return fz_intern_slice(name, strlen(name));
 #else
   (void)device_handle;
-  fz_set_last_error(ENOTSUP, 3, "gpu.device_name failed: Metal runtime unavailable on this host");
+  fz_set_last_error(ENOTSUP, 3, "gpu.device_name failed: GPU runtime unavailable on this host");
   return 0;
 #endif
 }
@@ -55,9 +76,29 @@ int64_t fz_native_gpu_device_memory_bytes(int32_t device_handle) {
     fz_set_last_error(0, 0, "");
     return (int64_t)bytes;
   }
+#elif defined(__linux__)
+  int device = 0;
+  if (fz_gpu_hip_device_index_for_handle(device_handle, &device) != 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.device_memory_bytes failed: invalid device handle");
+    return 0;
+  }
+  fz_hip_error_t status = fz_hip.hipSetDevice(device);
+  if (status != FZ_HIP_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+    return 0;
+  }
+  size_t free_bytes = 0;
+  size_t total_bytes = 0;
+  status = fz_hip.hipMemGetInfo(&free_bytes, &total_bytes);
+  if (status != FZ_HIP_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return (int64_t)total_bytes;
 #else
   (void)device_handle;
-  fz_set_last_error(ENOTSUP, 3, "gpu.device_memory_bytes failed: Metal runtime unavailable on this host");
+  fz_set_last_error(ENOTSUP, 3, "gpu.device_memory_bytes failed: GPU runtime unavailable on this host");
   return 0;
 #endif
 }
@@ -115,6 +156,54 @@ static int32_t fz_native_gpu_buffer_new(
     fz_set_last_error(0, 0, "");
     return handle;
   }
+#elif defined(__linux__)
+  int device = 0;
+  if (fz_gpu_hip_device_index_for_handle(device_handle, &device) != 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.alloc failed: invalid device handle");
+    return 0;
+  }
+  uint64_t byte_count = (uint64_t)(uint32_t)len * (uint64_t)(uint32_t)element_size;
+  size_t bytes = (size_t)byte_count;
+  if ((uint64_t)bytes != byte_count) {
+    fz_set_last_error(EOVERFLOW, 3, "gpu.alloc failed: allocation size overflow");
+    return 0;
+  }
+  fz_hip_error_t status = fz_hip.hipSetDevice(device);
+  if (status != FZ_HIP_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+    return 0;
+  }
+  void* buffer = NULL;
+  status = fz_hip.hipMalloc(&buffer, bytes == 0 ? 1 : bytes);
+  if (status != FZ_HIP_SUCCESS || buffer == NULL) {
+    fz_set_last_error(ENOMEM, 3, fz_gpu_hip_error_string(status));
+    return 0;
+  }
+  if (bytes > 0 && host_data != NULL) {
+    status = fz_hip.hipMemcpy(buffer, host_data, bytes, FZ_HIP_MEMCPY_HOST_TO_DEVICE);
+    if (status != FZ_HIP_SUCCESS) {
+      fz_hip.hipFree(buffer);
+      fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+      return 0;
+    }
+  }
+  pthread_mutex_lock(&fz_gpu_lock);
+  int32_t handle = fz_gpu_buffer_alloc_slot();
+  if (handle > 0) {
+    fz_gpu_buffer_state* state = &fz_gpu_buffers[handle - 1];
+    state->device_handle = device_handle;
+    state->element_size = element_size;
+    state->len = len;
+    state->buffer = buffer;
+  }
+  pthread_mutex_unlock(&fz_gpu_lock);
+  if (handle <= 0) {
+    fz_hip.hipFree(buffer);
+    fz_set_last_error(ENOSPC, 3, "gpu.alloc failed: GPU buffer registry full");
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return handle;
 #else
   (void)device_handle;
   (void)element_size;
@@ -274,9 +363,75 @@ static uintptr_t fz_native_gpu_download_bytes(
   fz_set_last_error(0, 0, "");
   return (uintptr_t)handle;
 #else
+  #if defined(__linux__)
+  int32_t device_handle = state->device_handle;
+  void* device_buffer = state->buffer;
+  int device = 0;
+  if (fz_gpu_hip_device_index_for_handle(device_handle, &device) != 0) {
+    pthread_mutex_unlock(&fz_gpu_lock);
+    fz_set_last_error(EINVAL, 3, invalid_buffer_context);
+    return 0;
+  }
   pthread_mutex_unlock(&fz_gpu_lock);
-  fz_set_last_error(ENOTSUP, 3, "gpu.download failed: Metal runtime unavailable on this host");
-  return 0;
+  uint64_t byte_count = (uint64_t)(uint32_t)len * (uint64_t)(uint32_t)expected_element_size;
+  size_t bytes = (size_t)byte_count;
+  if ((uint64_t)bytes != byte_count) {
+    fz_set_last_error(EOVERFLOW, 3, "gpu.download failed: download size overflow");
+    return 0;
+  }
+  uint32_t* words = NULL;
+  if (bytes > 0) {
+    words = (uint32_t*)malloc(bytes);
+    if (words == NULL) {
+      fz_set_last_error(ENOMEM, 3, "gpu.download failed: host staging allocation failed");
+      return 0;
+    }
+    fz_hip_error_t status = fz_hip.hipSetDevice(device);
+    if (status == FZ_HIP_SUCCESS) {
+      status = fz_hip.hipMemcpy(words, device_buffer, bytes, FZ_HIP_MEMCPY_DEVICE_TO_HOST);
+    }
+    if (status != FZ_HIP_SUCCESS) {
+      free(words);
+      fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+      return 0;
+    }
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_numeric_vec_alloc();
+  if (handle > 0) {
+    fz_numeric_vec_state* vec = fz_numeric_vec_get((uintptr_t)handle);
+    if (vec != NULL) {
+      vec->element_kind = element_kind;
+      if (fz_numeric_vec_reserve(vec, len) != 0) {
+        handle = -1;
+        fz_numeric_vec_reset(vec);
+      }
+      if (handle > 0) {
+        for (int32_t index = 0; index < len; index++) {
+          if (fz_numeric_vec_push_bits32(vec, words == NULL ? 0 : words[index]) != 0) {
+            handle = -1;
+            fz_numeric_vec_reset(vec);
+            break;
+          }
+        }
+      }
+    } else {
+      handle = -1;
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  free(words);
+  if (handle <= 0) {
+    fz_set_last_error(ENOSPC, 3, "gpu.download failed: numeric vector registry full");
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return (uintptr_t)handle;
+  #else
+    pthread_mutex_unlock(&fz_gpu_lock);
+    fz_set_last_error(ENOTSUP, 3, "gpu.download failed: GPU runtime unavailable on this host");
+    return 0;
+  #endif
 #endif
 }
 
@@ -323,6 +478,11 @@ int32_t fz_native_gpu_buffer_free(int32_t buffer_handle) {
 #if defined(__APPLE__) && defined(__OBJC__)
   id<MTLBuffer> buffer = (id<MTLBuffer>)state->buffer;
   [buffer release];
+#elif defined(__linux__)
+  void* buffer = state->buffer;
+  if (buffer != NULL) {
+    fz_hip.hipFree(buffer);
+  }
 #endif
   memset(state, 0, sizeof(*state));
   pthread_mutex_unlock(&fz_gpu_lock);

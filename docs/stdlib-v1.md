@@ -364,8 +364,8 @@ Transcript guidance:
   - verifier-enforced slice/owner alias rules are part of the public production contract
   - GPU builds emit `.fz/gpu-kernel-package.{json,md}` as the backend-neutral kernel package
   - recorded native trace artifacts emit GPU lifecycle and kernel-launch evidence
-  - live executable backend today is `metal` on Apple
-  - `spirv` and `nvptx` are shared-contract adapters, but not yet executable backends
+  - live executable backends today are `metal` on Apple and `rocm` on Linux
+  - `cuda`, `spirv`, and `nvptx` are shared-contract adapters, but not yet executable backends
 - Example:
   - [examples/gpu_metal_image](/Users/deepsaint/Desktop/fozzylang/examples/gpu_metal_image/README.md) shows the current production-shaped Metal workflow for upload, launch, wait, download, trace capture, and package inspection.
 

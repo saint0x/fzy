@@ -935,6 +935,13 @@ pub(super) fn pgo_signature(pgo: &PgoConfig) -> String {
     )
 }
 
+pub(super) fn successful_build_compiler_fingerprint() -> String {
+    match std::env::current_exe().and_then(std::fs::read) {
+        Ok(bytes) => sha256_hex(&bytes),
+        Err(error) => format!("unavailable:{error}"),
+    }
+}
+
 pub(super) fn successful_build_cache_hit(
     entry: &SuccessfulBuildCacheEntry,
     resolved: &ResolvedSource,
@@ -946,6 +953,7 @@ pub(super) fn successful_build_cache_hit(
         && entry.source_path == resolved.source_path
         && entry.profile == profile.as_str()
         && entry.backend == backend
+        && entry.compiler_fingerprint == successful_build_compiler_fingerprint()
         && entry.manifest_fingerprint == resolved.manifest_fingerprint
         && entry.dependency_graph_hash == resolved.dependency_graph_hash
         && entry.pgo_signature == pgo_signature(pgo)
@@ -977,5 +985,7 @@ pub(super) fn apply_gpu_backend_link_args(cmd: &mut Command, fir: &fir::FirModul
     if cfg!(target_vendor = "apple") && fir_module_uses_gpu(fir) {
         cmd.arg("-framework").arg("Metal");
         cmd.arg("-framework").arg("Foundation");
+    } else if cfg!(target_os = "linux") && fir_module_uses_gpu(fir) {
+        cmd.arg("-ldl");
     }
 }

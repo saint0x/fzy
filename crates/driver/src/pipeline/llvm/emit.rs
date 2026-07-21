@@ -11,7 +11,10 @@ pub(crate) fn lower_llvm_ir_partitioned(
     local_mutable_globals: Option<&HashSet<String>>,
 ) -> Result<String> {
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
-    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir)?;
+    let gpu_backend = resolve_gpu_backend(fir_module_uses_gpu(fir), None)?
+        .map(|adapter| adapter.kind)
+        .unwrap_or(super::super::gpu_backend::GpuBackendKind::Metal);
+    let gpu_kernel_launch_descriptors = gpu_kernel_launch_descriptors(fir, gpu_backend)?;
     if fir.typed_functions.is_empty() {
         let ret = plan
             .forced_main_return
@@ -485,7 +488,7 @@ pub(crate) fn llvm_emit_function(
     task_ref_ids: &HashMap<String, i32>,
     extern_link_symbols: &HashMap<String, String>,
     function_sigs: &HashMap<String, LlvmFunctionSig>,
-    gpu_kernel_launch_descriptors: &HashMap<String, MetalKernelLaunchDescriptor>,
+    gpu_kernel_launch_descriptors: &HashMap<String, GpuKernelLaunchDescriptor>,
     cfg: &ControlFlowCfg,
 ) -> Result<String> {
     let params = function

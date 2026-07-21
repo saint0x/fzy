@@ -72,15 +72,27 @@ pub(super) fn linker_candidates() -> Vec<String> {
     }
     let mut candidates = Vec::new();
     let target = std::env::var("TARGET")
-        .unwrap_or_default()
+        .ok()
+        .filter(|target| !target.trim().is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "apple-darwin".to_string()
+            } else if cfg!(target_os = "linux") {
+                "linux".to_string()
+            } else {
+                String::new()
+            }
+        })
         .to_ascii_lowercase();
     if target.contains("apple-darwin") {
         candidates.push("clang".to_string());
         candidates.push("cc".to_string());
         candidates.push("gcc".to_string());
     } else if target.contains("linux") {
-        candidates.push("cc".to_string());
+        candidates.push("/opt/rocm/llvm/bin/clang".to_string());
+        candidates.push("/opt/rocm/core-7.14/lib/llvm/bin/clang".to_string());
         candidates.push("clang".to_string());
+        candidates.push("cc".to_string());
         candidates.push("gcc".to_string());
     } else {
         candidates.push("clang".to_string());

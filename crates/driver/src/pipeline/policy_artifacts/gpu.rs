@@ -50,6 +50,8 @@ struct GpuKernelLaunchPacket {
 #[derive(Debug, Clone)]
 struct GpuKernelBackendAdapters {
     metal: GpuKernelBackendAdapterReport,
+    rocm: GpuKernelBackendAdapterReport,
+    cuda: GpuKernelBackendAdapterReport,
     spirv: GpuKernelBackendAdapterReport,
     nvptx: GpuKernelBackendAdapterReport,
 }
@@ -159,6 +161,8 @@ impl GpuKernelBackendAdapters {
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "metal": self.metal.to_json(),
+            "rocm": self.rocm.to_json(),
+            "cuda": self.cuda.to_json(),
             "spirv": self.spirv.to_json(),
             "nvptx": self.nvptx.to_json(),
         })
@@ -225,11 +229,21 @@ pub(super) fn build_gpu_kernel_package(typed: &hir::TypedModule) -> GpuKernelPac
     match kernel_ir::lower(typed) {
         Ok(kernel_module) => {
             let rendered = kernel_ir::render(&kernel_module);
-            let metal_descriptors =
-                super::gpu_kernel_metal::metal_kernel_launch_descriptors_from_kernel_module(
-                    &kernel_module,
-                )
-                .unwrap_or_default();
+            let metal_descriptors = super::gpu_kernel_source::gpu_kernel_launch_descriptors_from_kernel_module(
+                &kernel_module,
+                super::gpu_backend::GpuBackendKind::Metal,
+            )
+            .unwrap_or_default();
+            let rocm_descriptors = super::gpu_kernel_source::gpu_kernel_launch_descriptors_from_kernel_module(
+                &kernel_module,
+                super::gpu_backend::GpuBackendKind::Rocm,
+            )
+            .unwrap_or_default();
+            let cuda_descriptors = super::gpu_kernel_source::gpu_kernel_launch_descriptors_from_kernel_module(
+                &kernel_module,
+                super::gpu_backend::GpuBackendKind::Cuda,
+            )
+            .unwrap_or_default();
             let spirv_descriptors =
                 super::gpu_kernel_spirv::spirv_kernel_contract_descriptors_from_kernel_module(
                     &kernel_module,
@@ -282,6 +296,66 @@ pub(super) fn build_gpu_kernel_package(typed: &hir::TypedModule) -> GpuKernelPac
                                         shared_contract: descriptor.shared_contract.clone(),
                                         backend_limits: backend_limit_profiles
                                             .for_backend(super::gpu_backend::GpuBackendKind::Metal)
+                                            .clone(),
+                                    }
+                                })
+                            })
+                            .collect(),
+                    },
+                    rocm: GpuKernelBackendAdapterReport {
+                        architecture_status: "declared",
+                        descriptor_status: "shared_contract_bound",
+                        module_format: "hiprtc.source",
+                        executable_now: cfg!(target_os = "linux"),
+                        reason: None,
+                        kernels: kernel_module
+                            .kernels
+                            .iter()
+                            .filter_map(|name| {
+                                rocm_descriptors.get(name).map(|descriptor| {
+                                    GpuKernelBackendKernelReport {
+                                        kernel_name: descriptor.kernel_name.clone(),
+                                        entry_point: Some(descriptor.kernel_name.clone()),
+                                        entry_symbol: None,
+                                        param_layout: descriptor.param_layout.clone(),
+                                        module_format: None,
+                                        execution_model: None,
+                                        entry_directive: None,
+                                        parameter_state_space: None,
+                                        shared_contract: descriptor.shared_contract.clone(),
+                                        backend_limits: backend_limit_profiles
+                                            .for_backend(super::gpu_backend::GpuBackendKind::Rocm)
+                                            .clone(),
+                                    }
+                                })
+                            })
+                            .collect(),
+                    },
+                    cuda: GpuKernelBackendAdapterReport {
+                        architecture_status: "declared",
+                        descriptor_status: "shared_contract_bound",
+                        module_format: "nvrtc.cuda_source",
+                        executable_now: false,
+                        reason: Some(
+                            "CUDA source/kernel package shape is first-class, but live CUDA runtime execution waits for NVIDIA hardware validation.",
+                        ),
+                        kernels: kernel_module
+                            .kernels
+                            .iter()
+                            .filter_map(|name| {
+                                cuda_descriptors.get(name).map(|descriptor| {
+                                    GpuKernelBackendKernelReport {
+                                        kernel_name: descriptor.kernel_name.clone(),
+                                        entry_point: Some(descriptor.kernel_name.clone()),
+                                        entry_symbol: None,
+                                        param_layout: descriptor.param_layout.clone(),
+                                        module_format: None,
+                                        execution_model: None,
+                                        entry_directive: None,
+                                        parameter_state_space: None,
+                                        shared_contract: descriptor.shared_contract.clone(),
+                                        backend_limits: backend_limit_profiles
+                                            .for_backend(super::gpu_backend::GpuBackendKind::Cuda)
                                             .clone(),
                                     }
                                 })
@@ -376,6 +450,24 @@ pub(super) fn build_gpu_kernel_package(typed: &hir::TypedModule) -> GpuKernelPac
                     module_format: "metal.compute_source",
                     executable_now: cfg!(target_vendor = "apple"),
                     reason: None,
+                    kernels: Vec::new(),
+                },
+                rocm: GpuKernelBackendAdapterReport {
+                    architecture_status: "declared",
+                    descriptor_status: "shared_contract_bound",
+                    module_format: "hiprtc.source",
+                    executable_now: cfg!(target_os = "linux"),
+                    reason: None,
+                    kernels: Vec::new(),
+                },
+                cuda: GpuKernelBackendAdapterReport {
+                    architecture_status: "declared",
+                    descriptor_status: "shared_contract_bound",
+                    module_format: "nvrtc.cuda_source",
+                    executable_now: false,
+                    reason: Some(
+                        "CUDA source/kernel package shape is first-class, but live CUDA runtime execution waits for NVIDIA hardware validation.",
+                    ),
                     kernels: Vec::new(),
                 },
                 spirv: GpuKernelBackendAdapterReport {

@@ -1,4 +1,4 @@
-use super::gpu_kernel_metal::{metal_kernel_launch_descriptors, MetalKernelLaunchDescriptor};
+use super::gpu_kernel_source::{gpu_kernel_launch_descriptors, GpuKernelLaunchDescriptor};
 use super::*;
 use std::collections::BTreeMap;
 
@@ -70,7 +70,7 @@ pub(super) struct LlvmFuncCtx {
     pub(super) local_types: BTreeMap<String, ast::Type>,
     pub(super) struct_defs: HashMap<String, ast::Struct>,
     pub(super) enum_defs: HashMap<String, ast::Enum>,
-    pub(super) gpu_kernel_launch_descriptors: HashMap<String, MetalKernelLaunchDescriptor>,
+    pub(super) gpu_kernel_launch_descriptors: HashMap<String, GpuKernelLaunchDescriptor>,
     pub(super) current_namespace: String,
     pub(super) function_return_ty: String,
     pub(super) alloca_prologue: String,
@@ -87,7 +87,7 @@ impl LlvmFuncCtx {
         local_types: BTreeMap<String, ast::Type>,
         struct_defs: HashMap<String, ast::Struct>,
         enum_defs: HashMap<String, ast::Enum>,
-        gpu_kernel_launch_descriptors: HashMap<String, MetalKernelLaunchDescriptor>,
+        gpu_kernel_launch_descriptors: HashMap<String, GpuKernelLaunchDescriptor>,
         function_return_ty: String,
         wrapped_indices: HashMap<String, HashSet<usize>>,
         extern_link_symbols: HashMap<String, String>,

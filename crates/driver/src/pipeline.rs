@@ -23,8 +23,8 @@ mod clif;
 mod gpu_backend;
 #[path = "pipeline/gpu_kernel_layout.rs"]
 mod gpu_kernel_layout;
-#[path = "pipeline/gpu_kernel_metal.rs"]
-mod gpu_kernel_metal;
+#[path = "pipeline/gpu_kernel_source.rs"]
+mod gpu_kernel_source;
 #[path = "pipeline/gpu_kernel_nvptx.rs"]
 mod gpu_kernel_nvptx;
 #[path = "pipeline/gpu_kernel_spirv.rs"]
@@ -60,7 +60,7 @@ pub(crate) use self::gpu_backend::gpu_backend_report_json;
 use self::gpu_backend::{
     fir_module_uses_gpu, gpu_backend_execution_diagnostics, module_uses_gpu, resolve_gpu_backend,
 };
-use self::gpu_kernel_metal::{metal_kernel_descriptor_strings, metal_kernel_launch_descriptors};
+use self::gpu_kernel_source::{gpu_kernel_descriptor_strings, gpu_kernel_launch_descriptors};
 pub(crate) use self::graph::embedded_core_stdlib_module_source;
 use self::graph::*;
 use self::linker_support::{
@@ -389,6 +389,8 @@ struct SuccessfulBuildCacheEntry {
     module_name: String,
     profile: String,
     backend: String,
+    #[serde(rename = "compilerFingerprint", default)]
+    compiler_fingerprint: String,
     manifest_fingerprint: Option<String>,
     dependency_graph_hash: Option<String>,
     pgo_signature: String,

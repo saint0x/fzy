@@ -72,6 +72,9 @@ pub(crate) fn render_native_runtime_shim(
 #include <crt_externs.h>
 #endif
 #include <dirent.h>
+#if defined(__linux__)
+#include <dlfcn.h>
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>

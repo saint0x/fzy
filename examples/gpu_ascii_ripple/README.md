@@ -2,13 +2,14 @@
 
 This example is a more visual GPU/CPU hybrid project:
 
-- a custom Fzy-authored Metal GPU kernel generates ripple-band intensity frames
+- a custom Fzy-authored GPU kernel generates ripple-band intensity frames
 - the CPU downloads each frame, aggregates it with SIMD reductions, and renders ASCII output
 - interactive direct runs get a live in-place animation that loops until the process is interrupted; non-interactive runs fall back to deterministic frame dumps
 
 What it proves:
 
 - live `metal` kernel execution on Apple
+- shared-source lowering for native GPU backends
 - custom integer kernel logic written directly in Fzy
 - CPU-side aggregation and presentation over downloaded GPU output
 - a real terminal renderer contract instead of a silent validation harness
@@ -28,7 +29,7 @@ fz ci artifacts/gpu_ascii_ripple.trace.fozzy --json
 
 Notes:
 
-- live execution today is `metal` on Apple
+- live execution today is `metal` on Apple, with the same shared GPU source renderer used by ROCm
 - the kernel is authored in Fzy and lowered through the shared GPU launch/package contract
 - host-backed runs render the same GPU frames plus `sum`, `min`, `max`, and `hot` counts for each frame
 - override render mode with `FZ_GPU_ASCII_RENDER=animate` or `FZ_GPU_ASCII_RENDER=frames`

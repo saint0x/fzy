@@ -291,7 +291,7 @@ pub(crate) fn llvm_emit_complex_expr(
                     .gpu_kernel_launch_descriptors
                     .get(kernel_name)
                     .ok_or_else(|| {
-                        anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`")
+                        anyhow!("missing GPU kernel launch descriptor for `{kernel_name}`")
                     })?
                     .clone();
                 let symbol = native_mangle_symbol(
@@ -309,12 +309,12 @@ pub(crate) fn llvm_emit_complex_expr(
                     .get(&descriptor.source)
                     .copied()
                     .ok_or_else(|| {
-                        anyhow!("missing native string literal id for Metal source `{kernel_name}`")
+                        anyhow!("missing native string literal id for GPU source `{kernel_name}`")
                     })?;
                 let layout_id = string_literal_ids
                     .get(&descriptor.param_layout)
                     .copied()
-                    .ok_or_else(|| anyhow!("missing native string literal id for Metal launch layout `{kernel_name}`"))?;
+                    .ok_or_else(|| anyhow!("missing native string literal id for GPU launch layout `{kernel_name}`"))?;
                 let grid =
                     llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, "i32")?;
                 let block =

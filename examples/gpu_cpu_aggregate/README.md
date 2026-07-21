@@ -3,6 +3,7 @@
 This example shows a real hybrid pipeline:
 
 - live `metal` GPU execution on Apple
+- live `rocm` GPU execution on Linux through HIP/HIPRTC
 - integer GPU kernel output downloaded back to the host
 - CPU SIMD aggregation over the downloaded values
 - a real aggregate struct summary reported to the terminal
@@ -24,6 +25,6 @@ fz ci artifacts/gpu_cpu_aggregate.trace.fozzy --json
 
 Notes:
 
-- live execution today is `metal` on Apple
+- live execution today is `metal` on Apple and `rocm` on Linux
 - the aggregate report is a real CPU-side struct value, not a log-only convention
 - the recorded native trace includes the live GPU launch/wait/download lifecycle for the GPU phase

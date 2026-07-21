@@ -115,7 +115,7 @@ pub(super) fn clif_emit_call_expr(
                 .gpu_kernel_launch_descriptors
                 .get(kernel_name)
                 .ok_or_else(|| {
-                    anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`")
+                    anyhow!("missing GPU kernel launch descriptor for `{kernel_name}`")
                 })?;
             let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
             let kernel_id = ctx
@@ -130,7 +130,7 @@ pub(super) fn clif_emit_call_expr(
                 .get(&descriptor.source)
                 .copied()
                 .ok_or_else(|| {
-                    anyhow!("missing native string literal id for Metal source `{kernel_name}`")
+                    anyhow!("missing native string literal id for GPU source `{kernel_name}`")
                 })?;
             let layout_id = ctx
                 .string_literal_ids
@@ -138,7 +138,7 @@ pub(super) fn clif_emit_call_expr(
                 .copied()
                 .ok_or_else(|| {
                     anyhow!(
-                        "missing native string literal id for Metal launch layout `{kernel_name}`"
+                        "missing native string literal id for GPU launch layout `{kernel_name}`"
                     )
                 })?;
             let mut grid = clif_emit_expr(builder, ctx, &args[1], locals, next_var)?;

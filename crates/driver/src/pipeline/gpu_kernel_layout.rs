@@ -46,6 +46,8 @@ pub(crate) struct SharedGpuBackendLimitProfile {
 #[derive(Debug, Clone)]
 pub(crate) struct SharedGpuBackendLimitProfiles {
     pub(crate) metal: SharedGpuBackendLimitProfile,
+    pub(crate) rocm: SharedGpuBackendLimitProfile,
+    pub(crate) cuda: SharedGpuBackendLimitProfile,
     pub(crate) spirv: SharedGpuBackendLimitProfile,
     pub(crate) nvptx: SharedGpuBackendLimitProfile,
 }
@@ -146,6 +148,8 @@ impl SharedGpuBackendLimitProfiles {
     pub(crate) fn to_json(&self) -> Value {
         serde_json::json!({
             "metal": self.metal.to_json(),
+            "rocm": self.rocm.to_json(),
+            "cuda": self.cuda.to_json(),
             "spirv": self.spirv.to_json(),
             "nvptx": self.nvptx.to_json(),
         })
@@ -157,6 +161,8 @@ impl SharedGpuBackendLimitProfiles {
     ) -> &SharedGpuBackendLimitProfile {
         match kind {
             super::gpu_backend::GpuBackendKind::Metal => &self.metal,
+            super::gpu_backend::GpuBackendKind::Rocm => &self.rocm,
+            super::gpu_backend::GpuBackendKind::Cuda => &self.cuda,
             super::gpu_backend::GpuBackendKind::Spirv => &self.spirv,
             super::gpu_backend::GpuBackendKind::Nvptx => &self.nvptx,
         }
@@ -207,6 +213,11 @@ pub(crate) fn shared_gpu_backend_limit_profiles() -> SharedGpuBackendLimitProfil
             "metal.compute_source",
             Some("host_lifecycle_and_kernel_launch_live"),
         ),
+        rocm: shared_gpu_backend_limit_profile(
+            "hiprtc.source",
+            Some("host_lifecycle_and_kernel_launch_live"),
+        ),
+        cuda: shared_gpu_backend_limit_profile("nvrtc.cuda_source", None),
         spirv: SharedGpuBackendLimitProfile {
             module_format: "spirv.binary_module",
             execution_model: Some("GLCompute"),

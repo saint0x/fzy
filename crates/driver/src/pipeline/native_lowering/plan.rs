@@ -69,7 +69,7 @@ pub(crate) fn build_native_canonical_plan_with_task_symbols(
 
 pub(crate) fn collect_native_string_literals_with_gpu(fir: &fir::FirModule) -> Vec<String> {
     let mut string_literals = collect_native_string_literals(fir);
-    if let Ok(extra_gpu_strings) = metal_kernel_descriptor_strings(fir) {
+    if let Ok(extra_gpu_strings) = gpu_kernel_descriptor_strings(fir) {
         let mut merged = string_literals.into_iter().collect::<HashSet<_>>();
         for value in extra_gpu_strings {
             merged.insert(value);

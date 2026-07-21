@@ -153,6 +153,14 @@ fn compile_file_reuses_successful_build_cache_for_warm_noop() {
         .get("source_stamps")
         .and_then(|value| value.as_array())
         .expect("build cache should record source stamps");
+    let compiler_fingerprint = cache_json
+        .get("compilerFingerprint")
+        .and_then(|value| value.as_str())
+        .expect("build cache should record compiler/runtime fingerprint");
+    assert!(
+        !compiler_fingerprint.is_empty(),
+        "build cache compiler/runtime fingerprint should not be empty"
+    );
     assert!(
         !source_stamps.is_empty(),
         "build cache should track source inputs for warm validation"

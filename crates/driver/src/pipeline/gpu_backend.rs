@@ -7,16 +7,20 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GpuBackendKind {
     Metal,
+    Rocm,
+    Cuda,
     Spirv,
     Nvptx,
 }
 
 impl GpuBackendKind {
-    pub(crate) const ALL: [Self; 3] = [Self::Metal, Self::Spirv, Self::Nvptx];
+    pub(crate) const ALL: [Self; 5] = [Self::Metal, Self::Rocm, Self::Cuda, Self::Spirv, Self::Nvptx];
 
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "metal" => Some(Self::Metal),
+            "rocm" | "hip" => Some(Self::Rocm),
+            "cuda" => Some(Self::Cuda),
             "spirv" => Some(Self::Spirv),
             "nvptx" => Some(Self::Nvptx),
             _ => None,
@@ -26,6 +30,8 @@ impl GpuBackendKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Metal => "metal",
+            Self::Rocm => "rocm",
+            Self::Cuda => "cuda",
             Self::Spirv => "spirv",
             Self::Nvptx => "nvptx",
         }
@@ -49,13 +55,45 @@ impl GpuBackendKind {
                     "Metal requires an Apple host/runtime and the current target is not Apple."
                 },
             },
+            Self::Rocm => GpuBackendAdapter {
+                kind: self,
+                architecture_status: "declared",
+                execution_status: "host_lifecycle_and_kernel_launch_live",
+                host_support: if cfg!(target_os = "linux") {
+                    "host_supported"
+                } else {
+                    "host_unsupported"
+                },
+                executable_now: cfg!(target_os = "linux"),
+                reason: if cfg!(target_os = "linux") {
+                    "ROCm host GPU lifecycle and kernel launch execution are available on Linux through HIP/hiprtc and the shared GPU backend contract."
+                } else {
+                    "ROCm requires a Linux host with HIP/hiprtc runtime libraries."
+                },
+            },
+            Self::Cuda => GpuBackendAdapter {
+                kind: self,
+                architecture_status: "declared",
+                execution_status: "shared_contract_bound_not_executable",
+                host_support: if cfg!(target_os = "linux") {
+                    "host_supported"
+                } else {
+                    "host_unsupported"
+                },
+                executable_now: false,
+                reason: if cfg!(target_os = "linux") {
+                    "CUDA source/kernel package shape is first-class, but the live CUDA runtime path waits for NVIDIA hardware validation."
+                } else {
+                    "CUDA requires a Linux host with NVIDIA CUDA runtime libraries."
+                },
+            },
             Self::Spirv => GpuBackendAdapter {
                 kind: self,
                 architecture_status: "declared",
                 execution_status: "shared_contract_bound_not_executable",
                 host_support: "toolchain_not_integrated",
                 executable_now: false,
-                reason: "SPIR-V/Vulkan adapter architecture is declared and now consumes the shared kernel package/launch layout contract, but codegen/runtime/toolchain integration is not landed yet.",
+                reason: "SPIR-V/Vulkan package architecture consumes the shared kernel package/launch layout contract, but Vulkan execution is not the native runtime target for this checkout.",
             },
             Self::Nvptx => GpuBackendAdapter {
                 kind: self,
@@ -63,7 +101,7 @@ impl GpuBackendKind {
                 execution_status: "shared_contract_bound_not_executable",
                 host_support: "toolchain_not_integrated",
                 executable_now: false,
-                reason: "NVPTX/CUDA adapter architecture is declared and now consumes the shared kernel package/launch layout contract, but codegen/runtime/toolchain integration is not landed yet.",
+                reason: "NVPTX package architecture consumes the shared kernel package/launch layout contract as CUDA's low-level artifact shape; use `cuda` for live NVIDIA execution.",
             },
         }
     }
@@ -147,15 +185,23 @@ pub(crate) fn resolve_gpu_backend(
         .map(|value| value.to_string())
         .or_else(|| std::env::var("FZ_GPU_BACKEND").ok());
     let Some(explicit) = explicit else {
-        return Ok(module_uses_gpu.then_some(GpuBackendKind::Metal.adapter()));
+        return Ok(module_uses_gpu.then_some(default_gpu_backend().adapter()));
     };
     let kind = GpuBackendKind::parse(&explicit).ok_or_else(|| {
         anyhow!(
-            "unknown GPU backend `{}`; expected `metal`, `spirv`, or `nvptx`",
+            "unknown GPU backend `{}`; expected `metal`, `rocm`, `cuda`, `spirv`, or `nvptx`",
             explicit.trim()
         )
     })?;
     Ok(Some(kind.adapter()))
+}
+
+fn default_gpu_backend() -> GpuBackendKind {
+    if cfg!(target_vendor = "apple") {
+        GpuBackendKind::Metal
+    } else {
+        GpuBackendKind::Rocm
+    }
 }
 
 pub(crate) fn gpu_backend_execution_diagnostics(
@@ -178,9 +224,11 @@ pub(crate) fn gpu_backend_execution_diagnostics(
             Some(adapter.reason.to_string()),
         )
         .with_catalog_key("gpu.backend_declared_not_executable");
-        if adapter.kind == GpuBackendKind::Metal && adapter.host_support == "host_unsupported" {
+        if matches!(adapter.kind, GpuBackendKind::Metal | GpuBackendKind::Rocm | GpuBackendKind::Cuda)
+            && adapter.host_support == "host_unsupported"
+        {
             diagnostic = diagnostic.with_fix(
-                "build on an Apple host for `metal`, or choose `spirv` / `nvptx` once those live adapters land",
+                "build on a host with the selected GPU runtime, or choose the backend that matches this machine",
             );
         } else {
             diagnostic = diagnostic.with_fix(
@@ -204,7 +252,7 @@ pub(crate) fn gpu_backend_execution_diagnostics(
                 unsupported_list
             ),
             Some(match adapter.kind {
-                GpuBackendKind::Metal => "This chunk makes the Metal host/runtime path live for device enumeration, device info, GPU buffer allocation/free, host uploads/downloads, downloaded Vec indexing, and host-side slice/view construction. Kernel launch, waits, and device-side execution remain blocked until the next backend/runtime slice.".to_string(),
+                GpuBackendKind::Metal | GpuBackendKind::Rocm | GpuBackendKind::Cuda => adapter.reason.to_string(),
                 GpuBackendKind::Spirv | GpuBackendKind::Nvptx => adapter.reason.to_string(),
             }),
         )
@@ -244,12 +292,12 @@ fn unsupported_gpu_operations(
     for function in &typed.typed_functions {
         match function.execution_space {
             ast::ExecutionSpace::Kernel => {
-                if backend != GpuBackendKind::Metal {
+                if !matches!(backend, GpuBackendKind::Metal | GpuBackendKind::Rocm | GpuBackendKind::Cuda) {
                     unsupported.insert("kernel_fn".to_string());
                 }
             }
             ast::ExecutionSpace::Device => {
-                if backend != GpuBackendKind::Metal {
+                if !matches!(backend, GpuBackendKind::Metal | GpuBackendKind::Rocm | GpuBackendKind::Cuda) {
                     unsupported.insert("device_fn".to_string());
                 }
             }
@@ -264,7 +312,7 @@ fn unsupported_gpu_operations(
 
 fn supported_gpu_calls(backend: GpuBackendKind) -> BTreeSet<&'static str> {
     match backend {
-        GpuBackendKind::Metal => BTreeSet::from([
+        GpuBackendKind::Metal | GpuBackendKind::Rocm => BTreeSet::from([
             "gpu.device_count",
             "gpu.default_device",
             "gpu.device_name",
@@ -311,7 +359,7 @@ fn supported_gpu_calls(backend: GpuBackendKind) -> BTreeSet<&'static str> {
             "gpu.store_i32",
             "gpu.store_u32",
         ]),
-        GpuBackendKind::Spirv | GpuBackendKind::Nvptx => BTreeSet::new(),
+        GpuBackendKind::Cuda | GpuBackendKind::Spirv | GpuBackendKind::Nvptx => BTreeSet::new(),
     }
 }
 

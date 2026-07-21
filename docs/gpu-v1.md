@@ -4,11 +4,12 @@ This document describes the production GPU surface that ships in this checkout t
 
 ## Scope
 
-Current GPU support is built around one backend-neutral contract and one live backend:
+Current GPU support is built around one backend-neutral contract and two live native backends:
 
-- shared kernel package and launch ABI for `metal`, `spirv`, and `nvptx`
+- shared kernel package and launch ABI for `metal`, `rocm`, `cuda`, `spirv`, and `nvptx`
 - live executable `metal` runtime on Apple
-- truthful non-executable adapter diagnostics for `spirv` and `nvptx`
+- live executable `rocm` runtime on Linux through HIP/HIPRTC
+- truthful non-executable adapter diagnostics for `cuda`, `spirv`, and `nvptx`
 
 There is no simulation path in the production contract.
 
@@ -17,6 +18,13 @@ There is no simulation path in the production contract.
 - `metal`
   - live native backend on Apple
   - supports device discovery, buffer allocation, slicing, upload/download, launch, `wait`, and `wait_async`
+- `rocm`
+  - live native backend on Linux
+  - uses dynamic HIP/HIPRTC loading, generated HIP source, module loading, buffer allocation, slicing, upload/download, launch, `wait`, and `wait_async`
+- `cuda`
+  - declared adapter bound to the shared launch/kernel package contract
+  - emits CUDA-shaped source package metadata
+  - not yet executable until live NVIDIA hardware validation is complete
 - `spirv`
   - declared adapter bound to the shared launch/kernel package contract
   - not yet executable
@@ -141,7 +149,7 @@ The canonical production-shaped example is:
 
 `gpu_ascii_ripple` is the terminal-first showcase example:
 
-- it runs a custom Fzy-authored `metal` kernel
+- it runs a custom Fzy-authored GPU kernel
 - downloads each frame back to the host
 - aggregates with CPU SIMD reductions
 - animates in place on interactive terminals until interrupted
@@ -161,3 +169,21 @@ fz ci artifacts/gpu_metal_image_example.trace.fozzy --json
 ```
 
 For cross-platform verification without live execution, `fz check` and `fz verify` still exercise the shared kernel package, launch ABI, and verifier contract.
+
+Recommended Linux/ROCm workflow:
+
+```bash
+FZ_GPU_BACKEND=rocm fz check examples/gpu_cpu_aggregate --json
+FZ_GPU_BACKEND=rocm fz build examples/gpu_cpu_aggregate --backend llvm --json
+examples/gpu_cpu_aggregate/.fz/build/gpu_cpu_aggregate
+```
+
+Validated ROCm evidence on the AMD GMK host:
+
+```text
+gpu_cpu_aggregate device=AMD Radeon(TM) 8060S Graphics
+gpu_cpu_aggregate sum=111
+gpu_cpu_aggregate min=11
+gpu_cpu_aggregate max=19
+gpu_cpu_aggregate status=ok pipeline=gpu_then_cpu_simd_aggregate
+```
