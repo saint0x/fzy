@@ -335,10 +335,8 @@ pub(super) fn build_gpu_kernel_package(typed: &hir::TypedModule) -> GpuKernelPac
                         architecture_status: "declared",
                         descriptor_status: "shared_contract_bound",
                         module_format: "nvrtc.cuda_source",
-                        executable_now: false,
-                        reason: Some(
-                            "CUDA source/kernel package shape is first-class, but live CUDA runtime execution waits for NVIDIA hardware validation.",
-                        ),
+                        executable_now: cfg!(target_os = "linux"),
+                        reason: None,
                         kernels: kernel_module
                             .kernels
                             .iter()
@@ -397,12 +395,10 @@ pub(super) fn build_gpu_kernel_package(typed: &hir::TypedModule) -> GpuKernelPac
                     },
                     nvptx: GpuKernelBackendAdapterReport {
                         architecture_status: "declared",
-                        descriptor_status: "shared_contract_bound_not_executable",
+                        descriptor_status: "shared_contract_bound",
                         module_format: "ptx.assembly_text",
-                        executable_now: false,
-                        reason: Some(
-                            "NVPTX/CUDA codegen and runtime are not live yet, but this adapter now consumes the shared kernel package and launch layout contract.",
-                        ),
+                        executable_now: cfg!(target_os = "linux"),
+                        reason: None,
                         kernels: kernel_module
                             .kernels
                             .iter()
@@ -464,10 +460,8 @@ pub(super) fn build_gpu_kernel_package(typed: &hir::TypedModule) -> GpuKernelPac
                     architecture_status: "declared",
                     descriptor_status: "shared_contract_bound",
                     module_format: "nvrtc.cuda_source",
-                    executable_now: false,
-                    reason: Some(
-                        "CUDA source/kernel package shape is first-class, but live CUDA runtime execution waits for NVIDIA hardware validation.",
-                    ),
+                    executable_now: cfg!(target_os = "linux"),
+                    reason: None,
                     kernels: Vec::new(),
                 },
                 spirv: GpuKernelBackendAdapterReport {
@@ -482,12 +476,10 @@ pub(super) fn build_gpu_kernel_package(typed: &hir::TypedModule) -> GpuKernelPac
                 },
                 nvptx: GpuKernelBackendAdapterReport {
                     architecture_status: "declared",
-                    descriptor_status: "shared_contract_bound_not_executable",
+                    descriptor_status: "shared_contract_bound",
                     module_format: "ptx.assembly_text",
-                    executable_now: false,
-                    reason: Some(
-                        "NVPTX/CUDA codegen and runtime are not live yet, but this adapter now consumes the shared kernel package and launch layout contract.",
-                    ),
+                    executable_now: cfg!(target_os = "linux"),
+                    reason: None,
                     kernels: Vec::new(),
                 },
             },

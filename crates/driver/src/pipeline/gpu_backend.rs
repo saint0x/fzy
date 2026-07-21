@@ -14,7 +14,13 @@ pub(crate) enum GpuBackendKind {
 }
 
 impl GpuBackendKind {
-    pub(crate) const ALL: [Self; 5] = [Self::Metal, Self::Rocm, Self::Cuda, Self::Spirv, Self::Nvptx];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Metal,
+        Self::Rocm,
+        Self::Cuda,
+        Self::Spirv,
+        Self::Nvptx,
+    ];
 
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -74,15 +80,15 @@ impl GpuBackendKind {
             Self::Cuda => GpuBackendAdapter {
                 kind: self,
                 architecture_status: "declared",
-                execution_status: "shared_contract_bound_not_executable",
+                execution_status: "host_lifecycle_and_kernel_launch_live",
                 host_support: if cfg!(target_os = "linux") {
                     "host_supported"
                 } else {
                     "host_unsupported"
                 },
-                executable_now: false,
+                executable_now: cfg!(target_os = "linux"),
                 reason: if cfg!(target_os = "linux") {
-                    "CUDA source/kernel package shape is first-class, but the live CUDA runtime path waits for NVIDIA hardware validation."
+                    "CUDA host GPU lifecycle and kernel launch execution are available on Linux through CUDA Driver API/NVRTC and the shared GPU backend contract."
                 } else {
                     "CUDA requires a Linux host with NVIDIA CUDA runtime libraries."
                 },
@@ -98,10 +104,18 @@ impl GpuBackendKind {
             Self::Nvptx => GpuBackendAdapter {
                 kind: self,
                 architecture_status: "declared",
-                execution_status: "shared_contract_bound_not_executable",
-                host_support: "toolchain_not_integrated",
-                executable_now: false,
-                reason: "NVPTX package architecture consumes the shared kernel package/launch layout contract as CUDA's low-level artifact shape; use `cuda` for live NVIDIA execution.",
+                execution_status: "ptx_module_load_live",
+                host_support: if cfg!(target_os = "linux") {
+                    "host_supported"
+                } else {
+                    "host_unsupported"
+                },
+                executable_now: cfg!(target_os = "linux"),
+                reason: if cfg!(target_os = "linux") {
+                    "NVPTX emits PTX at build time with nvcc and executes it through CUDA Driver API module loading."
+                } else {
+                    "NVPTX requires a Linux host with NVIDIA CUDA compiler and driver support."
+                },
             },
         }
     }
@@ -224,8 +238,13 @@ pub(crate) fn gpu_backend_execution_diagnostics(
             Some(adapter.reason.to_string()),
         )
         .with_catalog_key("gpu.backend_declared_not_executable");
-        if matches!(adapter.kind, GpuBackendKind::Metal | GpuBackendKind::Rocm | GpuBackendKind::Cuda)
-            && adapter.host_support == "host_unsupported"
+        if matches!(
+            adapter.kind,
+            GpuBackendKind::Metal
+                | GpuBackendKind::Rocm
+                | GpuBackendKind::Cuda
+                | GpuBackendKind::Nvptx
+        ) && adapter.host_support == "host_unsupported"
         {
             diagnostic = diagnostic.with_fix(
                 "build on a host with the selected GPU runtime, or choose the backend that matches this machine",
@@ -292,12 +311,24 @@ fn unsupported_gpu_operations(
     for function in &typed.typed_functions {
         match function.execution_space {
             ast::ExecutionSpace::Kernel => {
-                if !matches!(backend, GpuBackendKind::Metal | GpuBackendKind::Rocm | GpuBackendKind::Cuda) {
+                if !matches!(
+                    backend,
+                    GpuBackendKind::Metal
+                        | GpuBackendKind::Rocm
+                        | GpuBackendKind::Cuda
+                        | GpuBackendKind::Nvptx
+                ) {
                     unsupported.insert("kernel_fn".to_string());
                 }
             }
             ast::ExecutionSpace::Device => {
-                if !matches!(backend, GpuBackendKind::Metal | GpuBackendKind::Rocm | GpuBackendKind::Cuda) {
+                if !matches!(
+                    backend,
+                    GpuBackendKind::Metal
+                        | GpuBackendKind::Rocm
+                        | GpuBackendKind::Cuda
+                        | GpuBackendKind::Nvptx
+                ) {
                     unsupported.insert("device_fn".to_string());
                 }
             }
@@ -312,7 +343,10 @@ fn unsupported_gpu_operations(
 
 fn supported_gpu_calls(backend: GpuBackendKind) -> BTreeSet<&'static str> {
     match backend {
-        GpuBackendKind::Metal | GpuBackendKind::Rocm => BTreeSet::from([
+        GpuBackendKind::Metal
+        | GpuBackendKind::Rocm
+        | GpuBackendKind::Cuda
+        | GpuBackendKind::Nvptx => BTreeSet::from([
             "gpu.device_count",
             "gpu.default_device",
             "gpu.device_name",
@@ -359,7 +393,7 @@ fn supported_gpu_calls(backend: GpuBackendKind) -> BTreeSet<&'static str> {
             "gpu.store_i32",
             "gpu.store_u32",
         ]),
-        GpuBackendKind::Cuda | GpuBackendKind::Spirv | GpuBackendKind::Nvptx => BTreeSet::new(),
+        GpuBackendKind::Spirv => BTreeSet::new(),
     }
 }
 

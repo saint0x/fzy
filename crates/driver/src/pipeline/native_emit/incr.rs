@@ -89,7 +89,8 @@ pub(crate) fn emit_native_incremental_binary(
     let _build_lock = acquire_incremental_build_lock(&build_dir)?;
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
-    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let gpu_backend = native_runtime_gpu_backend(lowered_fir)?;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir, gpu_backend);
     let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir);
     let runtime_shim_path = ensure_native_runtime_shim(
         &build_dir,
@@ -97,6 +98,7 @@ pub(crate) fn emit_native_incremental_binary(
         &spawn_task_symbols,
         &shim_plan.async_exports,
         &shim_plan.sync_exports,
+        gpu_backend,
     )?;
     let shim_obj_path = build_dir.join(format!("{artifact_stem}.incremental.runtime.o"));
     compile_runtime_shim_object(
@@ -185,7 +187,8 @@ pub(crate) fn emit_native_incremental_libraries(
     let _build_lock = acquire_incremental_build_lock(&build_dir)?;
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
-    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let gpu_backend = native_runtime_gpu_backend(lowered_fir)?;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir, gpu_backend);
     let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir);
     let runtime_shim_path = ensure_native_runtime_shim(
         &build_dir,
@@ -193,6 +196,7 @@ pub(crate) fn emit_native_incremental_libraries(
         &spawn_task_symbols,
         &shim_plan.async_exports,
         &shim_plan.sync_exports,
+        gpu_backend,
     )?;
     let shim_obj_path = build_dir.join(format!("{artifact_stem}.incremental.runtime.o"));
     compile_runtime_shim_object(

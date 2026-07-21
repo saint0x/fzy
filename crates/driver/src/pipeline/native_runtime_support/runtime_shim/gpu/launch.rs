@@ -251,7 +251,7 @@ static int32_t fz_gpu_launch_impl(
     return event_handle;
   }
 }
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_ROCM)
 static fz_gpu_pipeline_state* fz_gpu_pipeline_for_kernel(
     int32_t device_handle,
     int32_t source_id,
@@ -541,6 +541,320 @@ static int32_t fz_gpu_launch_impl(
   fz_set_last_error(0, 0, "");
   return event_handle;
 }
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_CUDA)
+static fz_gpu_pipeline_state* fz_gpu_pipeline_for_kernel(
+    int32_t device_handle,
+    int32_t source_id,
+    int32_t kernel_name_id
+) {
+  for (int i = 0; i < FZ_MAX_GPU_PIPELINES; i++) {
+    fz_gpu_pipeline_state* state = &fz_gpu_pipelines[i];
+    if (state->in_use
+        && state->device_handle == device_handle
+        && state->source_id == source_id
+        && state->kernel_name_id == kernel_name_id
+        && state->pipeline != NULL
+        && state->module != NULL) {
+      state->last_used_epoch = ++fz_gpu_pipeline_epoch;
+      return state;
+    }
+  }
+  fz_cuda_device_t device = 0;
+  fz_cuda_context_t context = NULL;
+  if (fz_gpu_cuda_device_for_handle(device_handle, &device, &context) != 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.launch failed: invalid device handle");
+    return NULL;
+  }
+  const char* source_c = (const char*)fz_native_str_ptr(source_id);
+  const char* kernel_c = (const char*)fz_native_str_ptr(kernel_name_id);
+  if (source_c == NULL || kernel_c == NULL || source_c[0] == '\0' || kernel_c[0] == '\0') {
+    fz_set_last_error(EINVAL, 3, "gpu.launch failed: missing kernel source or name");
+    return NULL;
+  }
+  fz_cuda_result_t cuda_status = fz_cuda.cuCtxSetCurrent(context);
+  if (cuda_status != FZ_CUDA_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(cuda_status));
+    return NULL;
+  }
+  fz_cuda_module_t module = NULL;
+  fz_cuda_function_t function = NULL;
+#if defined(FZ_GPU_BACKEND_NVPTX)
+  cuda_status = fz_cuda.cuModuleLoadData(&module, source_c);
+  if (cuda_status != FZ_CUDA_SUCCESS || module == NULL) {
+    fz_set_last_error(EINVAL, 3, fz_gpu_cuda_error_string(cuda_status));
+    return NULL;
+  }
+#else
+  fz_nvrtc_program_t program = NULL;
+  fz_nvrtc_result_t rtc_status = fz_cuda.nvrtcCreateProgram(&program, source_c, "fz_kernel.cu", 0, NULL, NULL);
+  if (rtc_status != FZ_NVRTC_SUCCESS || program == NULL) {
+    fz_set_last_error(EINVAL, 3, "gpu.launch failed: nvrtc program creation failed");
+    return NULL;
+  }
+  const char* arch = getenv("FZ_GPU_CUDA_ARCH");
+  const char* options[3];
+  int option_count = 0;
+  char arch_option[96];
+  options[option_count++] = "--std=c++17";
+  if (arch != NULL && arch[0] != '\0') {
+    if (strncmp(arch, "compute_", 8) == 0 || strncmp(arch, "sm_", 3) == 0) {
+      snprintf(arch_option, sizeof(arch_option), "--gpu-architecture=%s", arch);
+    } else {
+      snprintf(arch_option, sizeof(arch_option), "--gpu-architecture=compute_%s", arch);
+    }
+    options[option_count++] = arch_option;
+  } else {
+    int major = 0;
+    int minor = 0;
+    if (fz_cuda.cuDeviceGetAttribute(&major, FZ_CUDA_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device) == FZ_CUDA_SUCCESS
+        && fz_cuda.cuDeviceGetAttribute(&minor, FZ_CUDA_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device) == FZ_CUDA_SUCCESS
+        && major > 0) {
+      snprintf(arch_option, sizeof(arch_option), "--gpu-architecture=compute_%d%d", major, minor);
+      options[option_count++] = arch_option;
+    }
+  }
+  rtc_status = fz_cuda.nvrtcCompileProgram(program, option_count, options);
+  if (rtc_status != FZ_NVRTC_SUCCESS) {
+    size_t log_size = 0;
+    fz_cuda.nvrtcGetProgramLogSize(program, &log_size);
+    char* log = NULL;
+    if (log_size > 0) {
+      log = (char*)malloc(log_size + 1);
+      if (log != NULL) {
+        memset(log, 0, log_size + 1);
+        fz_cuda.nvrtcGetProgramLog(program, log);
+      }
+    }
+    fz_set_last_error(EINVAL, 3, log == NULL ? "gpu.launch failed: nvrtc compile failed" : log);
+    free(log);
+    fz_cuda.nvrtcDestroyProgram(&program);
+    return NULL;
+  }
+  size_t ptx_size = 0;
+  rtc_status = fz_cuda.nvrtcGetPTXSize(program, &ptx_size);
+  if (rtc_status != FZ_NVRTC_SUCCESS || ptx_size == 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.launch failed: nvrtc returned no PTX");
+    fz_cuda.nvrtcDestroyProgram(&program);
+    return NULL;
+  }
+  char* ptx = (char*)malloc(ptx_size);
+  if (ptx == NULL) {
+    fz_set_last_error(ENOMEM, 3, "gpu.launch failed: CUDA PTX allocation failed");
+    fz_cuda.nvrtcDestroyProgram(&program);
+    return NULL;
+  }
+  rtc_status = fz_cuda.nvrtcGetPTX(program, ptx);
+  fz_cuda.nvrtcDestroyProgram(&program);
+  if (rtc_status != FZ_NVRTC_SUCCESS) {
+    free(ptx);
+    fz_set_last_error(EINVAL, 3, "gpu.launch failed: nvrtc PTX extraction failed");
+    return NULL;
+  }
+  cuda_status = fz_cuda.cuModuleLoadData(&module, ptx);
+  free(ptx);
+  if (cuda_status != FZ_CUDA_SUCCESS || module == NULL) {
+    fz_set_last_error(EINVAL, 3, fz_gpu_cuda_error_string(cuda_status));
+    return NULL;
+  }
+#endif
+  cuda_status = fz_cuda.cuModuleGetFunction(&function, module, kernel_c);
+  if (cuda_status != FZ_CUDA_SUCCESS || function == NULL) {
+    fz_cuda.cuModuleUnload(module);
+    fz_set_last_error(EINVAL, 3, fz_gpu_cuda_error_string(cuda_status));
+    return NULL;
+  }
+  int32_t slot = fz_gpu_pipeline_alloc_slot();
+  if (slot <= 0) {
+    slot = fz_gpu_pipeline_evict_lru_slot();
+    if (slot <= 0) {
+      fz_cuda.cuModuleUnload(module);
+      fz_set_last_error(ENOSPC, 3, "gpu.launch failed: GPU pipeline registry full and no reusable slot was available");
+      return NULL;
+    }
+  }
+  fz_gpu_pipeline_state* state = &fz_gpu_pipelines[slot - 1];
+  state->device_handle = device_handle;
+  state->source_id = source_id;
+  state->kernel_name_id = kernel_name_id;
+  state->last_used_epoch = ++fz_gpu_pipeline_epoch;
+  state->pipeline = function;
+  state->module = module;
+  return state;
+}
+
+static int32_t fz_gpu_launch_impl(
+    int32_t kernel_name_id,
+    int32_t source_id,
+    int32_t layout_id,
+    int32_t grid,
+    int32_t block,
+    int argc,
+    uintptr_t a0,
+    uintptr_t a1,
+    uintptr_t a2,
+    uintptr_t a3
+) {
+  pthread_once(&fz_gpu_init_once, fz_gpu_runtime_init);
+  if (grid <= 0 || block <= 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.launch failed: grid and block must be > 0");
+    return 0;
+  }
+  const char* layout = (const char*)fz_native_str_ptr(layout_id);
+  if (layout == NULL || layout[0] == '\0') {
+    fz_set_last_error(EINVAL, 3, "gpu.launch failed: missing launch layout");
+    return 0;
+  }
+  uintptr_t raw_args[4] = {a0, a1, a2, a3};
+  const char* token = layout;
+  int32_t device_handle = 0;
+  int32_t slice_buffers[4] = {0, 0, 0, 0};
+  int32_t slice_offsets[4] = {0, 0, 0, 0};
+  int32_t slice_lens[4] = {0, 0, 0, 0};
+  int32_t slice_element_sizes[4] = {0, 0, 0, 0};
+  int slice_count = 0;
+  for (int arg = 0; arg < argc; arg++) {
+    const char* next = strchr(token, ',');
+    size_t token_len = next == NULL ? strlen(token) : (size_t)(next - token);
+    if (token_len == 0) {
+      fz_set_last_error(EINVAL, 3, "gpu.launch failed: malformed launch layout");
+      return 0;
+    }
+    if (token_len >= 6 && strncmp(token, "slice_", 6) == 0) {
+      if (slice_count >= 4) {
+        fz_set_last_error(EINVAL, 3, "gpu.launch failed: more than 4 slice args are unsupported");
+        return 0;
+      }
+      if (fz_gpu_slice_unpack(raw_args[arg], &slice_buffers[slice_count], &slice_offsets[slice_count], &slice_lens[slice_count]) != 0) {
+        fz_set_last_error(EINVAL, 3, "gpu.launch failed: expected a GpuSlice launch argument");
+        return 0;
+      }
+      if (slice_buffers[slice_count] <= 0 || slice_buffers[slice_count] > FZ_MAX_GPU_BUFFERS) {
+        fz_set_last_error(EINVAL, 3, "gpu.launch failed: invalid slice buffer handle");
+        return 0;
+      }
+      fz_gpu_buffer_state* buffer_state = &fz_gpu_buffers[slice_buffers[slice_count] - 1];
+      if (!buffer_state->in_use || buffer_state->buffer == NULL) {
+        fz_set_last_error(EINVAL, 3, "gpu.launch failed: invalid slice buffer handle");
+        return 0;
+      }
+      slice_element_sizes[arg] = buffer_state->element_size;
+      if (device_handle == 0) {
+        device_handle = buffer_state->device_handle;
+      } else if (device_handle != buffer_state->device_handle) {
+        fz_set_last_error(EINVAL, 3, "gpu.launch failed: all GPU slices must target the same device");
+        return 0;
+      }
+      slice_count++;
+    }
+    token = next == NULL ? token + token_len : next + 1;
+  }
+  if (device_handle == 0) {
+    device_handle = fz_native_gpu_default_device();
+    if (device_handle == 0) {
+      return 0;
+    }
+  }
+  fz_cuda_device_t device = 0;
+  fz_cuda_context_t context = NULL;
+  if (fz_gpu_cuda_device_for_handle(device_handle, &device, &context) != 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.launch failed: invalid device handle");
+    return 0;
+  }
+  (void)device;
+  fz_cuda_result_t status = fz_cuda.cuCtxSetCurrent(context);
+  if (status != FZ_CUDA_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
+    return 0;
+  }
+  fz_gpu_pipeline_state* pipeline = fz_gpu_pipeline_for_kernel(device_handle, source_id, kernel_name_id);
+  if (pipeline == NULL) {
+    return 0;
+  }
+
+  void* kernel_params[8];
+  int kernel_param_count = 0;
+  fz_cuda_deviceptr_t data_ptrs[4];
+  uint32_t len_values[4];
+  int32_t i32_values[4];
+  uint32_t u32_values[4];
+  float f32_values[4];
+  int slice_arg = 0;
+  int i32_arg = 0;
+  int u32_arg = 0;
+  int f32_arg = 0;
+  token = layout;
+  for (int arg = 0; arg < argc; arg++) {
+    const char* next = strchr(token, ',');
+    size_t token_len = next == NULL ? strlen(token) : (size_t)(next - token);
+    if (token_len >= 6 && strncmp(token, "slice_", 6) == 0) {
+      int32_t buffer_handle = 0;
+      int32_t offset = 0;
+      int32_t len = 0;
+      if (fz_gpu_slice_unpack(raw_args[arg], &buffer_handle, &offset, &len) != 0) {
+        fz_set_last_error(EINVAL, 3, "gpu.launch failed: expected a GpuSlice launch argument");
+        return 0;
+      }
+      fz_gpu_buffer_state* buffer_state = &fz_gpu_buffers[buffer_handle - 1];
+      fz_cuda_deviceptr_t base = (fz_cuda_deviceptr_t)(uintptr_t)buffer_state->buffer;
+      fz_cuda_deviceptr_t byte_offset = (fz_cuda_deviceptr_t)((uint64_t)(uint32_t)offset * (uint64_t)(uint32_t)slice_element_sizes[arg]);
+      data_ptrs[slice_arg] = base + byte_offset;
+      len_values[slice_arg] = (uint32_t)len;
+      kernel_params[kernel_param_count++] = &data_ptrs[slice_arg];
+      kernel_params[kernel_param_count++] = &len_values[slice_arg];
+      slice_arg++;
+    } else if (token_len == 3 && strncmp(token, "i32", 3) == 0) {
+      i32_values[i32_arg] = (int32_t)raw_args[arg];
+      kernel_params[kernel_param_count++] = &i32_values[i32_arg++];
+    } else if (token_len == 3 && strncmp(token, "u32", 3) == 0) {
+      u32_values[u32_arg] = (uint32_t)raw_args[arg];
+      kernel_params[kernel_param_count++] = &u32_values[u32_arg++];
+    } else if (token_len == 3 && strncmp(token, "f32", 3) == 0) {
+      union { uint32_t bits; float value; } cast;
+      cast.bits = (uint32_t)raw_args[arg];
+      f32_values[f32_arg] = cast.value;
+      kernel_params[kernel_param_count++] = &f32_values[f32_arg++];
+    } else {
+      fz_set_last_error(EINVAL, 3, "gpu.launch failed: unsupported CUDA launch param layout");
+      return 0;
+    }
+    token = next == NULL ? token + token_len : next + 1;
+  }
+
+  fz_cuda_stream_t stream = NULL;
+  status = fz_cuda.cuStreamCreate(&stream, 0);
+  if (status != FZ_CUDA_SUCCESS || stream == NULL) {
+    fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
+    return 0;
+  }
+  status = fz_cuda.cuLaunchKernel(
+      (fz_cuda_function_t)pipeline->pipeline,
+      (unsigned int)grid, 1, 1,
+      (unsigned int)block, 1, 1,
+      0,
+      stream,
+      kernel_params,
+      NULL);
+  if (status != FZ_CUDA_SUCCESS) {
+    fz_cuda.cuStreamDestroy(stream);
+    fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
+    return 0;
+  }
+  pthread_mutex_lock(&fz_gpu_lock);
+  int32_t event_handle = fz_gpu_event_alloc_slot();
+  if (event_handle > 0) {
+    fz_gpu_event_state* event = &fz_gpu_events[event_handle - 1];
+    event->device_handle = device_handle;
+    event->command_buffer = stream;
+  }
+  pthread_mutex_unlock(&fz_gpu_lock);
+  if (event_handle <= 0) {
+    fz_cuda.cuStreamDestroy(stream);
+    fz_set_last_error(ENOSPC, 3, "gpu.launch failed: GPU event registry full");
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return event_handle;
+}
 #endif
 
 int32_t fz_native_gpu_launch0(int32_t kernel_name_id, int32_t source_id, int32_t layout_id, int32_t grid, int32_t block) {
@@ -622,7 +936,7 @@ int32_t fz_native_gpu_wait(int32_t event_handle) {
   }
   fz_set_last_error(0, 0, "");
   return 0;
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_ROCM)
   fz_hip_stream_t stream = (fz_hip_stream_t)state->command_buffer;
   memset(state, 0, sizeof(*state));
   pthread_mutex_unlock(&fz_gpu_lock);
@@ -630,6 +944,30 @@ int32_t fz_native_gpu_wait(int32_t event_handle) {
   fz_hip.hipStreamDestroy(stream);
   if (status != FZ_HIP_SUCCESS) {
     fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+    return -1;
+  }
+  fz_set_last_error(0, 0, "");
+  return 0;
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_CUDA)
+  int32_t device_handle = state->device_handle;
+  fz_cuda_stream_t stream = (fz_cuda_stream_t)state->command_buffer;
+  memset(state, 0, sizeof(*state));
+  pthread_mutex_unlock(&fz_gpu_lock);
+  fz_cuda_device_t device = 0;
+  fz_cuda_context_t context = NULL;
+  if (fz_gpu_cuda_device_for_handle(device_handle, &device, &context) != 0) {
+    fz_cuda.cuStreamDestroy(stream);
+    fz_set_last_error(EINVAL, 3, "gpu.wait failed: invalid device handle");
+    return -1;
+  }
+  (void)device;
+  fz_cuda_result_t status = fz_cuda.cuCtxSetCurrent(context);
+  if (status == FZ_CUDA_SUCCESS) {
+    status = fz_cuda.cuStreamSynchronize(stream);
+  }
+  fz_cuda.cuStreamDestroy(stream);
+  if (status != FZ_CUDA_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
     return -1;
   }
   fz_set_last_error(0, 0, "");

@@ -29,6 +29,6 @@ fz run examples/gpu_metal_image --host-backends --json
 
 Notes:
 
-- live execution today is `metal` on Apple
-- `spirv` and `nvptx` share the same kernel-package and launch-ABI contract, but are not yet executable
+- live execution today is `metal` on Apple, `rocm` on Linux, and `cuda`/`nvptx` on Linux NVIDIA hosts
+- `spirv` shares the same kernel-package and launch-ABI contract, but is not yet executable
 - after a successful build, inspect `.fz/gpu-kernel-package.json` for the emitted shared launch contract

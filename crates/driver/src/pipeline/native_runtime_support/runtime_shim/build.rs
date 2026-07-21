@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 
-use super::super::super::gpu_backend::fir_module_uses_gpu;
+use super::super::super::gpu_backend::{fir_module_uses_gpu, resolve_gpu_backend, GpuBackendKind};
 use super::super::super::*;
 use super::super::ffi_exports::{
     NativeAsyncExport, NativeExportReturn, NativeFfiType, NativeSyncExport,
 };
-use super::render::render_native_runtime_shim;
+use super::render::render_native_runtime_shim_with_gpu_backend;
 
 pub(crate) fn ensure_native_runtime_shim(
     build_dir: &Path,
@@ -16,8 +16,14 @@ pub(crate) fn ensure_native_runtime_shim(
     task_symbols: &[String],
     async_exports: &[NativeAsyncExport],
     sync_exports: &[NativeSyncExport],
+    gpu_backend: Option<GpuBackendKind>,
 ) -> Result<PathBuf> {
     let mut hasher = Sha256::new();
+    if let Some(gpu_backend) = gpu_backend {
+        hasher.update(b"gpu-backend");
+        hasher.update(gpu_backend.as_str().as_bytes());
+        hasher.update([0u8]);
+    }
     for literal in string_literals {
         hasher.update(literal.as_bytes());
         hasher.update([0u8]);
@@ -55,11 +61,17 @@ pub(crate) fn ensure_native_runtime_shim(
             hasher.update([0u8]);
         }
     }
+    let rendered = render_native_runtime_shim_with_gpu_backend(
+        string_literals,
+        task_symbols,
+        async_exports,
+        sync_exports,
+        gpu_backend,
+    );
+    hasher.update(rendered.as_bytes());
     let digest = hasher.finalize();
     let tag = hex_encode(&digest[..8]);
     let runtime_shim_path = build_dir.join(format!("fz_native_runtime_{tag}.c"));
-    let rendered =
-        render_native_runtime_shim(string_literals, task_symbols, async_exports, sync_exports);
     write_atomic_text_file(&runtime_shim_path, &rendered).with_context(|| {
         format!(
             "failed writing native runtime shim source: {}",
@@ -142,4 +154,8 @@ pub(crate) fn compile_runtime_shim_object(
 
 pub(crate) fn native_runtime_shim_uses_objc(fir: &fir::FirModule) -> bool {
     cfg!(target_vendor = "apple") && fir_module_uses_gpu(fir)
+}
+
+pub(crate) fn native_runtime_gpu_backend(fir: &fir::FirModule) -> Result<Option<GpuBackendKind>> {
+    Ok(resolve_gpu_backend(fir_module_uses_gpu(fir), None)?.map(|adapter| adapter.kind))
 }

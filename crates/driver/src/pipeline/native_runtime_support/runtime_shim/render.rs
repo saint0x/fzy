@@ -1,3 +1,4 @@
+use super::super::super::gpu_backend::GpuBackendKind;
 use super::super::super::*;
 use super::super::ffi_exports::{NativeAsyncExport, NativeSyncExport};
 use super::core::runtime_shim_section_core;
@@ -27,11 +28,28 @@ fn escape_c_string(value: &str) -> String {
     escaped
 }
 
+#[cfg(test)]
 pub(crate) fn render_native_runtime_shim(
     string_literals: &[String],
     task_symbols: &[String],
     async_exports: &[NativeAsyncExport],
     sync_exports: &[NativeSyncExport],
+) -> String {
+    render_native_runtime_shim_with_gpu_backend(
+        string_literals,
+        task_symbols,
+        async_exports,
+        sync_exports,
+        None,
+    )
+}
+
+pub(crate) fn render_native_runtime_shim_with_gpu_backend(
+    string_literals: &[String],
+    task_symbols: &[String],
+    async_exports: &[NativeAsyncExport],
+    sync_exports: &[NativeSyncExport],
+    gpu_backend: Option<GpuBackendKind>,
 ) -> String {
     let mut literal_entries = String::new();
     for literal in string_literals {
@@ -123,7 +141,7 @@ extern char** environ;
         count
     ));
     c.push_str(&runtime_shim_section_core());
-    c.push_str(&runtime_shim_section_gpu());
+    c.push_str(&runtime_shim_section_gpu(gpu_backend));
     c.push_str(&runtime_shim_section_http());
     c.push_str(&runtime_shim_section_services());
     c.push_str(&runtime_shim_section_proc());

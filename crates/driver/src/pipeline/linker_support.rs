@@ -91,6 +91,9 @@ pub(super) fn linker_candidates() -> Vec<String> {
     } else if target.contains("linux") {
         candidates.push("/opt/rocm/llvm/bin/clang".to_string());
         candidates.push("/opt/rocm/core-7.14/lib/llvm/bin/clang".to_string());
+        for version in (15..=21).rev() {
+            candidates.push(format!("clang-{version}"));
+        }
         candidates.push("clang".to_string());
         candidates.push("cc".to_string());
         candidates.push("gcc".to_string());

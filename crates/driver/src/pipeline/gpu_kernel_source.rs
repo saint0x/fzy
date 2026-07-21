@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use super::gpu_backend::GpuBackendKind;
 use super::gpu_kernel_layout::{shared_gpu_kernel_contract, SharedGpuKernelContract};
@@ -54,19 +57,20 @@ pub(crate) fn gpu_kernel_launch_descriptors_from_kernel_module(
     Ok(descriptors)
 }
 
-pub(crate) fn gpu_kernel_descriptor_strings(fir: &fir::FirModule) -> Result<Vec<String>> {
+pub(crate) fn gpu_kernel_descriptor_strings(
+    fir: &fir::FirModule,
+    backend: GpuBackendKind,
+) -> Result<Vec<String>> {
     let mut values = Vec::new();
     let typed = synthesize_typed_module(fir);
     let module = kernel_ir::lower(&typed)
         .map_err(|diagnostics| anyhow!(render_kernel_ir_diagnostics(&diagnostics)))?;
-    for backend in [GpuBackendKind::Metal, GpuBackendKind::Rocm, GpuBackendKind::Cuda] {
-        for descriptor in gpu_kernel_launch_descriptors_from_kernel_module(&module, backend)?
-            .into_values()
-        {
-            values.push(descriptor.kernel_name);
-            values.push(descriptor.source);
-            values.push(descriptor.param_layout);
-        }
+    for descriptor in
+        gpu_kernel_launch_descriptors_from_kernel_module(&module, backend)?.into_values()
+    {
+        values.push(descriptor.kernel_name);
+        values.push(descriptor.source);
+        values.push(descriptor.param_layout);
     }
     values.sort();
     values.dedup();
@@ -134,13 +138,18 @@ fn render_gpu_module(
 ) -> Result<String> {
     let mut out = String::new();
     match backend {
-        GpuBackendKind::Metal => out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n"),
+        GpuBackendKind::Metal => {
+            out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n")
+        }
         GpuBackendKind::Rocm | GpuBackendKind::Cuda => {
             out.push_str(
-                "#include <stdint.h>\n#define uint unsigned int\ntypedef struct { unsigned int x; unsigned int y; unsigned int z; } fz_dim3;\n\n",
+                "#define uint unsigned int\ntypedef struct { unsigned int x; unsigned int y; unsigned int z; } fz_dim3;\n\n",
             );
         }
-        GpuBackendKind::Spirv | GpuBackendKind::Nvptx => {
+        GpuBackendKind::Nvptx => {
+            return render_nvptx_module(module, function_map, kernel);
+        }
+        GpuBackendKind::Spirv => {
             bail!(
                 "gpu backend `{}` has a declared package contract but no executable kernel source renderer",
                 backend.as_str()
@@ -195,10 +204,138 @@ fn render_gpu_module(
             .iter()
             .map(|param| (param.name.clone(), param.ty.clone()))
             .collect::<HashMap<_, _>>();
-        render_stmts(&function.body, 1, backend, &mut scope, function_map, &mut out)?;
+        render_stmts(
+            &function.body,
+            1,
+            backend,
+            &mut scope,
+            function_map,
+            &mut out,
+        )?;
         out.push_str("}\n\n");
     }
     Ok(out)
+}
+
+fn render_nvptx_module(
+    module: &kernel_ir::KernelModule,
+    function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+    kernel: &kernel_ir::KernelFunction,
+) -> Result<String> {
+    let cuda_source = render_gpu_module(module, function_map, kernel, GpuBackendKind::Cuda)?;
+    compile_cuda_source_to_ptx(&cuda_source)
+}
+
+fn compile_cuda_source_to_ptx(cuda_source: &str) -> Result<String> {
+    let nvcc = nvcc_tool();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "fozzylang-nvptx-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir)
+        .with_context(|| format!("failed creating NVPTX temp dir: {}", temp_dir.display()))?;
+    let source_path = temp_dir.join("fz_kernel.cu");
+    let ptx_path = temp_dir.join("fz_kernel.ptx");
+    let result = (|| {
+        std::fs::write(&source_path, cuda_source)
+            .with_context(|| format!("failed writing CUDA source: {}", source_path.display()))?;
+        let output = Command::new(&nvcc)
+            .arg("--ptx")
+            .arg("--std=c++17")
+            .arg(format!("--gpu-architecture={}", nvptx_arch()))
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&ptx_path)
+            .output()
+            .with_context(|| format!("failed launching NVPTX compiler `{}`", nvcc.display()))?;
+        if !output.status.success() {
+            bail!(
+                "NVPTX compilation failed with `{}`: {}",
+                nvcc.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        std::fs::read_to_string(&ptx_path)
+            .with_context(|| format!("failed reading generated PTX: {}", ptx_path.display()))
+    })();
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    result
+}
+
+fn nvcc_tool() -> PathBuf {
+    if let Ok(explicit) = std::env::var("FZ_NVCC") {
+        let explicit = explicit.trim();
+        if !explicit.is_empty() {
+            return PathBuf::from(explicit);
+        }
+    }
+    for candidate in ["nvcc", "/usr/local/cuda/bin/nvcc"] {
+        let path = Path::new(candidate);
+        if candidate.contains('/') && path.exists() {
+            return path.to_path_buf();
+        }
+        if !candidate.contains('/') {
+            return PathBuf::from(candidate);
+        }
+    }
+    PathBuf::from("nvcc")
+}
+
+fn nvptx_arch() -> String {
+    for key in ["FZ_GPU_NVPTX_ARCH", "FZ_GPU_CUDA_ARCH"] {
+        if let Ok(value) = std::env::var(key) {
+            let normalized = normalize_nvptx_arch(&value);
+            if !normalized.is_empty() {
+                return normalized;
+            }
+        }
+    }
+    if let Some(detected) = detect_nvidia_compute_arch() {
+        return detected;
+    }
+    "compute_80".to_string()
+}
+
+fn normalize_nvptx_arch(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with("compute_") || trimmed.starts_with("sm_") {
+        return trimmed.to_string();
+    }
+    let digits = trimmed
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if digits.is_empty() {
+        String::new()
+    } else {
+        format!("compute_{digits}")
+    }
+}
+
+fn detect_nvidia_compute_arch() -> Option<String> {
+    let output = Command::new("nvidia-smi")
+        .arg("--query-gpu=compute_cap")
+        .arg("--format=csv,noheader,nounits")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.lines().find_map(|line| {
+        let digits = line
+            .chars()
+            .filter(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        (!digits.is_empty()).then(|| format!("compute_{digits}"))
+    })
 }
 
 fn render_function_signature(
@@ -210,7 +347,9 @@ fn render_function_signature(
     let mut out = String::new();
     match (backend, is_kernel) {
         (GpuBackendKind::Metal, true) => out.push_str("kernel void "),
-        (GpuBackendKind::Rocm | GpuBackendKind::Cuda, true) => out.push_str("extern \"C\" __global__ void "),
+        (GpuBackendKind::Rocm | GpuBackendKind::Cuda, true) => {
+            out.push_str("extern \"C\" __global__ void ")
+        }
         (_, false) => {
             if backend != GpuBackendKind::Metal {
                 out.push_str("__device__ ");
@@ -218,7 +357,9 @@ fn render_function_signature(
             out.push_str(render_scalar_type(&function.return_type, backend)?);
             out.push(' ');
         }
-        (GpuBackendKind::Spirv | GpuBackendKind::Nvptx, true) => unreachable!("non-executable GPU backend should not render kernel source"),
+        (GpuBackendKind::Spirv | GpuBackendKind::Nvptx, true) => {
+            unreachable!("non-executable GPU backend should not render kernel source")
+        }
     }
     out.push_str(&render_function_name(&function.name));
     out.push('(');
@@ -406,7 +547,13 @@ fn render_stmts(
             }
             kernel_ir::KernelStmt::Store { base, index, value } => {
                 out.push_str(&pad);
-                out.push_str(&render_slice_access(base, index, backend, scope, function_map)?);
+                out.push_str(&render_slice_access(
+                    base,
+                    index,
+                    backend,
+                    scope,
+                    function_map,
+                )?);
                 out.push_str(" = ");
                 out.push_str(&render_expr(value, backend, scope, function_map)?);
                 out.push_str(";\n");
@@ -420,12 +567,26 @@ fn render_stmts(
                 out.push_str("if (");
                 out.push_str(&render_expr(condition, backend, scope, function_map)?);
                 out.push_str(") {\n");
-                render_stmts(then_body, indent + 1, backend, &mut scope.clone(), function_map, out)?;
+                render_stmts(
+                    then_body,
+                    indent + 1,
+                    backend,
+                    &mut scope.clone(),
+                    function_map,
+                    out,
+                )?;
                 out.push_str(&pad);
                 out.push('}');
                 if !else_body.is_empty() {
                     out.push_str(" else {\n");
-                    render_stmts(else_body, indent + 1, backend, &mut scope.clone(), function_map, out)?;
+                    render_stmts(
+                        else_body,
+                        indent + 1,
+                        backend,
+                        &mut scope.clone(),
+                        function_map,
+                        out,
+                    )?;
                     out.push_str(&pad);
                     out.push('}');
                 }
@@ -436,20 +597,34 @@ fn render_stmts(
                 out.push_str("while (");
                 out.push_str(&render_expr(condition, backend, scope, function_map)?);
                 out.push_str(") {\n");
-                render_stmts(body, indent + 1, backend, &mut scope.clone(), function_map, out)?;
+                render_stmts(
+                    body,
+                    indent + 1,
+                    backend,
+                    &mut scope.clone(),
+                    function_map,
+                    out,
+                )?;
                 out.push_str(&pad);
                 out.push_str("}\n");
             }
             kernel_ir::KernelStmt::Loop { body } => {
                 out.push_str(&pad);
                 out.push_str("while (true) {\n");
-                render_stmts(body, indent + 1, backend, &mut scope.clone(), function_map, out)?;
+                render_stmts(
+                    body,
+                    indent + 1,
+                    backend,
+                    &mut scope.clone(),
+                    function_map,
+                    out,
+                )?;
                 out.push_str(&pad);
                 out.push_str("}\n");
             }
             kernel_ir::KernelStmt::Break(value) => {
                 if value.is_some() {
-                bail!("GPU kernel lowering does not yet support valued `break`");
+                    bail!("GPU kernel lowering does not yet support valued `break`");
                 }
                 out.push_str(&pad);
                 out.push_str("break;\n");
@@ -524,7 +699,13 @@ fn render_expr(
                 .ok_or_else(|| anyhow!("GPU kernel lowering could not resolve `{callee}`"))?;
             let mut rendered = Vec::new();
             for (arg, param) in args.iter().zip(target.params.iter()) {
-                rendered.extend(render_call_arg(arg, &param.ty, backend, scope, function_map)?);
+                rendered.extend(render_call_arg(
+                    arg,
+                    &param.ty,
+                    backend,
+                    scope,
+                    function_map,
+                )?);
             }
             rendered.extend([
                 "fz_gid".to_string(),
@@ -610,7 +791,10 @@ fn render_intrinsic(
             render_expr(&args[2], backend, scope, function_map)?
         ),
         kernel_ir::KernelIntrinsic::SimdF32x4Splat => {
-            format!("float4({})", render_expr(&args[0], backend, scope, function_map)?)
+            format!(
+                "float4({})",
+                render_expr(&args[0], backend, scope, function_map)?
+            )
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Load => {
             let kernel_ir::KernelExpr::ArrayLiteral(items) = &args[0] else {
@@ -647,16 +831,28 @@ fn render_intrinsic(
             format!("(({value}[0] + {value}[1]) + ({value}[2] + {value}[3]))")
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Lane0 => {
-            format!("({}[0])", render_expr(&args[0], backend, scope, function_map)?)
+            format!(
+                "({}[0])",
+                render_expr(&args[0], backend, scope, function_map)?
+            )
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Lane1 => {
-            format!("({}[1])", render_expr(&args[0], backend, scope, function_map)?)
+            format!(
+                "({}[1])",
+                render_expr(&args[0], backend, scope, function_map)?
+            )
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Lane2 => {
-            format!("({}[2])", render_expr(&args[0], backend, scope, function_map)?)
+            format!(
+                "({}[2])",
+                render_expr(&args[0], backend, scope, function_map)?
+            )
         }
         kernel_ir::KernelIntrinsic::SimdF32x4Lane3 => {
-            format!("({}[3])", render_expr(&args[0], backend, scope, function_map)?)
+            format!(
+                "({}[3])",
+                render_expr(&args[0], backend, scope, function_map)?
+            )
         }
     })
 }

@@ -23,10 +23,10 @@ mod clif;
 mod gpu_backend;
 #[path = "pipeline/gpu_kernel_layout.rs"]
 mod gpu_kernel_layout;
-#[path = "pipeline/gpu_kernel_source.rs"]
-mod gpu_kernel_source;
 #[path = "pipeline/gpu_kernel_nvptx.rs"]
 mod gpu_kernel_nvptx;
+#[path = "pipeline/gpu_kernel_source.rs"]
+mod gpu_kernel_source;
 #[path = "pipeline/gpu_kernel_spirv.rs"]
 mod gpu_kernel_spirv;
 #[path = "pipeline/graph.rs"]
@@ -86,7 +86,7 @@ use self::native_runtime_support::{
     build_native_runtime_shim_plan, collect_async_c_exports, collect_extern_c_imports,
     collect_used_native_data_plane_imports, collect_used_native_runtime_imports,
     compile_runtime_shim_object, ensure_native_runtime_shim, is_extern_c_abi_function,
-    is_extern_c_import_decl, native_link_symbol_for_function,
+    is_extern_c_import_decl, native_link_symbol_for_function, native_runtime_gpu_backend,
     native_runtime_import_contract_errors, native_runtime_shim_uses_objc,
 };
 use self::native_runtime_tables::{

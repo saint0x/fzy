@@ -23,7 +23,8 @@ pub(super) fn emit_native_libraries_llvm(
 
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
-    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let gpu_backend = native_runtime_gpu_backend(lowered_fir)?;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir, gpu_backend);
     let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir);
     let runtime_shim_path = ensure_native_runtime_shim(
         &build_dir,
@@ -31,6 +32,7 @@ pub(super) fn emit_native_libraries_llvm(
         &spawn_task_symbols,
         &shim_plan.async_exports,
         &shim_plan.sync_exports,
+        gpu_backend,
     )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let llvm_ir = lower_llvm_ir(lowered_fir, enforce_contract_checks)?;
@@ -206,7 +208,8 @@ pub(super) fn emit_native_artifact_llvm(
     let bin_path = build_dir.join(artifact_stem);
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
-    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let gpu_backend = native_runtime_gpu_backend(lowered_fir)?;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir, gpu_backend);
     let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir);
     let runtime_shim_path = ensure_native_runtime_shim(
         &build_dir,
@@ -214,6 +217,7 @@ pub(super) fn emit_native_artifact_llvm(
         &spawn_task_symbols,
         &shim_plan.async_exports,
         &shim_plan.sync_exports,
+        gpu_backend,
     )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let llvm_ir = lower_llvm_ir(lowered_fir, enforce_contract_checks)?;

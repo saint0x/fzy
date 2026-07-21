@@ -4,12 +4,14 @@ This document describes the production GPU surface that ships in this checkout t
 
 ## Scope
 
-Current GPU support is built around one backend-neutral contract and two live native backends:
+Current GPU support is built around one backend-neutral contract and three live native backends:
 
 - shared kernel package and launch ABI for `metal`, `rocm`, `cuda`, `spirv`, and `nvptx`
 - live executable `metal` runtime on Apple
 - live executable `rocm` runtime on Linux through HIP/HIPRTC
-- truthful non-executable adapter diagnostics for `cuda`, `spirv`, and `nvptx`
+- live executable `cuda` runtime on Linux through the CUDA Driver API/NVRTC
+- live executable `nvptx` runtime on Linux through build-time PTX emission and CUDA Driver API module loading
+- truthful non-executable adapter diagnostics for `spirv`
 
 There is no simulation path in the production contract.
 
@@ -22,15 +24,14 @@ There is no simulation path in the production contract.
   - live native backend on Linux
   - uses dynamic HIP/HIPRTC loading, generated HIP source, module loading, buffer allocation, slicing, upload/download, launch, `wait`, and `wait_async`
 - `cuda`
-  - declared adapter bound to the shared launch/kernel package contract
-  - emits CUDA-shaped source package metadata
-  - not yet executable until live NVIDIA hardware validation is complete
+  - live native backend on Linux
+  - uses dynamic CUDA Driver API/NVRTC loading, generated self-contained CUDA source, PTX module loading, buffer allocation, slicing, upload/download, launch, `wait`, and `wait_async`
 - `spirv`
   - declared adapter bound to the shared launch/kernel package contract
   - not yet executable
 - `nvptx`
-  - declared adapter bound to the shared launch/kernel package contract
-  - not yet executable
+  - live native backend on Linux
+  - emits PTX assembly at build time with `nvcc`, embeds the PTX artifact, and loads it directly through the CUDA Driver API at launch time
 
 ## Authoring Model
 

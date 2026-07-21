@@ -300,8 +300,8 @@ Semantics:
   - `gpu.barrier()` cannot appear in divergent control flow, including through helper calls
   - unsupported kernel parameter shapes fail before backend lowering as stable launch-ABI diagnostics
 - Backend truth:
-  - live executable backend today is `metal` on Apple
-  - `spirv` and `nvptx` are first-class architecture adapters bound to the same shared kernel package and launch ABI, but are not yet executable
+  - live executable backends today are `metal` on Apple, `rocm` on Linux, and `cuda`/`nvptx` on Linux NVIDIA hosts
+  - `spirv` is a first-class architecture adapter bound to the same shared kernel package and launch ABI, but is not yet executable
 - Build/run artifacts:
   - GPU builds emit `.fz/gpu-kernel-package.json` and `.fz/gpu-kernel-package.md`
   - recorded native trace artifacts include GPU lifecycle and kernel-launch evidence

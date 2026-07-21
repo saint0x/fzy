@@ -44,7 +44,11 @@ pub(crate) fn build_native_canonical_plan_with_task_symbols(
     for (index, symbol) in spawn_task_symbols.iter().enumerate() {
         task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
     }
-    let string_literals = collect_native_string_literals_with_gpu(fir);
+    let gpu_backend = resolve_gpu_backend(fir_module_uses_gpu(fir), None)
+        .ok()
+        .flatten()
+        .map(|adapter| adapter.kind);
+    let string_literals = collect_native_string_literals_with_gpu(fir, gpu_backend);
     NativeCanonicalPlan {
         forced_main_return: compute_forced_main_return(fir, enforce_contract_checks),
         string_literal_ids: build_string_literal_ids(&string_literals),
@@ -67,9 +71,15 @@ pub(crate) fn build_native_canonical_plan_with_task_symbols(
     }
 }
 
-pub(crate) fn collect_native_string_literals_with_gpu(fir: &fir::FirModule) -> Vec<String> {
+pub(crate) fn collect_native_string_literals_with_gpu(
+    fir: &fir::FirModule,
+    backend: Option<super::super::gpu_backend::GpuBackendKind>,
+) -> Vec<String> {
     let mut string_literals = collect_native_string_literals(fir);
-    if let Ok(extra_gpu_strings) = gpu_kernel_descriptor_strings(fir) {
+    if let Some(backend) = backend {
+        let Ok(extra_gpu_strings) = gpu_kernel_descriptor_strings(fir, backend) else {
+            return string_literals;
+        };
         let mut merged = string_literals.into_iter().collect::<HashSet<_>>();
         for value in extra_gpu_strings {
             merged.insert(value);

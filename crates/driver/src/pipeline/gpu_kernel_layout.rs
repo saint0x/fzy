@@ -217,7 +217,10 @@ pub(crate) fn shared_gpu_backend_limit_profiles() -> SharedGpuBackendLimitProfil
             "hiprtc.source",
             Some("host_lifecycle_and_kernel_launch_live"),
         ),
-        cuda: shared_gpu_backend_limit_profile("nvrtc.cuda_source", None),
+        cuda: shared_gpu_backend_limit_profile(
+            "nvrtc.cuda_source",
+            Some("host_lifecycle_and_kernel_launch_live"),
+        ),
         spirv: SharedGpuBackendLimitProfile {
             module_format: "spirv.binary_module",
             execution_model: Some("GLCompute"),
@@ -244,7 +247,7 @@ pub(crate) fn shared_gpu_backend_limit_profiles() -> SharedGpuBackendLimitProfil
             supported_scalar_param_types: vec!["i32", "u32", "f32"],
             supported_slice_element_types: vec!["f32", "i32", "u32"],
             unsupported_shape_policy: "reject_outside_shared_contract",
-            runtime_status: "declared_not_executable",
+            runtime_status: "ptx_module_load_live",
         },
     }
 }

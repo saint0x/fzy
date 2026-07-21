@@ -21,7 +21,8 @@ pub(super) fn emit_native_libraries_cranelift(
 
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
-    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let runtime_gpu_backend = native_runtime_gpu_backend(lowered_fir)?;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir, runtime_gpu_backend);
     let spawn_task_symbols = collect_spawn_task_symbols(lowered_fir)
         .into_iter()
         .filter(|symbol| symbol != "main")
@@ -226,6 +227,7 @@ pub(super) fn emit_native_libraries_cranelift(
         &spawn_task_symbols,
         &shim_plan.async_exports,
         &shim_plan.sync_exports,
+        runtime_gpu_backend,
     )?;
     compile_runtime_shim_object(
         &runtime_shim_path,
@@ -484,7 +486,8 @@ pub(super) fn emit_native_artifact_cranelift(
     let bin_path = build_dir.join(artifact_stem);
     let shim_plan = build_native_runtime_shim_plan(fir)?;
     let lowered_fir = &shim_plan.lowered_fir;
-    let string_literals = collect_native_string_literals_with_gpu(lowered_fir);
+    let runtime_gpu_backend = native_runtime_gpu_backend(lowered_fir)?;
+    let string_literals = collect_native_string_literals_with_gpu(lowered_fir, runtime_gpu_backend);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -560,6 +563,7 @@ pub(super) fn emit_native_artifact_cranelift(
         &spawn_task_symbols,
         &shim_plan.async_exports,
         &shim_plan.sync_exports,
+        runtime_gpu_backend,
     )?;
 
     for function in &lowered_fir.typed_functions {

@@ -13,7 +13,11 @@ int32_t fz_native_gpu_default_device(void) {
   if (fz_gpu_device_count_cached <= 0) {
     const char* backend_error =
 #if defined(__linux__)
+#if defined(FZ_GPU_BACKEND_CUDA)
+        fz_gpu_runtime_error[0] == '\0' ? "gpu.default_device failed: no CUDA device available" : fz_gpu_runtime_error;
+#else
         fz_gpu_runtime_error[0] == '\0' ? "gpu.default_device failed: no ROCm device available" : fz_gpu_runtime_error;
+#endif
 #else
         "gpu.default_device failed: no Metal device available";
 #endif
@@ -38,7 +42,7 @@ int32_t fz_native_gpu_device_name(int32_t device_handle) {
     fz_set_last_error(0, 0, "");
     return fz_intern_slice(utf8 == NULL ? "" : utf8, utf8 == NULL ? 0 : strlen(utf8));
   }
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_ROCM)
   int device = 0;
   if (fz_gpu_hip_device_index_for_handle(device_handle, &device) != 0) {
     fz_set_last_error(EINVAL, 3, "gpu.device_name failed: invalid device handle");
@@ -49,6 +53,22 @@ int32_t fz_native_gpu_device_name(int32_t device_handle) {
   fz_hip_error_t status = fz_hip.hipDeviceGetName(name, (int)sizeof(name), device);
   if (status != FZ_HIP_SUCCESS) {
     fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return fz_intern_slice(name, strlen(name));
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_CUDA)
+  fz_cuda_device_t device = 0;
+  fz_cuda_context_t cuda_context = NULL;
+  if (fz_gpu_cuda_device_for_handle(device_handle, &device, &cuda_context) != 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.device_name failed: invalid device handle");
+    return 0;
+  }
+  char name[256];
+  memset(name, 0, sizeof(name));
+  fz_cuda_result_t status = fz_cuda.cuDeviceGetName(name, (int)sizeof(name), device);
+  if (status != FZ_CUDA_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
     return 0;
   }
   fz_set_last_error(0, 0, "");
@@ -76,7 +96,7 @@ int64_t fz_native_gpu_device_memory_bytes(int32_t device_handle) {
     fz_set_last_error(0, 0, "");
     return (int64_t)bytes;
   }
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_ROCM)
   int device = 0;
   if (fz_gpu_hip_device_index_for_handle(device_handle, &device) != 0) {
     fz_set_last_error(EINVAL, 3, "gpu.device_memory_bytes failed: invalid device handle");
@@ -92,6 +112,21 @@ int64_t fz_native_gpu_device_memory_bytes(int32_t device_handle) {
   status = fz_hip.hipMemGetInfo(&free_bytes, &total_bytes);
   if (status != FZ_HIP_SUCCESS) {
     fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return (int64_t)total_bytes;
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_CUDA)
+  fz_cuda_device_t device = 0;
+  fz_cuda_context_t cuda_context = NULL;
+  if (fz_gpu_cuda_device_for_handle(device_handle, &device, &cuda_context) != 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.device_memory_bytes failed: invalid device handle");
+    return 0;
+  }
+  size_t total_bytes = 0;
+  fz_cuda_result_t status = fz_cuda.cuDeviceTotalMem(&total_bytes, device);
+  if (status != FZ_CUDA_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
     return 0;
   }
   fz_set_last_error(0, 0, "");
@@ -156,7 +191,7 @@ static int32_t fz_native_gpu_buffer_new(
     fz_set_last_error(0, 0, "");
     return handle;
   }
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_ROCM)
   int device = 0;
   if (fz_gpu_hip_device_index_for_handle(device_handle, &device) != 0) {
     fz_set_last_error(EINVAL, 3, "gpu.alloc failed: invalid device handle");
@@ -199,6 +234,56 @@ static int32_t fz_native_gpu_buffer_new(
   pthread_mutex_unlock(&fz_gpu_lock);
   if (handle <= 0) {
     fz_hip.hipFree(buffer);
+    fz_set_last_error(ENOSPC, 3, "gpu.alloc failed: GPU buffer registry full");
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return handle;
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_CUDA)
+  fz_cuda_device_t device = 0;
+  fz_cuda_context_t cuda_context = NULL;
+  if (fz_gpu_cuda_device_for_handle(device_handle, &device, &cuda_context) != 0) {
+    fz_set_last_error(EINVAL, 3, "gpu.alloc failed: invalid device handle");
+    return 0;
+  }
+  (void)device;
+  uint64_t byte_count = (uint64_t)(uint32_t)len * (uint64_t)(uint32_t)element_size;
+  size_t bytes = (size_t)byte_count;
+  if ((uint64_t)bytes != byte_count) {
+    fz_set_last_error(EOVERFLOW, 3, "gpu.alloc failed: allocation size overflow");
+    return 0;
+  }
+  fz_cuda_result_t status = fz_cuda.cuCtxSetCurrent(cuda_context);
+  if (status != FZ_CUDA_SUCCESS) {
+    fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
+    return 0;
+  }
+  fz_cuda_deviceptr_t buffer = 0;
+  status = fz_cuda.cuMemAlloc(&buffer, bytes == 0 ? 1 : bytes);
+  if (status != FZ_CUDA_SUCCESS || buffer == 0) {
+    fz_set_last_error(ENOMEM, 3, fz_gpu_cuda_error_string(status));
+    return 0;
+  }
+  if (bytes > 0 && host_data != NULL) {
+    status = fz_cuda.cuMemcpyHtoD(buffer, host_data, bytes);
+    if (status != FZ_CUDA_SUCCESS) {
+      fz_cuda.cuMemFree(buffer);
+      fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
+      return 0;
+    }
+  }
+  pthread_mutex_lock(&fz_gpu_lock);
+  int32_t handle = fz_gpu_buffer_alloc_slot();
+  if (handle > 0) {
+    fz_gpu_buffer_state* state = &fz_gpu_buffers[handle - 1];
+    state->device_handle = device_handle;
+    state->element_size = element_size;
+    state->len = len;
+    state->buffer = (void*)(uintptr_t)buffer;
+  }
+  pthread_mutex_unlock(&fz_gpu_lock);
+  if (handle <= 0) {
+    fz_cuda.cuMemFree(buffer);
     fz_set_last_error(ENOSPC, 3, "gpu.alloc failed: GPU buffer registry full");
     return 0;
   }
@@ -363,7 +448,7 @@ static uintptr_t fz_native_gpu_download_bytes(
   fz_set_last_error(0, 0, "");
   return (uintptr_t)handle;
 #else
-  #if defined(__linux__)
+  #if defined(__linux__) && defined(FZ_GPU_BACKEND_ROCM)
   int32_t device_handle = state->device_handle;
   void* device_buffer = state->buffer;
   int device = 0;
@@ -393,6 +478,72 @@ static uintptr_t fz_native_gpu_download_bytes(
     if (status != FZ_HIP_SUCCESS) {
       free(words);
       fz_set_last_error(EIO, 3, fz_gpu_hip_error_string(status));
+      return 0;
+    }
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_numeric_vec_alloc();
+  if (handle > 0) {
+    fz_numeric_vec_state* vec = fz_numeric_vec_get((uintptr_t)handle);
+    if (vec != NULL) {
+      vec->element_kind = element_kind;
+      if (fz_numeric_vec_reserve(vec, len) != 0) {
+        handle = -1;
+        fz_numeric_vec_reset(vec);
+      }
+      if (handle > 0) {
+        for (int32_t index = 0; index < len; index++) {
+          if (fz_numeric_vec_push_bits32(vec, words == NULL ? 0 : words[index]) != 0) {
+            handle = -1;
+            fz_numeric_vec_reset(vec);
+            break;
+          }
+        }
+      }
+    } else {
+      handle = -1;
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  free(words);
+  if (handle <= 0) {
+    fz_set_last_error(ENOSPC, 3, "gpu.download failed: numeric vector registry full");
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return (uintptr_t)handle;
+  #elif defined(__linux__) && defined(FZ_GPU_BACKEND_CUDA)
+  int32_t device_handle = state->device_handle;
+  fz_cuda_deviceptr_t device_buffer = (fz_cuda_deviceptr_t)(uintptr_t)state->buffer;
+  fz_cuda_device_t device = 0;
+  fz_cuda_context_t context = NULL;
+  if (fz_gpu_cuda_device_for_handle(device_handle, &device, &context) != 0) {
+    pthread_mutex_unlock(&fz_gpu_lock);
+    fz_set_last_error(EINVAL, 3, invalid_buffer_context);
+    return 0;
+  }
+  pthread_mutex_unlock(&fz_gpu_lock);
+  (void)device;
+  uint64_t byte_count = (uint64_t)(uint32_t)len * (uint64_t)(uint32_t)expected_element_size;
+  size_t bytes = (size_t)byte_count;
+  if ((uint64_t)bytes != byte_count) {
+    fz_set_last_error(EOVERFLOW, 3, "gpu.download failed: download size overflow");
+    return 0;
+  }
+  uint32_t* words = NULL;
+  if (bytes > 0) {
+    words = (uint32_t*)malloc(bytes);
+    if (words == NULL) {
+      fz_set_last_error(ENOMEM, 3, "gpu.download failed: host staging allocation failed");
+      return 0;
+    }
+    fz_cuda_result_t status = fz_cuda.cuCtxSetCurrent(context);
+    if (status == FZ_CUDA_SUCCESS) {
+      status = fz_cuda.cuMemcpyDtoH(words, device_buffer, bytes);
+    }
+    if (status != FZ_CUDA_SUCCESS) {
+      free(words);
+      fz_set_last_error(EIO, 3, fz_gpu_cuda_error_string(status));
       return 0;
     }
   }
@@ -480,8 +631,19 @@ int32_t fz_native_gpu_buffer_free(int32_t buffer_handle) {
   [buffer release];
 #elif defined(__linux__)
   void* buffer = state->buffer;
+  int32_t device_handle = state->device_handle;
   if (buffer != NULL) {
+#if defined(FZ_GPU_BACKEND_ROCM)
     fz_hip.hipFree(buffer);
+#elif defined(FZ_GPU_BACKEND_CUDA)
+    fz_cuda_device_t device = 0;
+    fz_cuda_context_t context = NULL;
+    if (fz_gpu_cuda_device_for_handle(device_handle, &device, &context) == 0) {
+      (void)device;
+      fz_cuda.cuCtxSetCurrent(context);
+    }
+    fz_cuda.cuMemFree((fz_cuda_deviceptr_t)(uintptr_t)buffer);
+#endif
   }
 #endif
   memset(state, 0, sizeof(*state));
