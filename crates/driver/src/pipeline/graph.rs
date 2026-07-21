@@ -93,4 +93,6 @@ pub(super) use self::diag::*;
 pub(super) use self::load::*;
 pub(super) use self::qualify::*;
 pub(crate) use self::stdlib::embedded_core_stdlib_module_source;
-pub(super) use self::stdlib::*;
+pub(super) use self::stdlib::{
+    format_module_cycle, merge_imported_core_stdlib_modules, merge_module_owned,
+};
