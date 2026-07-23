@@ -47,6 +47,16 @@ fn native_runtime_shim_declares_shared_helpers_before_first_use() {
 }
 
 #[test]
+fn native_runtime_shim_without_selected_gpu_backend_fails_closed() {
+    let shim = render_native_runtime_shim(&[], &[], &[], &[]);
+
+    assert!(shim.contains("gpu.default_device failed: no GPU backend selected for this native runtime"));
+    assert!(shim.contains("#define FZ_GPU_RUNTIME_HAS_LAUNCH 0"));
+    assert!(shim.contains("gpu.launch failed: GPU backend unavailable in this native runtime"));
+    assert!(!shim.contains("#if (defined(__APPLE__) && defined(__OBJC__)) || defined(__linux__)"));
+}
+
+#[test]
 fn backend_defaults_dev_cranelift_release_llvm() {
     let project_name = format!(
         "fozzylang-backend-defaults-{}",

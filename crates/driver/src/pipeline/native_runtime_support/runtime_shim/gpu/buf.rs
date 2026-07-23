@@ -12,14 +12,14 @@ int32_t fz_native_gpu_default_device(void) {
   pthread_once(&fz_gpu_init_once, fz_gpu_runtime_init);
   if (fz_gpu_device_count_cached <= 0) {
     const char* backend_error =
-#if defined(__linux__)
-#if defined(FZ_GPU_BACKEND_CUDA)
+#if defined(__linux__) && defined(FZ_GPU_BACKEND_CUDA)
         fz_gpu_runtime_error[0] == '\0' ? "gpu.default_device failed: no CUDA device available" : fz_gpu_runtime_error;
-#else
+#elif defined(__linux__) && defined(FZ_GPU_BACKEND_ROCM)
         fz_gpu_runtime_error[0] == '\0' ? "gpu.default_device failed: no ROCm device available" : fz_gpu_runtime_error;
-#endif
-#else
+#elif defined(__APPLE__) && defined(__OBJC__)
         "gpu.default_device failed: no Metal device available";
+#else
+        "gpu.default_device failed: no GPU backend selected for this native runtime";
 #endif
     fz_set_last_error(ENODEV, 3, backend_error);
     return 0;

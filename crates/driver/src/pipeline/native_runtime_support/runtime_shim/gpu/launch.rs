@@ -857,52 +857,58 @@ static int32_t fz_gpu_launch_impl(
 }
 #endif
 
+#if (defined(__APPLE__) && defined(__OBJC__)) || (defined(__linux__) && (defined(FZ_GPU_BACKEND_ROCM) || defined(FZ_GPU_BACKEND_CUDA)))
+#define FZ_GPU_RUNTIME_HAS_LAUNCH 1
+#else
+#define FZ_GPU_RUNTIME_HAS_LAUNCH 0
+#endif
+
 int32_t fz_native_gpu_launch0(int32_t kernel_name_id, int32_t source_id, int32_t layout_id, int32_t grid, int32_t block) {
-#if (defined(__APPLE__) && defined(__OBJC__)) || defined(__linux__)
+#if FZ_GPU_RUNTIME_HAS_LAUNCH
   return fz_gpu_launch_impl(kernel_name_id, source_id, layout_id, grid, block, 0, 0, 0, 0, 0);
 #else
   (void)kernel_name_id; (void)source_id; (void)layout_id; (void)grid; (void)block;
-  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: Metal runtime unavailable on this host");
+  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: GPU backend unavailable in this native runtime");
   return 0;
 #endif
 }
 
 int32_t fz_native_gpu_launch1(int32_t kernel_name_id, int32_t source_id, int32_t layout_id, int32_t grid, int32_t block, uintptr_t a0) {
-#if (defined(__APPLE__) && defined(__OBJC__)) || defined(__linux__)
+#if FZ_GPU_RUNTIME_HAS_LAUNCH
   return fz_gpu_launch_impl(kernel_name_id, source_id, layout_id, grid, block, 1, a0, 0, 0, 0);
 #else
   (void)kernel_name_id; (void)source_id; (void)layout_id; (void)grid; (void)block; (void)a0;
-  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: Metal runtime unavailable on this host");
+  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: GPU backend unavailable in this native runtime");
   return 0;
 #endif
 }
 
 int32_t fz_native_gpu_launch2(int32_t kernel_name_id, int32_t source_id, int32_t layout_id, int32_t grid, int32_t block, uintptr_t a0, uintptr_t a1) {
-#if (defined(__APPLE__) && defined(__OBJC__)) || defined(__linux__)
+#if FZ_GPU_RUNTIME_HAS_LAUNCH
   return fz_gpu_launch_impl(kernel_name_id, source_id, layout_id, grid, block, 2, a0, a1, 0, 0);
 #else
   (void)kernel_name_id; (void)source_id; (void)layout_id; (void)grid; (void)block; (void)a0; (void)a1;
-  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: Metal runtime unavailable on this host");
+  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: GPU backend unavailable in this native runtime");
   return 0;
 #endif
 }
 
 int32_t fz_native_gpu_launch3(int32_t kernel_name_id, int32_t source_id, int32_t layout_id, int32_t grid, int32_t block, uintptr_t a0, uintptr_t a1, uintptr_t a2) {
-#if (defined(__APPLE__) && defined(__OBJC__)) || defined(__linux__)
+#if FZ_GPU_RUNTIME_HAS_LAUNCH
   return fz_gpu_launch_impl(kernel_name_id, source_id, layout_id, grid, block, 3, a0, a1, a2, 0);
 #else
   (void)kernel_name_id; (void)source_id; (void)layout_id; (void)grid; (void)block; (void)a0; (void)a1; (void)a2;
-  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: Metal runtime unavailable on this host");
+  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: GPU backend unavailable in this native runtime");
   return 0;
 #endif
 }
 
 int32_t fz_native_gpu_launch4(int32_t kernel_name_id, int32_t source_id, int32_t layout_id, int32_t grid, int32_t block, uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
-#if (defined(__APPLE__) && defined(__OBJC__)) || defined(__linux__)
+#if FZ_GPU_RUNTIME_HAS_LAUNCH
   return fz_gpu_launch_impl(kernel_name_id, source_id, layout_id, grid, block, 4, a0, a1, a2, a3);
 #else
   (void)kernel_name_id; (void)source_id; (void)layout_id; (void)grid; (void)block; (void)a0; (void)a1; (void)a2; (void)a3;
-  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: Metal runtime unavailable on this host");
+  fz_set_last_error(ENOTSUP, 3, "gpu.launch failed: GPU backend unavailable in this native runtime");
   return 0;
 #endif
 }
